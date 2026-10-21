@@ -1,0 +1,9 @@
+{
+  "tx_port": "kernel:enp1s0",
+  "tx_lip": "192.168.80.213",
+  "tx_dip": "192.168.80.212",
+  "mp4_file": "../InTheGrey.mp4",
+  "fps": 23.976,
+  "loop": false,
+  "mtl_lcores_tx": "1,2,3"
+}

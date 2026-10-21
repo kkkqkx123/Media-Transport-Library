@@ -1,0 +1,4 @@
+option('build_tx', type: 'boolean', value: true,
+  description: 'Build mp4_dist_tx (FFmpeg demux + MTL TX)')
+option('build_rx', type: 'boolean', value: true,
+  description: 'Build mp4_dist_rx (MTL RX + MPP decode + DRM + ALSA)')

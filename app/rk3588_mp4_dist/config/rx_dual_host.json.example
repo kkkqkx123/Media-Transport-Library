@@ -1,0 +1,8 @@
+{
+  "rx_port": "native_af_xdp:eth0",
+  "rx_lip": "192.168.80.212",
+  "rx_sip": "192.168.80.213",
+  "fps": 23.976,
+  "drm_mode": "auto",
+  "mtl_lcores_rx": "1,2,3,4,5,6,7"
+}

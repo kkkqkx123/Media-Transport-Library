@@ -1,10 +1,3 @@
----
-status: draft
-owner: dev
-product_id: "dvs"
-last_updated: 2026-10-22
----
-
 # Media-Transport-Library 基座分析
 
 本文基于 MTL 源码、公共头文件、`doc/design.md`、`docs/analysis/` 和 `app/rk3588_*` 参考应用整理，说明它能为 DVS 提供什么、需要在它之上补什么。

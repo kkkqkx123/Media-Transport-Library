@@ -1,10 +1,3 @@
----
-status: draft
-owner: dev
-product_id: "dvs"
-last_updated: 2026-10-22
----
-
 # DVS 项目需求整理与 MTL 基座实现分析
 
 > 本文是 `docs/` 的总入口。输入有两个：工作区现有 DVS 需求文档（`00-overview`、`02-feature-map`、`03-requirements`、`04-ui-specs`、`05-tech-links`），以及基座项目 Media-Transport-Library（下称 MTL）。

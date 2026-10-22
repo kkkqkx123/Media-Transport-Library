@@ -15,6 +15,28 @@ Additional deliverables in-tree: sample apps (`app/`), FFmpeg/GStreamer/OBS plug
 Python and Rust bindings (`python/`, `rust/`). `ld_preload/` is an empty build stub; its
 LD_PRELOAD UDP shim was removed with the user-space UDP stack.
 
+## Project intent and the rk3588 apps (the core of current work)
+
+The current goal of this fork is to run end-to-end ST 2110 media pipelines on the
+Rockchip RK3588 (ARM) platform using MTL as the transport layer — upstream
+MTL targets Intel x86 + E810 NICs; the rk3588 apps prove the same stack on ARM with
+software pacing. `docs/analysis/` documents this analysis. Two standalone apps were
+added on the `feat/rk3588-apps` branch (commit `add rk3568 app`), each with its own
+`meson.build` and **not** wired into `app/meson.build` — build them separately with
+`meson setup build && ninja -C build` inside their directory. They depend on Rockchip
+MPP (codec), RGA, DRM, V4L2, and ALSA.
+
+| App | What it does |
+|---|---|
+| `app/rk3588_end2end/` | Low-latency live pipeline: V4L2 capture → MPP encode (+RGA conversion) → MTL TX → MTL RX → MPP decode → DRM render. `codec/` wraps MPP behind `codec_plugin.h`; `hal/` has DMA allocator, slab pool, timer, SEI timestamps; `pipeline/` has TX/RX pipelines, ring buffer, slice reassembler; `mtl_tx.c`/`mtl_rx.c`/`mtl_rx_bridge.c` wrap the MTL session layer. Unit tests in `tests/`. |
+| `app/rk3588_mp4_dist/` | MP4 file distribution: TX demuxes MP4 (`tx/mp4_demux`, playlist, `tx_scheduler`) and sends video/audio over MTL; RX does playout buffering, AV sync, ALSA audio, multi-window composition (`rx/rx_compositor`) and DRM display. `shared/` duplicates MPP decode/DRM/ring/slab helpers from the other app (each app carries its own copy). Includes dual-host PTP configs (`config/ptp/`) and Python log-verification scripts in `tests/`. |
+
+Shared gotchas for these apps: two similarly named modules exist (`rx_compositor` vs the
+end2end `io/drm_renderer.c` and `mp4_dist/shared/drm_renderer.c` — near-duplicates);
+and `tests/acceptance/mtl_engine/` contains BOTH `RxTxApp.py` and `rxtxapp.py` as real,
+different files — on case-insensitive filesystems (Windows/macOS) git records edits to
+the wrong one. Never assume they are the same file.
+
 ## Existing agent documentation — read this first
 
 This repository already carries a deep, maintained agent knowledge base. Prefer it over

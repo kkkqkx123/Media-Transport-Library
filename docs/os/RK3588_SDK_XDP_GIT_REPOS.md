@@ -3,6 +3,13 @@
 调查对象：bingo 编译服务器（`ssh bingo`，bingo-MS-7996，Ubuntu 20.04 / 5.15 内核）上的
 `/home/bingo/rk3588_5.1_opensourceSDK` 与 `/home/bingo/rk3588_5.1_XDP`。
 
+> **6.1 移植（2026-10-24）**：同一套 AF_XDP/eBPF 内核使能已结构化移植到 devs 的
+> `/data/kkkqkx/rk3588bsp`（RK3588 Linux 6.1.118 SDK）：新增 `kernel-6.1/arch/arm64/configs/ztl_defconfig`
+> 与 `ztl_rk3588.config`、改 `Config.in.kernel` 默认值、DTS 禁 i2c4，已提交 `98e7f9606`（未 push），
+> patch 存档 `patches/rk3588/0001-kernel-6.1-enable-af_xdp-ebpf-for-mtl.patch`。
+> 5.1 patch **不能**直接 apply 到 6.1（路径/上下文均变），移植判定与 olddefconfig 校验见
+> `../analysis/RK3588_6.1_XDP_PORT.md`。
+
 > **后续分析工作副本（2026-10-24 起生效）**：devs 编译服务器 `/data/kkkqkx/rk3588_5.1_XDP`
 > （本地 `ssh devs` = itc@10.10.20.116，/data 剩 7.7T）。迁移方式：在 bingo 上
 > `git bundle create --all`（4.99G 单文件，含 master/list 全部历史）→ 以本地开发机为中枢

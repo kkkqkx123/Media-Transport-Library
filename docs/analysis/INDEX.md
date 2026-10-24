@@ -18,7 +18,12 @@
 | `FEATURES.md` | ST 2110 协议能力、 pacing、冗余、生态插件、绑定层 |
 | `MODULES.md` | 目录与模块职责、公共 API、关键源文件映射 |
 | `AF_XDP_EBPF.md` | AF_XDP 数据面与 eBPF 过滤程序的工作方式，以及 RK3588 应用的集成清单 |
-| `ZIP_VS_UPSTREAM.md` | zip 改造版 vs 官方 26.09 差异，以及零修改/最小修改方案 |
+
+## 相关目录
+
+| 文件 | 内容 |
+|------|------|
+| `../env/RK3588_BOARD_ENV.md` | **RK3588 开发板（`ssh board`）环境实测记录**：内核 CONFIG/XDP/BPF/AF_XDP 能力、网卡驱动与队列、hugepage、多媒体栈、工具链，附复测探针 `../env/probes/`。改 MTL 板上行为前先读它 |
 
 ## 一句话定位
 

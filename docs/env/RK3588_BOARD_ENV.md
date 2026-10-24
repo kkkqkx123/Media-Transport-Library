@@ -127,14 +127,17 @@
 
 ### 4.4 队列级限速（`rl_type`）实测
 
+先说代码事实：RL 探测是**驱动白名单制**的——`mt_af_xdp.c:792` 只在 `strncmp(xdp->drv, "ice", sizeof("ice")) == 0` 时才调用 `xdp_parse_pacing_ice()`，而该函数写死探测 **`tx-1`** 队列（`mt_af_xdp.c:284`），属性名是 **`tx_maxrate`**（不是 `tx_max_rate`）。
+
 | 检查 | 结果 |
 |---|---|
-| MTL 探测路径 `/sys/class/net/<if>/queues/tx-1/tx_maxrate` | **不存在**（板上只有 `tx-0`）→ `mt_sysfs_write_uint32()` 失败，`XDP_F_RATE_LIMIT` 不置位，`rl_type` 不会设成 `MT_RL_TYPE_XDP_QUEUE_SYSFS`，**干净回落软件 pacing** |
+| RL 探测是否会在本板执行 | **不会**——板上驱动名是 `yt6801`，不等于 `ice`，`xdp_parse_pacing_ice()` 根本不被调用，`XDP_F_RATE_LIMIT` 不置位，`rl_type` 保持默认 → 直接软件 pacing |
+| 探测路径 `/sys/class/net/<if>/queues/tx-1/tx_maxrate` | 即使被调用也会失败：板上**只有 `tx-0`**，无 `tx-1..tx-3` |
 | 手工写 `eth1/queues/tx-0/tx_maxrate` | `write FAILED`（返回码 1） |
 | 手工写 `eth0/queues/tx-0/tx_maxrate` | `printf: 写入错误：不支持的操作` = **EOPNOTSUPP** |
-| 属性可见性 | 只有 `tx-0` 有该文件，`tx-1..tx-3` 无 |
+| 属性可见性 | 只有 `tx-0` 有该文件 |
 
-> 与 `AF_XDP_EBPF.md` §3 的预判一致：本板**没有队列级硬件限速**，只能用 TSC 软件 pacing（即两个 rk3588 应用的既定选择）。
+> 结论：本板**没有队列级硬件限速**（既不会被探测、驱动也不支持），只能用 TSC 软件 pacing——与 `AF_XDP_EBPF.md` §3 的预判一致，但原因与文档原先写的不同。
 
 ### 4.5 板上用户态依赖现状
 
@@ -172,7 +175,7 @@
 | §5/§6 网卡为 **r8168 / RTL8125** | 实为 **Motorcomm YT6801**（builtin `drivers/ztl/yt6801`） |
 | `tx_port = native_af_xdp:enP3p49s0`（可发的口） | `enP3p49s0` = **eth1，NO-CARRIER 未插线**；活动口是 `eth0`/`enP2p33s0` |
 | §3 限速 sysfs 名 `tx_max_rate` | 代码实际是 **`tx_maxrate`**（`mt_af_xdp.c:96/284`），文档笔误 |
-| §3 未提探测队列号 | 探测**写死 tx-1**（`mt_af_xdp.c:284`），单 TX 队列网卡上必然探测失败 |
+| §3 称 RL 由「`xdp_parse_drv_name`/写入探测决定」 | 实际是**驱动白名单制**：`mt_af_xdp.c:792` 只有 `strncmp(xdp->drv, "ice", …)==0` 才调 `xdp_parse_pacing_ice()`，且探测写死 `tx-1`（`mt_af_xdp.c:284`）。非 ice 驱动（含本板 yt6801）压根不探测；本板也只有 `tx-0` |
 | §6 步骤 1 「`grep CONFIG_XDP_SOCKETS /proc/config.gz`」 | 板上该项 `=y`，**已满足**；但同一步骤要求的 `CONFIG_BPF_JIT` **未满足**，文档未把它列为硬性前提 |
 | §5 「r8168 单队列约束」 | TX 侧单队列成立，RX 有 4 队列 |
 | §6 风险表「用 `bpftool btf dump /sys/kernel/btf/vmlinux` 确认 BTF」 | 本板**无 BTF 也无 bpftool**，该验证手段不可用；MTL 自带 `mtl.xdp.c` 是 plain XDP + hash map，理论上不依赖 BTF，但因板上无 libxdp **未能实测加载** |

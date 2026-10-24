@@ -126,7 +126,8 @@ rk3588_5.1_XDP ──── XDP 实验树：defconfig 开 AF_XDP/BPF/BTF + bpfto
 |---|---|
 | `stmmac_main.c`（gmac0/gmac1 → `eth0`）**无任何 XDP/`ndo_bpf` 代码**（grep 0 命中，目录下无 xdp 文件） | eth0 不能 native 模式挂 XDP；libxdp 会退 generic(SKB) 模式，MTL `XDP_ZEROCOPY` 必失败、退 copy UMEM |
 | r8168 厂商驱动源码 **0 处 XDP 引用**（TX 口 `enP3p49s0`） | 同上：只能 generic XDP + copy 模式，RX 路径每包过协议栈，吞吐/时延显著打折 |
-| 内核内无 `tx_max_rate` sysfs（drivers/net 与 net/xdp 均无） | `MT_RL_TYPE_XDP_QUEUE_SYSFS` 不可用，pacing 只能 TSC 软件方式——与既定结论（req/02 §2.2 R6）一致 |
+| 内核内 grep `tx_max_rate` 无命中（原命令属性名写错：内核通用属性实为 **`tx_maxrate`**，在 `net-sysfs.c`，grep 应搜 `tx_maxrate`） | `MT_RL_TYPE_XDP_QUEUE_SYSFS` 仍不可用：MTL 只在驱动名为 `ice` 时才做该探测（`mt_af_xdp.c:792`，且探测写死 `tx-1`）。pacing 只能 TSC 软件方式——与既定结论（req/02 §2.2 R6）一致 |
+| **板上实测（2026-10-24，`docs/env/RK3588_BOARD_ENV.md`）与上两行假设不符**：活动网口不是 stmmac/r8168，而是 **Motorcomm yt6801**（eth0=`enP2p33s0`、eth1=`enP3p49s0`，PCIe builtin 驱动）；`ip link set ... xdpdrv` 被明确拒绝（`Underlying driver does not support XDP in native mode`），`xdpgeneric` 可用；手工写 `tx-0/tx_maxrate` 返回 `EOPNOTSUPP` | 结论方向不变（只能 generic XDP + copy 模式、无队列限速），但**驱动对象与属性名需按实测更正** |
 
 即：**内核侧（socket 机制 + BPF 工具链）已就绪，驱动侧（`ndo_bpf`）两个板载网卡都缺**。板上最小验证
 （AF_XDP_EBPF.md §6）应预期以 generic XDP/copy 模式跑通功能，性能验证需另寻支持 XDP 的网卡或补驱动。
@@ -156,5 +157,5 @@ git --no-pager diff --stat                                      # XDP 树 6 文�
 grep -E "XDP_SOCKETS|BPF_SYSCALL|BPF_JIT|DEBUG_INFO_BTF" kernel/.config
 grep -rc "xdp" kernel/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c \
      kernel/drivers/net/ethernet/realtek/r8168/r8168_n.c        # 均为 0
-ls kernel/net/xdp/ ; grep -rl tx_max_rate kernel/drivers/net kernel/net/xdp  # 无
+ls kernel/net/xdp/ ; grep -rl tx_maxrate kernel/net/core/net-sysfs.c kernel/drivers/net  # 属性名是 tx_maxrate（旧记录误写作 tx_max_rate）
 ```

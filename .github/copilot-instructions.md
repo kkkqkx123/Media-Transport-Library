@@ -28,9 +28,9 @@ This is a **client-visible, production repository**. Every change goes through r
 
 ## Available Tooling
 
-- **MCP Server** (`mtl-system-setup`): 32 tools for host setup — hugepages, VFs, ICE driver, MtlManager, running gtests. Use these instead of raw shell commands for system administration.
-- **Agents**: "MTL Planner" (routes multi-subsystem work), "MTL Developer (TDD)" (writes code + tests in one context window, enforces the six-gate TDD loop), "MTL Reviewer" (adversarial code review — enforced exit gate), "MTL System Admin" (host setup + KahawaiTest via MCP — enforced exit gate for data-plane changes), "Explore" (read-only Q&A).
-  Pytest-environment prep (`tests/acceptance/`) has no dedicated agent — call `.github/scripts/acceptance_setup.sh` (interactive or `--auto`) or the `mtl-acceptance-setup` MCP tools directly; the interactive script already prompts for NFS/PF/EBU choices at zero token cost.
+- **Setup CLI** (`tools/mtl_setup/mtl_setup.py`): stdlib-only (`python3 >= 3.10`, no venv/pip) successor of the former `mtl-system-setup` MCP server — host setup hugepages, VFs, ICE driver, MtlManager, running gtests; the `acceptance-*` group prepares the pytest tree. Use it instead of raw shell commands for system administration.
+- **Agents**: "MTL Planner" (routes multi-subsystem work), "MTL Developer (TDD)" (writes code + tests in one context window, enforces the six-gate TDD loop), "MTL Reviewer" (adversarial code review — enforced exit gate), "MTL System Admin" (host setup + KahawaiTest via the setup CLI — enforced exit gate for data-plane changes), "Explore" (read-only Q&A).
+  Pytest-environment prep (`tests/acceptance/`) has no dedicated agent — call `.github/scripts/acceptance_setup.sh` (interactive or `--auto`) or the setup CLI's `acceptance-*` subcommands directly; the interactive script already prompts for NFS/PF/EBU choices at zero token cost.
 - **Skills**: `/mtl-build` (build + format + verify workflow); `/mtl-write-test` (author a new unit/integration/pytest test — tier picker + golden templates); `/mtl-commit` (stage + commit as atomic, well-formed commits — user-triggered, never automatic).
 - **Knowledge Base**: `.github/copilot-docs/mtl-knowledge-base.md` — architecture, session API lifecycle, pacing, data-plane internals. Consult before non-trivial library changes.
 
@@ -45,10 +45,10 @@ Use this table to pick the right subagent. Resolve ambiguity in order:
 | Edit any of `lib/`, `include/`, `app/`, `plugins/`, `ecosystem/`, `tests/unit/`, `tests/integration_tests/` | **MTL Developer (TDD)** | Owns code + tests + the six-gate TDD loop in one context window |
 | Build (`./build.sh`, `ninja -C build`, `./format-coding.sh`) | **MTL Developer (TDD)** | Build is Gate 4 of its loop |
 | Run `./build.sh unit` (unit gtest, no NIC) | **MTL Developer (TDD)** | Test runs are Gate 2 (fail) and Gate 4 (pass) |
-| Run `KahawaiTest` (integration gtest, real VFs) | **MTL System Admin** | Only one with `run_gtest` MCP tool; enforced Gate 6 for data-plane changes |
-| Host setup (hugepages, VFs, drivers, MtlManager) | **MTL System Admin** | MCP-only, no shell |
+| Run `KahawaiTest` (integration gtest, real VFs) | **MTL System Admin** | Only one with `run-gtest` (setup CLI); enforced Gate 6 for data-plane changes |
+| Host setup (hugepages, VFs, drivers, MtlManager) | **MTL System Admin** | Setup-CLI only, no ad-hoc shell |
 | Adversarial review of a saved diff | **MTL Reviewer** | Read-only; enforced Gate 5; refuses if diff empty |
-| Prepare or fix pytest under `tests/acceptance/` (apt, NFS, configs, hugepages, governor) | *main agent*, call `.github/scripts/acceptance_setup.sh status`/`setup` or the `mtl-acceptance-setup` MCP tools directly | No dedicated agent — interactive script guides setup (NFS/PF/EBU) at zero token cost |
+| Prepare or fix pytest under `tests/acceptance/` (apt, NFS, configs, hugepages, governor) | *main agent*, call `.github/scripts/acceptance_setup.sh status`/`setup` or the setup CLI's `acceptance-*` subcommands directly | No dedicated agent — interactive script guides setup (NFS/PF/EBU) at zero token cost |
 | Run pytest under `tests/acceptance/` | *main agent* per `.github/instructions/mtl-acceptance-tests.instructions.md` | — |
 | Read-only Q&A, code archaeology, "where is X defined?" | **Explore** | Cheap, parallelizable |
 

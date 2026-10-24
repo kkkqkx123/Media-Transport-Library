@@ -1171,9 +1171,10 @@ Key CLI flags: `--p_port`, `--r_port`, `--log_level`, `--level` (all/mandatory),
 Tests needing isolated `mtl_init`/`mtl_uninit` per test. DPDK EAL cannot
 re-init within one process, so each `NoCtxTest.*` case is run in its own
 `KahawaiTest` subprocess. `noctx/run.sh` enumerates cases via
-`--gtest_list_tests` and loops; the MCP `run_noctx_tests` tool does the same
+`--gtest_list_tests` and loops; the `run-noctx-tests` command of
+`tools/mtl_setup/mtl_setup.py` does the same
 (accepts filters that match many cases). Requires 4 ports; `run.sh` waits 20 s
-between processes, `run_pf.sh` and the MCP tools 10 s. What each case proves:
+between processes, `run_pf.sh` and the CLI 10 s. What each case proves:
 `tests/integration_tests/noctx/README.md`.
 
 ### Fuzz Tests (`tests/fuzz/`)
@@ -1223,7 +1224,7 @@ Markers: `@pytest.mark.smoke`, `@pytest.mark.nightly`, `@pytest.mark.dual`, `@py
 
 Root required. Depends on `mfd-*` Intel-internal packages for SSH/NIC automation.
 
-For one-shot host preparation (build, hugepages, SSH, NFS, plugin builds, configs), call `.github/scripts/acceptance_setup.sh` (interactive, or `--auto` for scripted use) or the `mtl-acceptance-setup` MCP tools directly — no dedicated agent; the interactive script prompts for NFS/PF/EBU choices at zero token cost.
+For one-shot host preparation (build, hugepages, SSH, NFS, plugin builds, configs), call `.github/scripts/acceptance_setup.sh` (interactive, or `--auto` for scripted use) or the `acceptance-*` subcommands of `tools/mtl_setup/mtl_setup.py` directly — no dedicated agent; the interactive script prompts for NFS/PF/EBU choices at zero token cost.
 For invoking pytest itself and triaging failures, use `.github/instructions/mtl-acceptance-tests.instructions.md` — it auto-attaches when working under `tests/acceptance/`.
 
 ### RxTxApp (`tests/tools/RxTxApp/`)

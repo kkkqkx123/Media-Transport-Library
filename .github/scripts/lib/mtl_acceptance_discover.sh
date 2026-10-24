@@ -10,9 +10,9 @@
 # data on stdout for a caller to parse. It is meant to be `source`d by:
 #   - acceptance_setup.sh (the interactive/auto CLI entry point)
 #   - acceptance_setup_base.sh (broad host setup, for before/after checks)
-#   - the mtl-acceptance-setup MCP server (via mtl_setup_common.py), so the
-#     shell script and the MCP tool report identical status instead of two
-#     hand-maintained copies of the same probing logic.
+#   - the setup CLI (`tools/mtl_setup/acceptance_cmds.py`, which sources
+#     this lib), so the shell script and the CLI report identical status
+#     instead of two hand-maintained copies of the same probing logic.
 #
 # Usage: source this file, then call the vd_* functions. It can also be run
 # directly as `bash mtl_acceptance_discover.sh` to print the full report.
@@ -29,7 +29,7 @@ VD_REPO_ROOT="$(cd "$VD_LIB_DIR/../../.." && pwd)"
 VD_LOCAL_PREFIX_DEFAULT="$VD_REPO_ROOT/.local_install/mtl"
 
 # Generic (non-acceptance-specific) host helpers — hugepages, CPU governor,
-# ICE driver — shared with the mtl-system-setup MCP server's Python code, so
+# ICE driver — shared with the setup CLI's Python code (tools/mtl_setup), so
 # there is exactly one implementation of each.
 # shellcheck source=mtl_host_common.sh disable=SC1091
 source "$VD_LIB_DIR/mtl_host_common.sh"

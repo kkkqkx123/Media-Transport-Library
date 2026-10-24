@@ -2,23 +2,26 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright 2026 Intel Corporation
 """
-Shared implementation helpers for the MTL MCP servers.
+Shared implementation helpers for the MTL host setup CLI (tools/mtl_setup).
 
-Both `mtl_mcp_server.py` (system-wide host setup, driver management, gtest)
-and `mtl_acceptance_mcp_server.py` (tests/acceptance/ pytest environment,
-built on the separate `.local_install` tree) shell out to the same
-`.github/scripts/setup_environment.sh` and need the same output-summarization
-behavior. Splitting the servers by MCP tool namespace (so each agent's
-tool-schema footprint only covers what it actually calls) would otherwise
-require duplicating this logic — instead both servers import it from here.
+Both command groups — `system_cmds.py` (system-wide host setup, driver
+management, gtest) and `acceptance_cmds.py` (tests/acceptance/ pytest
+environment, built on the separate `.local_install` tree) shell out to the
+same `.github/scripts/` setup scripts and need the same output-summarization
+behavior. Rather than duplicating this logic in each group, both import it
+from here.
 
-This module defines no `@mcp.tool()`s itself; it is not an MCP server.
+History: this module was shared by the `mtl-system-setup` and
+`mtl-acceptance-setup` MCP servers; the MCP layer was removed so the tools
+run with stdlib Python only (no venv, no pip installs).
 """
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess  # nosec B404 # callers pass argv lists or fixed, validated commands
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -27,8 +30,13 @@ from typing import Any
 # Paths
 # ---------------------------------------------------------------------------
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parent.parent  # .github/mcp -> repo root
+REPO_ROOT = SCRIPT_DIR.parent.parent  # tools/mtl_setup -> repo root
 VERSIONS_ENV = REPO_ROOT / "versions.env"
+
+# Set by _summarize_log() when a command reports a non-zero rc; the CLI entry
+# point (mtl_setup.py) maps it to exit code 1, so callers can gate on the
+# process exit status instead of parsing output text.
+LAST_FAIL = False
 
 
 # ---------------------------------------------------------------------------
@@ -44,8 +52,6 @@ def _run(
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a command and return CompletedProcess."""
-    import os
-
     if isinstance(cmd, str):
         cmd = ["bash", "-c", cmd]
     if sudo:
@@ -71,7 +77,7 @@ def _decode(data: str | bytes | None) -> str:
     text=True -- the decode step only runs on the happy path. Concatenating
     that bytes value with a str (as a naive '+' would) raises 'can't concat
     str to bytes', which masked the actual timeout with an unrelated-looking
-    tool error. Always decode explicitly before concatenating.
+    command error. Always decode explicitly before concatenating.
     """
     if data is None:
         return ""
@@ -95,6 +101,68 @@ def _run_rc(cmd: list[str] | str, **kw: Any) -> tuple[int, str]:
         out = _decode(e.stdout) + "\n" + _decode(e.stderr)
         out += f"\n\n*** TIMEOUT after {e.timeout}s ***"
         return -1, out.strip()
+
+
+def _run_stream_to_log(
+    name: str,
+    cmd: list[str] | str,
+    *,
+    timeout: int = 600,
+    cwd: str | Path | None = None,
+    env: dict[str, str] | None = None,
+    sudo: bool = False,
+) -> tuple[int, str, Path]:
+    """Run `cmd`, teeing stdout+stderr into build/logs/<name>_<ts>.log live.
+
+    The `_run`-family only yields output when the process exits, so a
+    multi-minute build or test run gives a caller watching the progress
+    nothing until the end — and a caller killed by its own timeout loses the
+    output entirely. This variant writes every line to the log file (and
+    buffers it for the return value) as it is produced, so long commands can
+    run in a background shell while the log is tailed. Returns
+    (returncode, combined output, log path); on timeout the process is
+    killed, rc is -1 (matching _run_rc) and the partial output is returned.
+    """
+    if isinstance(cmd, str):
+        cmd = ["bash", "-c", cmd]
+    if sudo:
+        cmd = ["sudo"] + cmd
+    merged_env = {**os.environ, **(env or {})}
+
+    log_dir = REPO_ROOT / "build" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = log_dir / f"{name}_{ts}.log"
+
+    proc = subprocess.Popen(  # nosec B603 # argv lists / validated commands
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        errors="replace",
+        cwd=cwd or REPO_ROOT,
+        env=merged_env,
+    )
+    timed_out = threading.Event()
+    watchdog = threading.Timer(timeout, lambda: (timed_out.set(), proc.kill()))
+    watchdog.start()
+    chunks: list[str] = []
+    try:
+        with open(log_path, "w", encoding="utf-8") as logf:
+            for line in proc.stdout:
+                chunks.append(line)
+                logf.write(line)
+                logf.flush()
+        proc.stdout.close()
+        rc = proc.wait()
+    finally:
+        watchdog.cancel()
+
+    out = "".join(chunks)
+    if timed_out.is_set():
+        out += f"\n\n*** TIMEOUT after {timeout}s (process killed) ***\n"
+        rc = -1
+    return rc, out.strip(), log_path
 
 
 def _run_output(cmd: list[str] | str, **kw: Any) -> str:
@@ -131,6 +199,28 @@ def _save_test_log(name: str, content: str) -> Path:
     return log_path
 
 
+def _summarize_log(
+    log_path: Path | str, out: str, tail_lines: int = 40, rc: int | None = None
+) -> str:
+    """Build the pass/fail summary for output already saved in `log_path`.
+
+    Same contract as _summarize_output() but without re-saving — used by the
+    commands that streamed their output through _run_stream_to_log().
+    """
+    global LAST_FAIL
+    total_lines = len(out.splitlines())
+    header = f"- Full log: `{log_path}` ({total_lines} lines)"
+    if rc is not None:
+        if rc != 0:
+            LAST_FAIL = True
+        header = f"- **Result: {'OK' if rc == 0 else f'FAILED (exit {rc})'}**\n{header}"
+    if rc == 0:
+        return header
+    clean = _strip_xtrace(out)
+    tail = "\n".join(clean.splitlines()[-tail_lines:])
+    return f"{header}\n### Output (last {tail_lines} non-trace lines)\n```\n{tail}\n```"
+
+
 def _summarize_output(
     name: str, out: str, tail_lines: int = 40, rc: int | None = None
 ) -> str:
@@ -144,16 +234,9 @@ def _summarize_output(
     when `rc` is not given (legacy callers) — a successful step doesn't need
     its noisy tail pasted into every conversation that calls it.
     """
-    log_path = _save_test_log(name, out)
-    total_lines = len(out.splitlines())
-    header = f"- Full log: `{log_path}` ({total_lines} lines)"
-    if rc is not None:
-        header = f"- **Result: {'OK' if rc == 0 else f'FAILED (exit {rc})'}**\n{header}"
-    if rc == 0:
-        return header
-    clean = _strip_xtrace(out)
-    tail = "\n".join(clean.splitlines()[-tail_lines:])
-    return f"{header}\n### Output (last {tail_lines} non-trace lines)\n```\n{tail}\n```"
+    return _summarize_log(
+        _save_test_log(name, out), out, tail_lines=tail_lines, rc=rc
+    )
 
 
 def _load_versions() -> dict[str, str]:
@@ -172,15 +255,15 @@ def _load_versions() -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Shared business logic — called as plain functions by BOTH MCP servers, so
-# neither duplicates the underlying setup_environment.sh invocation. Each
-# server's own @mcp.tool() (if it exposes one of these directly) is a thin
+# Shared business logic — called as plain functions by BOTH command groups,
+# so neither duplicates the underlying setup_environment.sh invocation. Each
+# group's own subcommand (if it exposes one of these directly) is a thin
 # wrapper that just calls the matching function below.
 #
 # The actual host probing/mutation (ICE driver, hugepages, CPU governor, apt
 # deps) lives in .github/scripts/lib/mtl_host_common.sh — a plain bash
 # library also sourced directly by the acceptance_setup*.sh scripts, so a
-# human running those scripts by hand and this MCP server share exactly one
+# human running those scripts by hand and this CLI share exactly one
 # implementation instead of a Python copy and a bash copy drifting apart.
 # ---------------------------------------------------------------------------
 HOST_COMMON_LIB = REPO_ROOT / ".github" / "scripts" / "lib" / "mtl_host_common.sh"
@@ -212,9 +295,9 @@ def ice_driver_rebuild() -> str:
         "## ⚠ Important: VFs Destroyed\n"
         "The ICE driver reload destroyed all existing VFs.\n"
         "You MUST re-create VFs before running any tests:\n"
-        "- Use `setup_after_reboot_auto` to re-create VFs on all PFs\n"
-        "- Or use `nic_create_vf` for a specific PF\n"
-        "- Then restart `manager_start` if it was running"
+        "- Use `setup-after-reboot-auto` to re-create VFs on all PFs\n"
+        "- Or use `nic-create-vf` for a specific PF\n"
+        "- Then restart `manager-start` if it was running"
     )
 
 

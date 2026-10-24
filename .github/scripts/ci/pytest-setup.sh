@@ -443,8 +443,8 @@ nic-ids)
 	;;
 nic-labels)
 	# Every label the table knows, for tooling that offers a choice rather than
-	# checking one -- the MCP server's nic argument. Derived from the table
-	# itself so a new card is added in one place.
+	# checking one -- the setup CLI's `acceptance-discover-pfs` candidate list.
+	# Derived from the table itself so a new card is added in one place.
 	sed -n '/^nic_device_ids()/,/^}/p' "${BASH_SOURCE[0]}" |
 		sed -n 's/^\t\([a-z0-9 |]*\)) echo .*/\1/p' | tr -d ' ' | tr '|' '\n'
 	;;

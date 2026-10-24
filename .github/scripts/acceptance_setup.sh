@@ -3,24 +3,24 @@
 # Copyright 2026 Intel Corporation
 #
 # Top-level entry point to take a host to "ready to run
-# tests/acceptance/tests/single/ pytest" — with NO agent/MCP/AI required.
+# tests/acceptance/tests/single/ pytest" — with NO agent/AI required.
 #
 # Usage:
 #   acceptance_setup.sh status                 # discovery only, no changes
 #   acceptance_setup.sh setup                   # interactive: discover, ask, apply
-#   acceptance_setup.sh setup --auto [flags]    # non-interactive (CI / MCP use)
+#   acceptance_setup.sh setup --auto [flags]    # non-interactive (CI / CLI use)
 #   acceptance_setup.sh setup --base-only ...   # only the broad host-setup phase
 #   acceptance_setup.sh setup --pytest-only ... # only the pytest-specific phase
 #
-# This script is the single source of truth for the workflow the
-# "mtl-acceptance-setup" MCP server used to perform conversationally.
+# This script is the single source of truth for the workflow that
+# tools/mtl_setup/mtl_setup.py's `acceptance-*` subcommands perform via it.
 # It composes two existing, independently runnable pieces:
 #   1. acceptance_setup_base.sh   — apt/ICE/DPDK/MTL(+plugins)/hugepages/governor
 #   2. setup_acceptance.sh        — NFS media/localhost root SSH/venv/configs
 # Discovery (read-only status probing) lives in
 # lib/mtl_acceptance_discover.sh and is shared by both phases and by this
 # script, so there is exactly one implementation of "is the ICE driver OK?",
-# "which PFs exist?", etc. The MCP server shells out to this same script
+# "which PFs exist?", etc. The setup CLI shells out to this same script
 # instead of re-implementing any of this logic in Python.
 #
 # See --help for the full flag list.
@@ -80,7 +80,7 @@ Examples:
   # Human, fully interactive, asked for everything:
   .github/scripts/acceptance_setup.sh setup
 
-  # CI / MCP server, fully scripted:
+  # CI / setup CLI, fully scripted:
   .github/scripts/acceptance_setup.sh setup --auto \
       --nfs-source=10.0.0.5:/mnt/NFS/mtl_assets/media --pf-bdf=0000:c9:00.0
 EOF

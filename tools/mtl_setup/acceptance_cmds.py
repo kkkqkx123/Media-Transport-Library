@@ -2,32 +2,29 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright 2026 Intel Corporation
 """
-MCP Server for preparing a host to run MTL's tests/acceptance/ pytest suite.
+MTL host setup CLI — acceptance command group (formerly the
+`mtl-acceptance-setup` MCP server).
 
-Split out from mtl_mcp_server.py (the system-wide/gtest server) so that any
-caller's tool-schema footprint for pytest-environment prep only covers the
-handful of tools it actually needs, instead of a `mtl-system-setup/*`
-wildcard pulling in ~30 tools' worth of unrelated (VF/driver/gtest) schemas
-on every turn. Shared build/summarization logic lives in mtl_setup_common.py
-so neither server duplicates it.
+Takes a host to "ready to run tests/acceptance/ pytest". The pytest
+framework (tests/acceptance/mtl_engine/const.py hardcodes
+PREFIX = ".local_install") invokes every app path — RxTxApp, MtlManager,
+ffmpeg, gstreamer — under <repo>/.local_install/{mtl,ffmpeg,gstreamer}/...,
+a tree entirely separate from the system-wide build/ + /usr/local install the
+system group's `build-mtl`/`dpdk-build` produce for gtest/KahawaiTest.
 
-tests/acceptance/mtl_engine/const.py hardcodes PREFIX = ".local_install" —
-every app path the pytest framework invokes (RxTxApp, MtlManager, ffmpeg,
-gstreamer) resolves under <repo>/.local_install/{mtl,ffmpeg,gstreamer}/...,
-a tree entirely separate from the system-wide build/ + /usr/local install
-mtl_mcp_server.py's build_mtl/dpdk_build produce for gtest/KahawaiTest.
-
-Usage:
-    pip install -r requirements.txt
-    python mtl_acceptance_mcp_server.py
+All real setup logic lives in the standalone, human-runnable scripts under
+.github/scripts/; these commands are a thin wrapper over them. Invoke via
+tools/mtl_setup/mtl_setup.py acceptance-<command> (see mtl_setup.py usage).
 """
 
 from __future__ import annotations
 
-import textwrap
-
-from mcp.server.fastmcp import FastMCP
-from mtl_setup_common import REPO_ROOT, _run_rc, _summarize_output
+from mtl_setup_common import (
+    REPO_ROOT,
+    _run_rc,
+    _run_stream_to_log,
+    _summarize_log,
+)
 
 ACCEPTANCE_SETUP_BASE_SH = (
     REPO_ROOT / ".github" / "scripts" / "acceptance_setup_base.sh"
@@ -37,36 +34,11 @@ ACCEPTANCE_DISCOVER_LIB = (
     REPO_ROOT / ".github" / "scripts" / "lib" / "mtl_acceptance_discover.sh"
 )
 
-mcp = FastMCP(
-    "mtl-acceptance-setup",
-    instructions=textwrap.dedent("""\
-        MTL Acceptance Tests Setup MCP Server — takes a host to "ready to run
-        tests/acceptance/tests/single/ pytest".
-
-        All setup logic lives in standalone, human-runnable scripts under
-        .github/scripts/ (acceptance_setup.sh, acceptance_setup_base.sh,
-        lib/mtl_acceptance_discover.sh, lib/mtl_host_common.sh) — this
-        server is a thin wrapper so a human can do the same setup by hand,
-        with no AI/MCP involved, via `.github/scripts/acceptance_setup.sh`.
-
-        Common workflow:
-        • Discover host state first: discover_status() (full report) or
-          discover_pfs() (NIC PF table only) — read-only, no changes made.
-        • Clean or partially-prepared host: setup_acceptance_tests_full(nfs_source=...,
-          pf_bdf=...) — one-shot broad host setup (apt/DPDK/ICE/MTL/hugepages/
-          CPU governor/plugins into .local_install) + pytest-specific setup
-          (NFS media/localhost-root-SSH/venv/configs).
-        • Re-run either phase alone: setup_acceptance_tests_base / setup_acceptance_tests_pytest.
-        • EBU LIST pcap compliance checking (optional, ask the human first):
-          pass ebu_ip/ebu_user/ebu_password + capture_pci_device (a 2nd NIC
-          PF) to setup_acceptance_tests_full / setup_acceptance_tests_pytest. Without
-          these, test_config.yaml's `compliance` stays false and the
-          `pcap_capture` fixture only skips (no capture, no EBU upload).
-        """),
-)
+# The FastMCP server wrapper (with its instructions block) was removed; the
+# workflow guidance lives in mtl_setup.py's docstring and the command
+# docstrings below, which argparse surfaces as --help.
 
 
-@mcp.tool()
 def discover_status() -> str:
     """
     Read-only discovery report: kernel/CPU, hugepages, CPU governor, ICE
@@ -76,15 +48,14 @@ def discover_status() -> str:
     Thin wrapper around `acceptance_setup.sh status` (same report a human
     gets running that script by hand, or `bash
     .github/scripts/lib/mtl_acceptance_discover.sh`). Call this first —
-    before `setup_acceptance_tests_base`/`setup_acceptance_tests_pytest` — to decide
+    before `setup_tests_base`/`setup_tests_pytest` — to decide
     what's actually missing, and to pick a `pf_bdf` for
-    `setup_acceptance_tests_pytest`/`setup_acceptance_tests_full`.
+    `setup_tests_pytest`/`setup_tests_full`.
     """
     rc, out = _run_rc(f"bash {ACCEPTANCE_SETUP_SH} status")
     return out if rc == 0 else f"Error (exit {rc}):\n{out}"
 
 
-@mcp.tool()
 def discover_pfs() -> str:
     """
     List candidate Intel E810/E830/E825/E835 NIC PFs for `pf_bdf`/
@@ -96,8 +67,7 @@ def discover_pfs() -> str:
     return out if rc == 0 else f"Error (exit {rc}):\n{out}"
 
 
-@mcp.tool()
-def setup_acceptance_tests_base(
+def setup_tests_base(
     nr_hugepages: int = 2048,
     build_mode: str = "release",
     include_ffmpeg_plugin: bool = False,
@@ -111,10 +81,10 @@ def setup_acceptance_tests_base(
     gstreamer) the pytest framework invokes is resolved under
     ``<repo>/.local_install/{mtl,ffmpeg,gstreamer}/...``. This is a SEPARATE,
     parallel install tree from the system-wide one used by gtest/KahawaiTest
-    (top-level ``build/`` + ``/usr/local``, produced by the `mtl-system-setup`
-    server's `build_mtl` / `dpdk_build` tools). Building system-wide only is
+    (top-level ``build/`` + ``/usr/local``, produced by the system command
+    group's `build-mtl` / `dpdk-build`). Building system-wide only is
     NOT sufficient for pytest — MtlManager/RxTxApp/ffmpeg will be reported
-    "not found" even though `build_mtl`/`dpdk_build` succeeded. This tool
+    "not found" even though `build-mtl`/`dpdk-build` succeeded. This command
     builds the `.local_install` tree; it does not touch or replace the
     system-wide one.
 
@@ -164,7 +134,8 @@ def setup_acceptance_tests_base(
     # standalone script a human can run by hand for the same broad-setup
     # phase (apt/ICE/DPDK/MTL/hugepages/governor) — see that script's header
     # for the stage-by-stage breakdown. Single implementation, two callers.
-    rc, out = _run_rc(
+    rc, out, log_path = _run_stream_to_log(
+        "setup_tests_base",
         f"bash {ACCEPTANCE_SETUP_BASE_SH}",
         env=env,
         timeout=build_timeout,
@@ -177,20 +148,19 @@ def setup_acceptance_tests_base(
     build_rc = rc if (manager_ok and rxtxapp_ok) else 1
 
     result = (
-        f"## Broad Acceptance Tests Host Setup\n{_summarize_output('setup_acceptance_tests_base', out, rc=build_rc)}"
+        f"## Broad Acceptance Tests Host Setup\n{_summarize_log(log_path, out, rc=build_rc)}"
         f"\n\n### Artifacts\n- {local_prefix}/bin/MtlManager: "
         + ("OK" if manager_ok else "MISSING")
         + f"\n- {local_prefix}/bin/RxTxApp: "
         + ("OK" if rxtxapp_ok else "MISSING")
         + "\n\n## Next Step\n"
-        "Run `setup_acceptance_tests_pytest` (NFS/SSH/venv/config stages), or call "
-        "`setup_acceptance_tests_full` next time to do both in one shot."
+        "Run `acceptance-setup-tests-pytest` (NFS/SSH/venv/config stages), or call "
+        "`acceptance-setup-tests-full` next time to do both in one shot."
     )
     return result
 
 
-@mcp.tool()
-def setup_acceptance_tests_pytest(
+def setup_tests_pytest(
     nfs_source: str = "",
     pf_bdf: str = "",
     test_time: int = 30,
@@ -204,8 +174,8 @@ def setup_acceptance_tests_pytest(
     Pytest-specific acceptance_tests setup: NFS media, localhost root SSH, venv, configs.
 
     Thin wrapper around `.github/scripts/setup_acceptance.sh` (idempotent —
-    safe to re-run). Does NOT build anything — call `setup_acceptance_tests_base`
-    (or `setup_acceptance_tests_full`) first if `.local_install/mtl/bin/{MtlManager,
+    safe to re-run). Does NOT build anything — call `setup_tests_base`
+    (or `setup_tests_full`) first if `.local_install/mtl/bin/{MtlManager,
     RxTxApp}` don't exist yet.
 
     Args:
@@ -242,7 +212,7 @@ def setup_acceptance_tests_pytest(
             wire capture, and "compliance" in test_config.yaml stays false
             even with valid EBU credentials. Ask the human for this only
             when they want compliance checking; probe available PFs first
-            (`nic_discover_pfs`/`system_status`) so you can suggest one.
+            (`acceptance-discover-pfs`/`system-status`) so you can suggest one.
             Kept as a dedicated BDF separate from `pf_bdf`'s DUT PF
             candidate(s) — a PF-mode DUT test that also wants compliance
             needs a PF candidate not sharing an IOMMU group/physical card
@@ -269,19 +239,17 @@ def setup_acceptance_tests_pytest(
     # Pass secrets/inputs through the subprocess environment (not an inline
     # "VAR=val bash script.sh" command string) so EBU_PASSWORD never appears
     # in the executed command line / process listing.
-    rc, out = _run_rc(
+    rc, out, log_path = _run_stream_to_log(
+        "setup_tests_pytest",
         "bash .github/scripts/setup_acceptance.sh",
         env=env,
         timeout=300,
     )
-    summary = _summarize_output(
-        "setup_acceptance_tests_pytest", out, tail_lines=60, rc=rc
-    )
+    summary = _summarize_log(log_path, out, tail_lines=60, rc=rc)
     return f"## Pytest Acceptance Tests Setup\n{summary}"
 
 
-@mcp.tool()
-def setup_acceptance_tests_full(
+def setup_tests_full(
     nfs_source: str = "",
     pf_bdf: str = "",
     nr_hugepages: int = 2048,
@@ -297,12 +265,12 @@ def setup_acceptance_tests_full(
     """
     One-shot: take a clean host to "ready to run tests/acceptance/ pytest".
 
-    Runs `setup_acceptance_tests_base` (apt, DPDK, ICE, MTL, hugepages, CPU governor
+    Runs `setup_tests_base` (apt, DPDK, ICE, MTL, hugepages, CPU governor
     — all into .local_install/mtl, plus optional ffmpeg/gstreamer plugins)
-    then `setup_acceptance_tests_pytest` (NFS, SSH, venv, configs). Idempotent —
+    then `setup_tests_pytest` (NFS, SSH, venv, configs). Idempotent —
     safe to re-run on an already-prepared host (fast no-op on each stage).
 
-    `include_ffmpeg_plugin` defaults to True here (unlike `setup_acceptance_tests_base`)
+    `include_ffmpeg_plugin` defaults to True here (unlike `setup_tests_base`)
     because most test_single/st20p/... tests parametrize over both
     application=rxtxapp and application=ffmpeg.
 
@@ -329,12 +297,12 @@ def setup_acceptance_tests_full(
             pf_bdf) used for netsniff-ng packet capture. Compliance checking
             needs this in addition to the ebu_* args — without it,
             "compliance" stays false even with valid EBU credentials. See
-            `setup_acceptance_tests_pytest`'s docstring for the multi-PF-DUT +
+            `setup_tests_pytest`'s docstring for the multi-PF-DUT +
             dedicated-capture-NIC topology this enables.
     """
     results = [
         "## Phase 1/2: Broad host setup\n"
-        + setup_acceptance_tests_base(
+        + setup_tests_base(
             nr_hugepages=nr_hugepages,
             build_mode=build_mode,
             include_ffmpeg_plugin=include_ffmpeg_plugin,
@@ -343,7 +311,7 @@ def setup_acceptance_tests_full(
     ]
     results.append(
         "## Phase 2/2: Pytest-specific setup\n"
-        + setup_acceptance_tests_pytest(
+        + setup_tests_pytest(
             nfs_source=nfs_source,
             pf_bdf=pf_bdf,
             test_time=test_time,
@@ -363,7 +331,6 @@ def setup_acceptance_tests_full(
     return "\n\n---\n\n".join(results)
 
 
-@mcp.tool()
 def build_ffmpeg_plugin() -> str:
     """Build the MTL FFmpeg plugin (ecosystem/ffmpeg_plugin) into .local_install."""
     build_sh = REPO_ROOT / "ecosystem/ffmpeg_plugin/build.sh"
@@ -374,7 +341,8 @@ def build_ffmpeg_plugin() -> str:
     # `sudo make install` (system-wide), leaving .local_install/ffmpeg --
     # the binary pytest actually invokes -- stale.
     local_prefix = REPO_ROOT / ".local_install" / "mtl"
-    rc, out = _run_rc(
+    rc, out, log_path = _run_stream_to_log(
+        "ffmpeg_plugin_build",
         "ECOSYSTEM_BUILD_AND_INSTALL_FFMPEG_PLUGIN=1 "
         "SETUP_ENVIRONMENT=0 SETUP_BUILD_AND_INSTALL_DPDK=0 "
         "SETUP_BUILD_AND_INSTALL_DRIVERS=0 MTL_BUILD_AND_INSTALL=0 "
@@ -384,10 +352,9 @@ def build_ffmpeg_plugin() -> str:
     )
     ffmpeg_ok = (REPO_ROOT / ".local_install/ffmpeg/bin/ffmpeg").is_file()
     build_rc = rc if ffmpeg_ok else 1
-    return f"## FFmpeg Plugin Build\n{_summarize_output('ffmpeg_plugin_build', out, rc=build_rc)}"
+    return f"## FFmpeg Plugin Build\n{_summarize_log(log_path, out, rc=build_rc)}"
 
 
-@mcp.tool()
 def build_gstreamer_plugin() -> str:
     """Build the MTL GStreamer plugin (ecosystem/gstreamer_plugin) into .local_install."""
     build_sh = REPO_ROOT / "ecosystem/gstreamer_plugin/build.sh"
@@ -396,7 +363,8 @@ def build_gstreamer_plugin() -> str:
 
     # See build_ffmpeg_plugin() above -- same MTL_INSTALL_PREFIX requirement.
     local_prefix = REPO_ROOT / ".local_install" / "mtl"
-    rc, out = _run_rc(
+    rc, out, log_path = _run_stream_to_log(
+        "gstreamer_plugin_build",
         "ECOSYSTEM_BUILD_AND_INSTALL_GSTREAMER_PLUGIN=1 "
         "SETUP_ENVIRONMENT=0 SETUP_BUILD_AND_INSTALL_DPDK=0 "
         "SETUP_BUILD_AND_INSTALL_DRIVERS=0 MTL_BUILD_AND_INSTALL=0 "
@@ -404,8 +372,8 @@ def build_gstreamer_plugin() -> str:
         "bash .github/scripts/setup_environment.sh",
         timeout=600,
     )
-    return f"## GStreamer Plugin Build\n{_summarize_output('gstreamer_plugin_build', out, rc=rc)}"
+    return f"## GStreamer Plugin Build\n{_summarize_log(log_path, out, rc=rc)}"
 
 
-if __name__ == "__main__":
-    mcp.run(transport="stdio")
+# No entry point here: mtl_setup.py imports this module and dispatches its
+# public command functions as `acceptance-*` argparse subcommands.

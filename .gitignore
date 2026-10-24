@@ -70,9 +70,7 @@ dkms.conf
 !.pre-commit-config.yaml
 !.vscode/
 .vscode/*
-!.vscode/mcp.json
 !.claude
-!.mcp.json
 .github/claude/settings.local.json
 *.log
 *.log_*
@@ -139,7 +137,6 @@ level-zero-*
 
 venv*
 .venv-docs/
-.github/mcp/.venv/
 
 # Local CI reproduction (.github/ci-local)
 .ci-local/

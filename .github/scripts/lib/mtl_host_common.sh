@@ -3,17 +3,17 @@
 # Copyright 2026 Intel Corporation
 #
 # Generic, non-acceptance-specific host setup/discovery helpers shared by
-# BOTH the system-wide setup path (mtl-system-setup MCP server, used for
+# BOTH the system-wide setup path (the setup CLI's system commands, used for
 # gtest/KahawaiTest/VFs) and the tests/acceptance/ pytest setup path
-# (mtl-acceptance-setup MCP server + acceptance_setup*.sh). Nothing in this
+# (`acceptance-*` CLI commands + acceptance_setup*.sh). Nothing in this
 # file assumes a `.local_install` prefix or pytest-specific config — that
 # lives in lib/mtl_acceptance_discover.sh instead.
 #
 # Functions here are the single implementation of "is the ICE driver OK?",
 # "set hugepages", "set CPU governor to performance", "apt dependencies" —
-# both mtl_setup_common.py (Python, shared by both MCP servers) and the
-# acceptance-tests shell scripts source/shell out to these instead of each
-# hand-rolling their own copy.
+# both tools/mtl_setup/mtl_setup_common.py (Python, shared by both command
+# groups) and the acceptance-tests shell scripts source/shell out to these
+# instead of each hand-rolling their own copy.
 #
 # Usage: source this file, then call the mh_* functions.
 
@@ -70,8 +70,8 @@ mh_ice_driver_ok() {
 	[[ "$(mh_ice_live_version)" == *"$(mh_ice_required_version)"* ]]
 }
 
-# Markdown status report — matches the historical `ice_driver_status` MCP
-# tool output so its docstring/callers don't need to change.
+# Markdown status report — matches the `ice-driver-status` CLI command's
+# output so its docstring/callers don't need to change.
 mh_ice_driver_status_report() {
 	local want live live_path oot_ko oot_exists oot_ver is_oot matches status
 	want=$(mh_ice_required_version)

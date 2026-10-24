@@ -7,7 +7,6 @@
 .ci-local/
 .editorconfig
 .gitattributes
-.mcp.json
 .pre-commit-config.yaml
 .ruff_cache/
 .vscode/

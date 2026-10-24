@@ -6,14 +6,14 @@
 # `.local_install` tree (see tests/acceptance/mtl_engine/const.py PREFIX)
 # that RxTxApp/MtlManager/ffmpeg/gstreamer under pytest resolve against.
 # This tree is independent from the system-wide build/ + /usr/local install
-# used by gtest/KahawaiTest (that one is handled by the mtl-system-setup
-# scripts/MCP server instead).
+# used by gtest/KahawaiTest (that one is handled by the setup CLI's system
+# commands instead).
 #
-# This is the standalone-script equivalent of the (now legacy) MCP tool
-# `setup_acceptance_tests_base`. It is called by:
+# This is the standalone-script equivalent of the CLI command
+# `acceptance-setup-tests-base`. It is called by:
 #   - acceptance_setup.sh (interactive/auto top-level entry point)
-#   - the mtl-acceptance-setup MCP server (mtl_acceptance_mcp_server.py),
-#     so the MCP tool and a human running this by hand share one
+#   - tools/mtl_setup/acceptance_cmds.py (the setup CLI's acceptance group),
+#     so the CLI command and a human running this by hand share one
 #     implementation instead of two.
 #
 # Stages: apt dependencies -> ICE driver check/rebuild -> DPDK+MTL(+plugins)

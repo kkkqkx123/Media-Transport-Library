@@ -5,7 +5,8 @@
 # One-shot pytest-specific preparation for tests/acceptance/.
 #
 # Broad host setup (apt, DPDK, ICE, MTL build, hugepages, CPU governor,
-# optional plugins) is handled by MCP tool setup_acceptance_tests_base.
+# optional plugins) is handled by the setup CLI's `acceptance-setup-tests-base`
+# command (tools/mtl_setup/mtl_setup.py), or acceptance_setup_base.sh directly.
 #
 # This script intentionally keeps only pytest-custom responsibilities.
 # Idempotent. Each stage is independent: probe -> install if missing -> verify.
@@ -200,7 +201,7 @@ print_summary() {
 	# Pytest (this framework) hard-requires the .local_install prefix tree —
 	# see tests/acceptance/mtl_engine/const.py PREFIX=".local_install". This is
 	# SEPARATE from the system-wide build/ + /usr/local tree gtest/KahawaiTest
-	# uses; built via MCP tool setup_acceptance_tests_base/setup_acceptance_tests_full.
+	# uses; built via `acceptance-setup-tests-base`/`acceptance-setup-tests-full`.
 	log " .local_install/mtl/bin/RxTxApp    : $([[ -x .local_install/mtl/bin/RxTxApp ]] && echo OK || echo MISSING)"
 	log " .local_install/mtl/bin/MtlManager : $([[ -x .local_install/mtl/bin/MtlManager ]] && echo OK || echo MISSING)"
 	log " .local_install/mtl/lib*/libmtl.so : $([[ -f .local_install/mtl/lib64/libmtl.so || -f .local_install/mtl/lib/x86_64-linux-gnu/libmtl.so ]] && echo OK || echo MISSING)"
@@ -274,7 +275,7 @@ stage_preflight() {
 		fi
 	fi
 
-	# Broad setup must be done via MCP tool setup_acceptance_tests_base.
+	# Broad setup must be done via `acceptance-setup-tests-base` first.
 	local missing=0 free_mb governor ice_path mtl_found=0
 	if ! pkg-config --exists libdpdk 2>/dev/null; then
 		warn "preflight: libdpdk missing"
@@ -290,7 +291,7 @@ stage_preflight() {
 		missing=1
 	fi
 	# NOTE: pytest needs .local_install/mtl/bin/{MtlManager,RxTxApp}, built by
-	# MCP tool setup_acceptance_tests_base/setup_acceptance_tests_full — a SEPARATE tree
+	# `acceptance-setup-tests-base`/`acceptance-setup-tests-full` — a SEPARATE tree
 	# from build/manager + tests/tools/RxTxApp/build used by gtest/KahawaiTest.
 	if [[ ! -x .local_install/mtl/bin/MtlManager || ! -x .local_install/mtl/bin/RxTxApp ]]; then
 		warn "preflight: .local_install/mtl/bin/{MtlManager,RxTxApp} missing (pytest needs this, not build/manager or tests/tools/RxTxApp/build)"
@@ -314,7 +315,7 @@ stage_preflight() {
 
 	if ((missing)); then
 		err "preflight: broad host prerequisites are missing"
-		err "run MCP tool setup_acceptance_tests_base first, then rerun this script"
+		err "run `acceptance-setup-tests-base` first (tools/mtl_setup/mtl_setup.py), then rerun this script"
 		return 1
 	fi
 
@@ -560,7 +561,7 @@ log " compliance     : EBU_IP=${EBU_IP:-<unset>} CAPTURE_PCI_DEVICE=${CAPTURE_PC
 log " mode           : $([[ "$CHECK_ONLY" == "1" ]] && echo 'CHECK_ONLY=1 (probe only, no install)' || echo install)"
 log " run log        : $RUN_LOG"
 log " expected time  : cold ~1-3 min ; warm <5s ; CHECK_ONLY <2s — agents must NOT time out"
-log " note           : broad host setup is done by MCP tool setup_acceptance_tests_base"
+log " note           : broad host setup is done by `acceptance-setup-tests-base`"
 log "════════════════════════════════════════════════════════════════════"
 
 # Warn about NFS upfront, before slow stages run.

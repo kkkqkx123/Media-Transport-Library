@@ -22,7 +22,7 @@ enforce this.
 |---|---|---|---|
 | `run.sh` | `NoCtxTest.${NOCTX_FILTER}*`, excluding `*_pf_*` | `TEST_PORT_1..4`, all required | 20 s |
 | `run_pf.sh` | `NoCtxTest.${NOCTX_FILTER}*_pf_*` | `TEST_PF_PORT_1..2`, PFs bound to `vfio-pci` | 10 s |
-| MCP `run_noctx_tests` / `run_noctx_pf_tests` (`mtl-system-setup`) | `gtest_filter` / the `_pf_` cases; no `isolate.sh`, so `st30p_user_pacing` FAILs | 4 ports / 2 PFs, auto-discovered if not given | `cooldown_seconds`, default 10 s |
+| CLI `run-noctx-tests` / `run-noctx-pf-tests` (`tools/mtl_setup/mtl_setup.py`) | `--gtest-filter` / the `_pf_` cases; no `isolate.sh`, so `st30p_user_pacing` FAILs | 4 ports / 2 PFs, auto-discovered if not given | `--cooldown-seconds`, default 10 s |
 
 ```bash
 sudo -E tests/integration_tests/noctx/run.sh                      # every non-PF case

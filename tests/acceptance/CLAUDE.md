@@ -11,5 +11,5 @@ Also relevant, read on demand rather than always:
 - Engine internals — `../../.github/instructions/mtl-acceptance-engine.instructions.md`
 
 Host prep is `.github/scripts/acceptance_setup.sh` (interactive, or `--auto`), or the
-`mcp__mtl-acceptance-setup__*` tools — fetch their schemas with `ToolSearch` first. There is no
+`acceptance-*` subcommands of `tools/mtl_setup/mtl_setup.py` (stdlib-only, no venv). There is no
 dedicated agent for this tree; the main agent owns it.

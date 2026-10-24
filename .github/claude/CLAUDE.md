@@ -23,7 +23,7 @@ Prefer these over re-deriving things from source:
 | `.github/instructions/mtl-c-coding.instructions.md` | Mandatory C rules. |
 | `.github/instructions/mtl-gtest.instructions.md` | Running/debugging `KahawaiTest`, suite map, pacing modes, failure signatures. |
 | `.github/instructions/mtl-acceptance-*.instructions.md` | pytest E2E: running, authoring, engine internals, host setup. |
-| `.github/instructions/mtl-system-setup.instructions.md` | Hugepages, VFs, ICE driver, MtlManager. |
+| `tools/mtl_setup/mtl_setup.py --help` | Host setup: hugepages, VFs, ICE driver, DPDK, MtlManager, gtest runners (`acceptance-*` subcommands for pytest prep). |
 | `doc/design.md`, `doc/build.md`, `doc/run.md` | Upstream user-facing guides. |
 
 **If the knowledge base disagrees with the code, fix the knowledge base in the same change.**
@@ -35,25 +35,26 @@ Prefer these over re-deriving things from source:
 - **Two install trees, not interchangeable**: `build/` + `/usr/local` is what gtest/`KahawaiTest` uses; `.local_install/mtl/bin/{MtlManager,RxTxApp}` is what the pytest acceptance suite uses (`tests/acceptance/mtl_engine/const.py` hardcodes `PREFIX = ".local_install"`).
 - **`tests/acceptance/mtl_engine/` contains BOTH `RxTxApp.py` and `rxtxapp.py` as real, different files.** On case-insensitive filesystems (Windows/macOS) git records edits to the wrong one. Never assume they are the same file.
 - **Two near-duplicate modules**: `rx_compositor` vs the end2end `io/drm_renderer.c` and `mp4_dist/shared/drm_renderer.c`. Confirm the target file before editing.
-- **`mt-system-admin`'s "MCP tools only, never a shell" rule is enforced by its prompt, not by withholding the Bash tool** (MCP wildcards in a subagent's `tools:` list aren't reliably supported). If you see it reach for Bash, that's a bug in the agent's behavior, not permission to allow it.
+- **`mt-system-admin`'s "setup CLI only, never ad-hoc shell" rule is enforced by its prompt, not by withholding the Bash tool.** If you see it reach for raw shell (`sysctl`, `dpdk-devbind.py`, …), that's a bug in the agent's behavior, not permission to allow it.
 
 ---
 
 ## Native tooling (Claude Code)
 
-The Copilot workflow has been ported to Claude Code equivalents under `.github/claude/`. Claude Code only discovers config at fixed paths, so three tracked symlinks bridge the two:
+The Copilot workflow has been ported to Claude Code equivalents under `.github/claude/`. Claude Code only discovers config at fixed paths, so tracked symlinks bridge the two:
 
 | Discovery path | Real file |
 |---|---|
 | `CLAUDE.md` | `.github/claude/CLAUDE.md` |
-| `.claude/` | `.github/claude/` (agents, skills, settings) |
-| `.mcp.json` | `.github/claude/mcp.json` |
+| `AGENTS.md` | `.github/claude/CLAUDE.md` |
+
+(The former `.claude/` and `.mcp.json` symlinks are gone: the MCP servers were replaced by `tools/mtl_setup/mtl_setup.py`, see below.)
 
 **Edit the file under `.github/claude/`, never the symlink.** Machine-local overrides go in `.github/claude/settings.local.json` (gitignored).
 
 **Skills** (`.github/claude/skills/`): `mtl-build`, `mtl-write-test`, `mtl-commit`, each a symlink to `.github/skills/<name>/`.
 
-**MCP servers** (`.github/claude/mcp.json`, enabled in `settings.json`): `mtl-system-setup` and `mtl-acceptance-setup`, backed by `.github/mcp/`. Their tools are deferred: **call `ToolSearch` before invoking `mcp__mtl-system-setup__*` etc.**
+**Host setup CLI** (`tools/mtl_setup/mtl_setup.py`): stdlib-only successor of the former `mtl-system-setup` / `mtl-acceptance-setup` MCP servers (deleted together with `.github/mcp/`). System commands (hugepages, VFs, ICE driver, DPDK, builds, MtlManager, gtest runners) run as bare subcommands; pytest-env prep runs under the `acceptance-*` prefix. Plain `python3 >= 3.10`, no venv/pip; `--help` documents every command, long builds stream to `build/logs/`.
 
 **Path-scoped context**: `lib/`, `tests/unit/`, `tests/integration_tests/`, and `tests/acceptance/` each carry a small `CLAUDE.md` that imports the matching `.github/instructions/*.md`, reproducing Copilot's `applyTo:` auto-attach.
 

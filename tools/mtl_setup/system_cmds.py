@@ -2,14 +2,15 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright 2026 Intel Corporation
 """
-MCP Server for Media Transport Library (MTL) system setup and management.
+MTL host setup CLI — system command group (formerly the `mtl-system-setup`
+MCP server).
 
-Provides tools for configuring DPDK, hugepages, NIC binding, VFs, IOMMU,
-ICE driver, MTL builds, and runtime management (MtlManager, PTP).
+Commands for configuring DPDK, hugepages, NIC binding, VFs, IOMMU, the ICE
+driver, MTL builds, and runtime management (MtlManager, PTP), plus the
+integration-test runners.
 
-Usage:
-    pip install -r requirements.txt
-    python mtl_mcp_server.py
+Invoke via tools/mtl_setup/mtl_setup.py (its docstring carries the full usage
+and workflow list). This module holds the command bodies only.
 """
 
 from __future__ import annotations
@@ -17,21 +18,21 @@ from __future__ import annotations
 import os
 import re
 import subprocess  # nosec B404 # tool args are validated before reaching a shell
-import textwrap
 import threading
 import time
 from collections import deque
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
+import mtl_setup_common
 from mtl_setup_common import (
     REPO_ROOT,
     _load_versions,
     _run,
     _run_output,
     _run_rc,
+    _run_stream_to_log,
     _save_test_log,
-    _summarize_output,
+    _summarize_log,
 )
 from mtl_setup_common import (
     cpu_governor_set_and_confirm_performance as _cpu_governor_set_and_confirm_performance,
@@ -45,43 +46,16 @@ from mtl_setup_common import install_dependencies as _install_dependencies_impl
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-SCRIPT_DIR = Path(__file__).resolve().parent
 NICCTL = REPO_ROOT / "script" / "nicctl.sh"
 
-mcp = FastMCP(
-    "mtl-system-setup",
-    instructions=textwrap.dedent("""\
-        MTL System Setup MCP Server — tools for preparing a Linux host to run
-        the Media Transport Library (SMPTE ST 2110 over DPDK).
-
-        Common workflows:
-        • First-time setup:  system_status → iommu_status → hugepages_set →
-                             nic_create_vf → build_mtl → manager_start
-        • After reboot:      setup_after_reboot_auto (single step — auto-
-                             rebuilds the ICE driver first if needed, e.g.
-                             after a kernel upgrade, then does hugepages,
-                             VFs, and MtlManager. No separate ice_driver_
-                             rebuild call needed in the common case.)
-        • Force an ICE driver rebuild without touching hugepages/VFs:
-                             ice_driver_rebuild → setup_after_reboot_auto
-                             (VFs are destroyed by driver reload!)
-        • Run tests:         run_gtest (auto-discovers ports)
-        • Build from clean:  mtl_clean_rebuild
-        • Switch PF→VF:      nic_bind_kernel → nic_create_vf
-        • Switch VF→PF:      nic_destroy_vf → nic_bind_pmd
-        • Kernel socket mode: nic_bind_kernel (leave NIC in kernel)
-        • Debug crash:        dmesg_tail → ice_driver_status → dpdk_status →
-                             log_tail
-
-        Preparing tests/acceptance/ pytest (a separate .local_install tree)?
-        Use the sibling `mtl-acceptance-setup` MCP server instead.
-    """),
-)
+# The FastMCP server wrapper (with its instructions block) was removed; the
+# workflow list it carried now lives in mtl_setup.py's module docstring, and
+# each command's docstring below feeds argparse's --help directly.
 
 
 # ---------------------------------------------------------------------------
-# Helpers local to this server (NIC/VF discovery — not needed by the
-# acceptance-tests server, so not shared via mtl_setup_common)
+# Helpers local to the system command group (NIC/VF discovery — not needed
+# by the acceptance commands, so not shared via mtl_setup_common)
 # ---------------------------------------------------------------------------
 def _validate_bdf(bdf: str) -> str | None:
     """Return error string if BDF is invalid, else None."""
@@ -111,7 +85,7 @@ def _test_runtime_env() -> dict[str, str]:
     """Prefer the libraries this checkout just built, then any it installed.
 
     build/lib comes first deliberately. Every test tool below runs
-    REPO_ROOT/build/tests/KahawaiTest, but `build_mtl` installs to /usr/local and
+    REPO_ROOT/build/tests/KahawaiTest, but `build-mtl` installs to /usr/local and
     never refreshes .local_install/mtl -- so putting .local_install first made a run
     silently validate whatever library happened to be there, reporting green for code
     it never executed. .local_install stays as a fallback for CI checkouts that only
@@ -280,7 +254,6 @@ def _discover_sriov_intel_pfs() -> list[dict[str, str]]:
 # ===================================================================
 
 
-@mcp.tool()
 def system_status() -> str:
     """
     Comprehensive system status report for MTL readiness.
@@ -375,7 +348,6 @@ def system_status() -> str:
 # ===================================================================
 
 
-@mcp.tool()
 def iommu_status() -> str:
     """
     Check IOMMU (VT-d) status: kernel cmdline, IOMMU groups, CPU VMX flags.
@@ -417,13 +389,11 @@ def iommu_status() -> str:
 # ===================================================================
 
 
-@mcp.tool()
 def hugepages_get() -> str:
     """Get current hugepage status (total, free, size)."""
     return _hugepages_get_impl()
 
 
-@mcp.tool()
 def hugepages_set(nr_hugepages: int = 2048, size_kb: int = 2048) -> str:
     """
     Configure hugepages. Default: 2048 x 2MB = 4GB.
@@ -440,7 +410,6 @@ def hugepages_set(nr_hugepages: int = 2048, size_kb: int = 2048) -> str:
 # ===================================================================
 
 
-@mcp.tool()
 def nic_list() -> str:
     """
     List all network devices with driver, NUMA, IOMMU group, and interface name.
@@ -456,7 +425,6 @@ def nic_list() -> str:
     return dpdk_devbind_status()
 
 
-@mcp.tool()
 def nic_discover_pfs() -> str:
     """
     Discover SR-IOV-capable Intel Ethernet PFs suitable for VF creation.
@@ -477,13 +445,12 @@ def nic_discover_pfs() -> str:
     return "## Discovered PFs\n```\n" + "\n".join(lines) + "\n```"
 
 
-@mcp.tool()
 def nic_bind_pmd(bdf: str) -> str:
     """
     Bind a NIC (PF) directly to DPDK PMD (vfio-pci).
 
     Use this for non-E800 series NICs or when you want PF-mode DPDK.
-    For E810/E830, prefer nic_create_vf instead.
+    For E810/E830, prefer `nic-create-vf` instead.
 
     Args:
         bdf: PCI Bus:Device.Function, e.g. '0000:af:00.0'
@@ -496,7 +463,6 @@ def nic_bind_pmd(bdf: str) -> str:
     return f"## Bind PF to DPDK PMD\n{out}"
 
 
-@mcp.tool()
 def nic_bind_kernel(bdf: str) -> str:
     """
     Bind a NIC back to kernel driver (ice/i40e/etc).
@@ -563,7 +529,6 @@ def _ensure_vfio_permissions() -> str:
     return "; ".join(notes) if notes else ""
 
 
-@mcp.tool()
 def nic_create_vf(bdf: str, trusted: bool = False, vf_count: int = 6) -> str:
     """
     Create VFs from an Intel E800 series PF and bind them to vfio-pci.
@@ -603,7 +568,6 @@ def nic_create_vf(bdf: str, trusted: bool = False, vf_count: int = 6) -> str:
     )
 
 
-@mcp.tool()
 def nic_destroy_vf(bdf: str) -> str:
     """
     Destroy (disable) all VFs on a PF.
@@ -619,7 +583,6 @@ def nic_destroy_vf(bdf: str) -> str:
     return f"## Disable VFs on {bdf}\n{out}"
 
 
-@mcp.tool()
 def nic_create_kernel_vf(bdf: str, vf_count: int = 6) -> str:
     """
     Create VFs bound to the kernel driver (not DPDK).
@@ -640,7 +603,6 @@ def nic_create_kernel_vf(bdf: str, vf_count: int = 6) -> str:
     return f"## Create Kernel VFs on {bdf}\n{out}"
 
 
-@mcp.tool()
 def setup_after_reboot_auto(
     nr_hugepages: int = 2048, vf_count: int = 6, trusted: bool = False
 ) -> str:
@@ -720,7 +682,6 @@ def setup_after_reboot_auto(
 # ===================================================================
 
 
-@mcp.tool()
 def vfio_setup() -> str:
     """
     Set up VFIO permissions for non-root DPDK usage.
@@ -751,7 +712,6 @@ def vfio_setup() -> str:
 # ===================================================================
 
 
-@mcp.tool()
 def ice_driver_status() -> str:
     """
     Check the ICE driver status: loaded version vs required version,
@@ -760,7 +720,6 @@ def ice_driver_status() -> str:
     return _ice_driver_status_impl()
 
 
-@mcp.tool()
 def ice_driver_rebuild() -> str:
     """
     Build and install the patched out-of-tree ICE driver.
@@ -778,7 +737,6 @@ def ice_driver_rebuild() -> str:
 # ===================================================================
 
 
-@mcp.tool()
 def dpdk_status() -> str:
     """Check DPDK installation status and version."""
     ver = _run_output(
@@ -799,14 +757,14 @@ def dpdk_status() -> str:
     )
 
 
-@mcp.tool()
 def dpdk_build() -> str:
     """
     Build and install DPDK with MTL patches applied.
 
     Uses the version specified in versions.env. Takes 2-4 minutes on first build.
     """
-    rc, out = _run_rc(
+    rc, out, log_path = _run_stream_to_log(
+        "dpdk_build",
         "SETUP_ENVIRONMENT=0 "
         "SETUP_BUILD_AND_INSTALL_DPDK=1 "
         "SETUP_BUILD_AND_INSTALL_DRIVERS=0 "
@@ -822,7 +780,7 @@ def dpdk_build() -> str:
         "pkg-config --modversion libdpdk 2>/dev/null || echo 'not installed'"
     )
     return (
-        f"## DPDK Build\n{_summarize_output('dpdk_build', out, rc=rc)}\n\n"
+        f"## DPDK Build\n{_summarize_log(log_path, out, rc=rc)}\n\n"
         f"## Result\nInstalled version: {ver_after}"
     )
 
@@ -832,7 +790,6 @@ def dpdk_build() -> str:
 # ===================================================================
 
 
-@mcp.tool()
 def build_mtl(mode: str = "debugonly") -> str:
     """
     Build the Media Transport Library.
@@ -863,7 +820,7 @@ def build_mtl(mode: str = "debugonly") -> str:
         if stale.is_file():
             _run(["rm", "-rf", str(stale.parent)], sudo=True, check=False)
 
-    rc, out = _run_rc(cmd, timeout=600)
+    rc, out, log_path = _run_stream_to_log("build_mtl", cmd, timeout=600)
 
     # Ensure libraries are in ldcache
     _run(["ldconfig"], sudo=True, check=False)
@@ -877,7 +834,7 @@ def build_mtl(mode: str = "debugonly") -> str:
     libmtl = _run_output("ldconfig -p 2>/dev/null | grep libmtl || echo 'not found'")
 
     return (
-        f"## MTL Build ({mode})\n{_summarize_output('build_mtl', out, rc=rc)}\n\n"
+        f"## MTL Build ({mode})\n{_summarize_log(log_path, out, rc=rc)}\n\n"
         f"## Artifacts\n- RxTxApp: {rxtxapp}\n- MtlManager: {manager}\n- libmtl: {libmtl}"
     )
 
@@ -887,7 +844,6 @@ def build_mtl(mode: str = "debugonly") -> str:
 # ===================================================================
 
 
-@mcp.tool()
 def manager_start() -> str:
     """
     Start MtlManager in the background.
@@ -897,7 +853,7 @@ def manager_start() -> str:
     """
     mgr = REPO_ROOT / "build/manager/MtlManager"
     if not mgr.is_file():
-        return "Error: MtlManager not built. Run build_mtl first."
+        return "Error: MtlManager not built. Run `build-mtl` first."
 
     # Check if already running
     r = _run("pgrep -x MtlManager", check=False)
@@ -928,7 +884,6 @@ def manager_start() -> str:
     )
 
 
-@mcp.tool()
 def manager_stop() -> str:
     """Stop MtlManager if running."""
     r = _run("pgrep -x MtlManager", check=False)
@@ -939,7 +894,6 @@ def manager_stop() -> str:
     return "MtlManager stopped."
 
 
-@mcp.tool()
 def ptp_status() -> str:
     """
     Check PTP (Precision Time Protocol) status.
@@ -974,7 +928,6 @@ def ptp_status() -> str:
 # ===================================================================
 
 
-@mcp.tool()
 def dpdk_devbind_status() -> str:
     """
     Show full dpdk-devbind status — all network devices grouped by driver.
@@ -992,7 +945,6 @@ def dpdk_devbind_status() -> str:
 # ===================================================================
 
 
-@mcp.tool()
 def memlock_status() -> str:
     """
     Check RLIMIT_MEMLOCK settings for non-root DPDK usage.
@@ -1028,7 +980,6 @@ def memlock_status() -> str:
 # ===================================================================
 
 
-@mcp.tool()
 def install_dependencies() -> str:
     """
     Install system build dependencies (apt packages) for MTL.
@@ -1044,14 +995,14 @@ def install_dependencies() -> str:
 # ===================================================================
 
 
-@mcp.tool()
 def build_ebpf_xdp() -> str:
     """
     Build and install eBPF/XDP support for MTL's XDP data path backend.
 
     This is optional — only needed if using XDP transport instead of DPDK PMD.
     """
-    rc, out = _run_rc(
+    rc, out, log_path = _run_stream_to_log(
+        "ebpf_xdp_build",
         "SETUP_ENVIRONMENT=0 "
         "SETUP_BUILD_AND_INSTALL_DPDK=0 "
         "SETUP_BUILD_AND_INSTALL_DRIVERS=0 "
@@ -1061,7 +1012,7 @@ def build_ebpf_xdp() -> str:
         "bash .github/scripts/setup_environment.sh",
         timeout=300,
     )
-    return f"## eBPF/XDP Build\n{_summarize_output('ebpf_xdp_build', out, rc=rc)}"
+    return f"## eBPF/XDP Build\n{_summarize_log(log_path, out, rc=rc)}"
 
 
 # ===================================================================
@@ -1069,7 +1020,6 @@ def build_ebpf_xdp() -> str:
 # ===================================================================
 
 
-@mcp.tool()
 def dmesg_tail(lines: int = 50, filter_str: str = "") -> str:
     """
     Show recent kernel messages (dmesg). Useful for diagnosing NIC/driver issues.
@@ -1094,7 +1044,6 @@ def dmesg_tail(lines: int = 50, filter_str: str = "") -> str:
     return f"## dmesg (last {lines} lines{f', filter={filter_str}' if filter_str else ''})\n```\n{out}\n```"
 
 
-@mcp.tool()
 def status_report() -> str:
     """
     Run MTL's built-in status_report.sh for full system diagnostics.
@@ -1133,12 +1082,11 @@ _SIM_DROPS_HINT = (
     "\n\n> **Warning:** `build/` was compiled in **release** mode "
     "(no `MTL_SIMULATE_PACKET_DROPS`). Simulate-loss / redundancy "
     "packet-drop test paths are compiled out, so their drop assertions "
-    'silently skip. Rebuild with `build_mtl(mode="debugonly")` before '
+    "silently skip. Rebuild with `build-mtl --mode debugonly` before "
     "running these tests."
 )
 
 
-@mcp.tool()
 def run_gtest(
     p_port: str = "",
     r_port: str = "",
@@ -1167,7 +1115,7 @@ def run_gtest(
     """
     binary = REPO_ROOT / "build/tests/KahawaiTest"
     if not binary.is_file():
-        return "Error: KahawaiTest not built. Run `build_mtl` first."
+        return "Error: KahawaiTest not built. Run `build-mtl` first."
 
     sim_hint = "" if _build_has_simulate_drops() else _SIM_DROPS_HINT
 
@@ -1184,7 +1132,7 @@ def run_gtest(
             return (
                 "Error: Cannot auto-discover test ports. "
                 "Need at least 2 VFs bound to vfio-pci. "
-                "Run `setup_after_reboot_auto` first."
+                "Run `setup-after-reboot-auto` first."
             )
         if not p_port:
             p_port = vfs[0].strip()
@@ -1210,8 +1158,8 @@ def run_gtest(
     # just fail/hang, so refuse up front and point at the right tool.
     if _is_noctx_filter(gtest_filter):
         return (
-            "Error: NoCtxTest cases cannot be run via run_gtest (each needs its "
-            "own KahawaiTest process). Use run_noctx_tests instead."
+            "Error: NoCtxTest cases cannot be run via `run-gtest` (each needs "
+            "its own KahawaiTest process). Use `run-noctx-tests` instead."
         )
 
     # Build command as list for safe execution
@@ -1224,7 +1172,9 @@ def run_gtest(
         cmd_parts.extend(["--level", level])
     cmd_parts.append(f"--gtest_filter={_exclude_noctx_tests(gtest_filter)}")
 
-    out = _run_output(cmd_parts, timeout=timeout_seconds, env=_test_runtime_env())
+    rc, out, log_path = _run_stream_to_log(
+        "gtest", cmd_parts, timeout=timeout_seconds, env=_test_runtime_env()
+    )
 
     # Parse results
     passed = 0
@@ -1259,10 +1209,9 @@ def run_gtest(
         summary += "\n### Failed Tests\n" + "\n".join(f"- {f}" for f in failures)
 
     summary += sim_hint
-    return f"{summary}\n\n{_summarize_output('gtest', out)}"
+    return f"{summary}\n\n{_summarize_log(log_path, out, rc=rc)}"
 
 
-@mcp.tool()
 def run_noctx_tests(
     port_1: str = "",
     port_2: str = "",
@@ -1286,7 +1235,7 @@ def run_noctx_tests(
     those tests fail ambiguously depending on how many ports happen to be
     supplied. Tests named with a `_pf_` infix (e.g. TSN/launch-time-pacing)
     require a PF, which this VF-oriented run can never satisfy, so they are
-    excluded automatically — use `run_noctx_pf_tests` for those instead.
+    excluded automatically — use `run-noctx-pf-tests` for those instead.
 
     Args:
         port_1, port_2, port_3, port_4: BDFs for the 4 ports. Auto-discovered
@@ -1314,7 +1263,7 @@ def run_noctx_tests(
     if len(ports) < 4:
         return (
             "Error: noctx full-suite run requires 4 ports bound to vfio-pci "
-            f"(PF or VF). Found {len(ports)}. Run `setup_after_reboot_auto` first, "
+            f"(PF or VF). Found {len(ports)}. Run `setup-after-reboot-auto` first, "
             "or supply port_1..port_4 explicitly."
         )
 
@@ -1330,7 +1279,7 @@ def run_noctx_tests(
 
     binary = REPO_ROOT / "build/tests/KahawaiTest"
     if not binary.is_file():
-        return "Error: KahawaiTest not built. Run `build_mtl` first."
+        return "Error: KahawaiTest not built. Run `build-mtl` first."
 
     sim_hint = "" if _build_has_simulate_drops() else _SIM_DROPS_HINT
 
@@ -1414,6 +1363,8 @@ def run_noctx_tests(
     passed = sum(1 for _, s in results if s == "PASS")
     failed = sum(1 for _, s in results if s != "PASS")
     status = "PASSED" if failed == 0 else "FAILED"
+    if failed:
+        mtl_setup_common.LAST_FAIL = True
 
     per_test = "\n".join(f"- {s}: NoCtxTest.{n}" for n, s in results)
     last_failure = ""
@@ -1440,7 +1391,6 @@ def run_noctx_tests(
     )
 
 
-@mcp.tool()
 def run_noctx_pf_tests(
     port_1: str = "",
     port_2: str = "",
@@ -1500,7 +1450,7 @@ def run_noctx_pf_tests(
 
     binary = REPO_ROOT / "build/tests/KahawaiTest"
     if not binary.is_file():
-        return "Error: KahawaiTest not built. Run `build_mtl` first."
+        return "Error: KahawaiTest not built. Run `build-mtl` first."
 
     sim_hint = "" if _build_has_simulate_drops() else _SIM_DROPS_HINT
 
@@ -1580,6 +1530,8 @@ def run_noctx_pf_tests(
     passed = sum(1 for _, s in results if s == "PASS")
     failed = sum(1 for _, s in results if s != "PASS")
     status = "PASSED" if failed == 0 else "FAILED"
+    if failed:
+        mtl_setup_common.LAST_FAIL = True
 
     per_test = "\n".join(f"- {s}: NoCtxTest.{n}" for n, s in results)
     last_failure = ""
@@ -1606,7 +1558,6 @@ def run_noctx_pf_tests(
     )
 
 
-@mcp.tool()
 def mtl_clean_rebuild(mode: str = "release") -> str:
     """
     Clean and rebuild MTL from scratch.
@@ -1632,7 +1583,6 @@ def mtl_clean_rebuild(mode: str = "release") -> str:
     return f"## Clean Rebuild ({mode})\n{result}"
 
 
-@mcp.tool()
 def log_tail(
     source: str = "mtl_manager",
     lines: int = 50,
@@ -1708,9 +1658,5 @@ def log_tail(
     return f"## Log: {source} (last {lines} lines{f', filter={filter_str}' if filter_str else ''})\n```\n{out}\n```"
 
 
-# ===================================================================
-# Entry point
-# ===================================================================
-
-if __name__ == "__main__":
-    mcp.run(transport="stdio")
+# No entry point here: mtl_setup.py imports this module and dispatches its
+# public command functions as argparse subcommands.

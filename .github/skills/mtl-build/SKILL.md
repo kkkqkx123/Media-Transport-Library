@@ -54,5 +54,5 @@ After building, verify:
 | Missing `libssl-dev` | `sudo apt install libssl-dev` |
 | Missing `systemtap-sdt-dev` | `sudo apt install systemtap-sdt-dev` (for USDT probes) |
 | DPDK not found / wrong version | Build DPDK first: see [build docs](../../doc/build.md) |
-| Stale build directory | `rm -rf build && ./build.sh` or use MCP tool `mtl_clean_rebuild` |
+| Stale build directory | `rm -rf build && ./build.sh` or `python3 tools/mtl_setup/mtl_setup.py mtl-clean-rebuild` |
 | Permission errors in build/ | `sudo rm -rf build && ./build.sh` |

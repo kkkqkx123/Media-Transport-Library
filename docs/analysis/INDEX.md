@@ -18,6 +18,7 @@
 | `FEATURES.md` | ST 2110 协议能力、 pacing、冗余、生态插件、绑定层 |
 | `MODULES.md` | 目录与模块职责、公共 API、关键源文件映射 |
 | `AF_XDP_EBPF.md` | AF_XDP 数据面与 eBPF 过滤程序的工作方式，以及 RK3588 应用的集成清单 |
+| `lib/` | `lib/src/` 根目录逐文件分析（实例/调度/网络服务/支撑服务/平台头），入口见 [lib/README.md](lib/README.md) |
 
 ## 相关目录
 

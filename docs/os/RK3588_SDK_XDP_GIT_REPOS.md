@@ -6,7 +6,7 @@
 > **6.1 移植（2026-10-24）**：同一套 AF_XDP/eBPF 内核使能已结构化移植到 devs 的
 > `/data/kkkqkx/rk3588bsp`（RK3588 Linux 6.1.118 SDK）：新增 `kernel-6.1/arch/arm64/configs/ztl_defconfig`
 > 与 `ztl_rk3588.config`、改 `Config.in.kernel` 默认值、DTS 禁 i2c4，已提交 `98e7f9606`（未 push），
-> patch 存档 `patches/rk3588/0001-kernel-6.1-enable-af_xdp-ebpf-for-mtl.patch`。
+> patch 存档 `patches/rk3588/0001-kernel-6.1-enable-af_xdp-ebpf-for-mtl.patch`（基于基线 `ab0040897` 重新生成，单文件双提交 mbox：AF_XDP/eBPF 提交 + 2026-10-26 构建修复——关闭 `CONFIG_STMMAC_UIO`；Mali CSF 固件被 gitignore 不进 patch，需编译前手动复制，见构建指南 §2）。
 > 5.1 patch **不能**直接 apply 到 6.1（路径/上下文均变），移植判定与 olddefconfig 校验见
 > `../analysis/RK3588_6.1_XDP_PORT.md`。
 

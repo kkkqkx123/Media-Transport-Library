@@ -1,30 +1,39 @@
-From d61788fc1a3a3acf433c44370a56199d370185b7 Mon Sep 17 00:00:00 2001
+From 2f15184514063f4126b639c56efdb3d1e974c308 Mon Sep 17 00:00:00 2001
 From: zhanglei <596504085@qq.com>
-Date: Mon, 26 Oct 2026 09:37:51 +0000
-Subject: [PATCH] rk3588/fs-overlay: bake static eth0 IP via init script
- (busybox lacks ifupdown)
+Date: Wed, 28 Oct 2026 10:58:53 +0800
+Subject: [PATCH] rk3588: static IP on both wired NICs + enable gmac1
 
-Add /etc/init.d/S45static-eth0 which brings up eth0 with 192.168.80.202/24
-and default route via 192.168.80.254 using the busybox ip applet.
+Enable the second wired NIC and bake a static address for both ports, so a
+buildroot image is reachable on either RJ45 without ifupdown.
 
-This BSP busybox has no ifupdown applet (no CONFIG_IFUPDOWN kconfig symbol
-and no applet registration), so the previous /etc/network/interfaces.d/eth0
-approach cannot be applied by S40network ifup -a. dhcpcd.conf still denies
-eth0 so dhcpcd will not fight the static config.
+- kernel-6.1 ztl-rk3588-cm.dts: &gmac1 disabled -> okay (inherits the
+  evb7-v11 rgmii-rxid / mdio1 rgmii_phy setup)
+- fs-overlay: S45static-net brings up eth0 192.168.80.202/24 (default route
+  via 192.168.80.254) and eth1 192.168.80.201/24 with the busybox ip applet;
+  this BSP busybox has no ifupdown applet, so the /etc/network/interfaces.d
+  files are documentation only
+- fs-overlay: dhcpcd.conf denies eth0 and eth1 so dhcpcd never overrides them
+
+Merged from the former 0002 (eth0 static IP, busybox lacks ifupdown) and
+0003 (enable gmac1 / all ethernet ports).
+
 ---
  .../rk3588/fs-overlay/etc/dhcpcd.conf         | 51 +++++++++++++++++++
- .../fs-overlay/etc/init.d/S45static-eth0      | 16 ++++++
+ .../fs-overlay/etc/init.d/S45static-net       | 20 ++++++++
  .../rk3588/fs-overlay/etc/network/interfaces  |  6 +++
  .../fs-overlay/etc/network/interfaces.d/eth0  |  7 +++
- 4 files changed, 80 insertions(+)
+ .../fs-overlay/etc/network/interfaces.d/eth1  |  5 ++
+ .../arm64/boot/dts/rockchip/ztl-rk3588-cm.dts |  2 +-
+ 6 files changed, 90 insertions(+), 1 deletion(-)
  create mode 100644 buildroot/board/rockchip/rk3588/fs-overlay/etc/dhcpcd.conf
- create mode 100755 buildroot/board/rockchip/rk3588/fs-overlay/etc/init.d/S45static-eth0
+ create mode 100755 buildroot/board/rockchip/rk3588/fs-overlay/etc/init.d/S45static-net
  create mode 100644 buildroot/board/rockchip/rk3588/fs-overlay/etc/network/interfaces
  create mode 100644 buildroot/board/rockchip/rk3588/fs-overlay/etc/network/interfaces.d/eth0
+ create mode 100644 buildroot/board/rockchip/rk3588/fs-overlay/etc/network/interfaces.d/eth1
 
 diff --git a/buildroot/board/rockchip/rk3588/fs-overlay/etc/dhcpcd.conf b/buildroot/board/rockchip/rk3588/fs-overlay/etc/dhcpcd.conf
 new file mode 100644
-index 000000000..a44a1c8cb
+index 000000000..90b0d1d01
 --- /dev/null
 +++ b/buildroot/board/rockchip/rk3588/fs-overlay/etc/dhcpcd.conf
 @@ -0,0 +1,51 @@
@@ -77,25 +86,29 @@ index 000000000..a44a1c8cb
 +# OR generate Stable Private IPv6 Addresses based from the DUID
 +slaac private
 +
-+# --- ztl cm588: keep eth0 static, do not let dhcpcd manage it ---
-+denyinterfaces eth0
-diff --git a/buildroot/board/rockchip/rk3588/fs-overlay/etc/init.d/S45static-eth0 b/buildroot/board/rockchip/rk3588/fs-overlay/etc/init.d/S45static-eth0
++# --- ztl cm588: keep both wired NICs static, do not let dhcpcd manage them ---
++denyinterfaces eth0 eth1
+diff --git a/buildroot/board/rockchip/rk3588/fs-overlay/etc/init.d/S45static-net b/buildroot/board/rockchip/rk3588/fs-overlay/etc/init.d/S45static-net
 new file mode 100755
-index 000000000..f8726d249
+index 000000000..74d9fd1b7
 --- /dev/null
-+++ b/buildroot/board/rockchip/rk3588/fs-overlay/etc/init.d/S45static-eth0
-@@ -0,0 +1,16 @@
++++ b/buildroot/board/rockchip/rk3588/fs-overlay/etc/init.d/S45static-net
+@@ -0,0 +1,20 @@
 +#!/bin/sh
-+# ztl cm588: statically configure eth0 at boot.
++# ztl cm588: statically configure both wired NICs at boot.
 +# This BSP busybox is built without the ifupdown applet, so the
-+# /etc/network/interfaces.d/eth0 file cannot be applied by S40network.
-+# Bring up the address/route directly via the busybox ip applet instead.
-+# dhcpcd is configured with denyinterfaces eth0 so it will not fight us.
++# /etc/network/interfaces.d/* files cannot be applied by S40network.
++# Bring the addresses/route up directly via the busybox ip applet instead.
++# dhcpcd is configured with "denyinterfaces eth0 eth1" so it will not fight us.
 +case "$1" in
 +  start)
-+    ip link set eth0 up
++    # eth0 (primary): SSH / MTL data path
++    ip link set eth0 up 2>/dev/null
 +    ip addr add 192.168.80.202/24 dev eth0 2>/dev/null
 +    ip route add default via 192.168.80.254 dev eth0 2>/dev/null
++    # eth1 (secondary): data / PTP peer
++    ip link set eth1 up 2>/dev/null
++    ip addr add 192.168.80.201/24 dev eth1 2>/dev/null
 +    ;;
 +  *)
 +    ;;
@@ -126,6 +139,30 @@ index 000000000..d478bcae1
 +    netmask 255.255.255.0
 +    gateway 192.168.80.254
 +    up ip route add default via 192.168.80.254 dev eth0
+diff --git a/buildroot/board/rockchip/rk3588/fs-overlay/etc/network/interfaces.d/eth1 b/buildroot/board/rockchip/rk3588/fs-overlay/etc/network/interfaces.d/eth1
+new file mode 100644
+index 000000000..510939f17
+--- /dev/null
++++ b/buildroot/board/rockchip/rk3588/fs-overlay/etc/network/interfaces.d/eth1
+@@ -0,0 +1,5 @@
++# Static configuration for eth1 (ztl cm588) - baked via rk3588 fs-overlay
++auto eth1
++iface eth1 inet static
++    address 192.168.80.201
++    netmask 255.255.255.0
+diff --git a/kernel-6.1/arch/arm64/boot/dts/rockchip/ztl-rk3588-cm.dts b/kernel-6.1/arch/arm64/boot/dts/rockchip/ztl-rk3588-cm.dts
+index b6360607e..dd519b601 100644
+--- a/kernel-6.1/arch/arm64/boot/dts/rockchip/ztl-rk3588-cm.dts
++++ b/kernel-6.1/arch/arm64/boot/dts/rockchip/ztl-rk3588-cm.dts
+@@ -661,7 +661,7 @@
+ };
+ 
+ &gmac1 {
+-	status = "disabled";
++	status = "okay";
+ };
+ 
+ //cm588 dp part, use dp convert to vga
 -- 
 2.17.1
 

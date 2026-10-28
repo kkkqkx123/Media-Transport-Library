@@ -1,7 +1,16 @@
 # RK3588：启用全部网口（gmac0/gmac1）并构建 Debian 桌面系统
 
+> ⚠️ **本文的 §1「启用 gmac1」结论已于 2026-10-28 作废，不要照做。**
+> 实测：CM588 的两个 RJ45 是 **PCIe `yt6801`**，GMAC 侧没有可用的 PHY；而 `&gmac1` 打开后
+> ① 复用 uart3 引脚（`gmac1_tx_bus2` 抢走 GPIO3_B5），ttyS3 控制台**完全静默**；
+> ② 拿到 `ethernet1` 别名后把真正的 RJ45 挤到 `eth2/eth3`，表现为"IP 有、ping 不通"。
+> 结论：**`&gmac1` 必须保持 `disabled`**，详见 `docs/dev/RK3588_TTYS3_CONSOLE_ENABLE.md` §10.1。
+> 下方 patch 文件名与编号也已过期（现仓库为 `0001`…`0005`，命名见
+> `RK3588_NETWORK_CONFIG_AND_ETH0_STATIC_IP.md` 的补丁表）。
+> 本文其余内容（Debian 桌面构建流程）仍然有效。
+
 > 关联文档：
-> - `docs/dev/RK3588_NETWORK_CONFIG_AND_ETH0_STATIC_IP.md`（buildroot 静态 IP / busybox 缺 ifupdown）
+> - `docs/dev/RK3588_NETWORK_CONFIG_AND_ETH0_STATIC_IP.md`（buildroot 双网口静态 IP / busybox 缺 ifupdown）
 > - `docs/dev/RK3588_BUILD_DESKTOP_SYSTEM.md`（桌面构建分析、串口/HDMI 黑屏结论）
 >
 > 本文记录 2026-10-27 的两处源码改动、对应 patch，以及 Debian 桌面系统的构建与产物。
@@ -9,27 +18,27 @@
 
 ---
 
-## 1. 变更概览
+## 1. 变更概览（编号/命名已被后续补丁集替换，见文首提示）
 
-| 编号 | 文件 | 变更 | 目的 |
-|---|---|---|---|
-| 0003 | `kernel-6.1/arch/arm64/boot/dts/rockchip/ztl-rk3588-cm.dts` | `&gmac1` 由 `disabled` 改为 `okay` | 启用全部有线网口（gmac0 已 okay + gmac1） |
-| 0004 | `debian/mk-rootfs-bookworm.sh` | `sudo chroot $TARGET_ROOTFS_DIR` → `... /bin/bash` | 修复 chroot 用宿主 `$SHELL`(zsh) 导致 exit 127 |
+| 编号（当时） | 文件 | 变更 | 目的 | 现状 |
+|---|---|---|---|---|
+| 0003（旧） | `kernel-6.1/arch/arm64/boot/dts/rockchip/ztl-rk3588-cm.dts` | `&gmac1` 由 `disabled` 改为 `okay` | 当时以为要启用全部有线网口 | **已废弃**：`&gmac1` 必须 `disabled` |
+| 0004（旧） | `debian/mk-rootfs-bookworm.sh` | `sudo chroot $TARGET_ROOTFS_DIR` → `... /bin/bash` | 修复 chroot 用宿主 `$SHELL`(zsh) 导致 exit 127 | **仍有效**，现为 `0005-rk3588-debian-chroot-bash-fix.patch` |
 
-- 本地 patch：`patches/rk3588/0003-kernel-6.1-enable-gmac1-all-ethernet-ports.patch`、`patches/rk3588/0004-rk3588-debian-chroot-bash-fix.patch`
-- 两者都是 `git diff` 风格的工作区补丁；BSP 为单一 git 仓库（`kernel-6.1` **不是**子模块）。
-
-应用（在 BSP 根目录、干净基线上）：
+- 当时用的两个 patch 文件名（`0003-kernel-6.1-enable-gmac1-all-ethernet-ports.patch`、
+  `0004-rk3588-debian-chroot-bash-fix.patch`）**已不在仓库中**，不要按老名字 `git apply`。
+- 现行只保留 chroot 修复：
 
 ```bash
-git apply patches/rk3588/0003-kernel-6.1-enable-gmac1-all-ethernet-ports.patch
-git apply patches/rk3588/0004-rk3588-debian-chroot-bash-fix.patch
-# 或： patch -p1 < patches/rk3588/0003-...patch
+git apply patches/rk3588/0005-rk3588-debian-chroot-bash-fix.patch
 ```
 
 ---
 
-## 2. 变更 0003：启用 gmac1（全部网口）
+## 2. 变更 0003：启用 gmac1（全部网口）——**已作废，勿执行**
+
+> 本节只是当时的改动记录，用于说明 DTB 里 `&gmac1` 的来源。**不要在生产镜像里打开它**：
+> 会抢 uart3 引脚使 ttyS3 静默，并把 yt6801 的 RJ45 挤到 `eth2/eth3`。
 
 - CM DTS 中 `&gmac0` 原本就是 `okay`（`rgmii-rxid`、`mdio0 phy@1` rtl8211f、reset `gpio4 PB3`、`tx_delay=0x44`）。
 - `&gmac1` 在文件末尾被覆盖成 `disabled`；改为 `okay` 后，继承 `rk3588-evb7-v11.dtsi` 的完整配置：
@@ -104,26 +113,29 @@ cd /data/kkkqkx/rk3588bsp
 ## 5. 上板验证建议（桌面系统）
 
 ```bash
-ip link                      # 期望 eth0、eth1（gmac0/gmac1；若第二口无 PHY 可能只有 eth0）
+ip link                      # 名字不固定：两个 RJ45 是 yt6801，gmac 若 probe 会先占 eth0/eth1
 ip addr
 nmcli device status
-dmesg | grep -iE 'eth|gmac|stmmac|phy'
-ethtool eth0 2>/dev/null | head
+ls -l /sys/class/net/*/device/driver       # 两个 RJ45 应为 yt6801
+dmesg | grep -iE 'eth|yt6801|gmac|stmmac|phy'
+ethtool eth0 2>/dev/null | head            # 口名以 ip -o link 为准
 ```
 
-两个网口用 `nmcli` 配置（示例）：
+两个网口用 `nmcli` 配置（示例；`ifname` 换成实际查到、驱动为 `yt6801` 的两个口名）：
 
 ```bash
 sudo nmcli con add type ethernet ifname eth0 ip4 192.168.80.202/24 gw4 192.168.80.254
-# eth1 同理
+# 第二个口不配网关，避免和上面抢默认路由
+sudo nmcli con add type ethernet ifname eth1 ip4 192.168.80.201/24
 ```
 
 ---
 
 ## 6. 注意事项
 
-- **Debian rootfs 不含 buildroot 的 `S45static-eth0`**（那是 buildroot fs-overlay，见 `0002` 补丁）。
-  桌面系统请用 NetworkManager 配置网口；buildroot 镜像仍可用 0002 的静态 IP 方案。
+- **Debian rootfs 不含 buildroot 的 `S45static-net`**（那是 buildroot fs-overlay，见 `0002` 补丁）。
+  桌面系统请用 NetworkManager 配置网口；buildroot 镜像仍可用 0002 的静态 IP 方案（按驱动 `yt6801`
+  + PCI BDF 绑定，见 `RK3588_NETWORK_CONFIG_AND_ETH0_STATIC_IP.md` §2.2）。
 - `update.img` 约 4.8GB，烧录与首次启动较慢；rootfs 分区为 `grow`，会自动占满 eMMC。
 - 构建期间曾临时启用免密 sudo，**完成后已清除**（`/etc/sudoers.d/99-itc-nopasswd` 已删除，`sudo -n` 需密码）。
 - 构建残留（devs）：`debian/linaro-bookworm-alip-20261027-1.tar.gz`（基础 tarball）、`debian/linaro-rootfs.img`（4.65GB）。
@@ -133,8 +145,8 @@ sudo nmcli con add type ethernet ifname eth0 ip4 192.168.80.202/24 gw4 192.168.8
 
 ## 7. 复现清单（从零）
 
-1. 应用 `0003`、`0004` 补丁；
+1. 应用 `0005-rk3588-debian-chroot-bash-fix.patch`（**不要**再打开 `&gmac1`）；
 2. 安装新版 `live-build`/`debootstrap`（见 §4.1）；
 3. `./build.sh kernel` → `./build.sh debian` → `./build.sh updateimg`；
 4. 烧录 `output/update/Image/update.img`，接 HDMI/DP + USB 键鼠，自动登录 `linaro` 进入 XFCE；
-5. 用 `nmcli` 配置并验证两个网口。
+5. 用 `nmcli` 配置并验证两个网口（口名按 `yt6801` 驱动确认，不要假设 `eth0/eth1`）。

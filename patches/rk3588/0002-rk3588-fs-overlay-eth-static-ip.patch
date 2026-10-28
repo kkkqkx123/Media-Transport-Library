@@ -1,0 +1,208 @@
+From 857f00c2b10bcba68d1a748498e6b09154cd0acc Mon Sep 17 00:00:00 2001
+From: zhanglei <596504085@qq.com>
+Date: Wed, 28 Oct 2026 14:53:33 +0800
+Subject: [PATCH] rk3588/fs-overlay: static IP for both wired NICs (driver+BDF bound)
+
+Give both RJ45 ports a fixed address so a buildroot image needs no desktop and
+no DHCP, and bind them by driver + PCI BDF instead of by name.
+
+Why not eth0/eth1: the RK3588 GMAC controllers own the DT aliases
+ethernet0/ethernet1, so any GMAC netdev that probes first takes eth0/eth1 and
+pushes the real RJ45s (PCIe yt6801) to eth2/eth3. A hardcoded "eth0" then
+addresses the wrong (cable-less) port - which is exactly the failure seen on
+2026-10-28 after &gmac1 was enabled.
+
+- /etc/init.d/S45static-net: walk /sys/bus/pci/devices/*/net/*, keep only
+  netdevs whose driver is yt6801, and assign
+    first  (lowest BDF) -> 192.168.80.202/24 + default route via .254
+    second              -> 192.168.80.201/24
+  Falls back to eth0/eth1 when no yt6801 netdev is found. Each assignment is
+  logged to /dev/kmsg so the serial console shows what happened.
+- /etc/dhcpcd.conf: denyinterfaces eth0..eth3 so dhcpcd never fights it.
+- /etc/network/interfaces(.d/eth0,.d/eth1): kept for documentation only; this
+  BSP busybox has no ifupdown applet, so S40network cannot apply them.
+
+Note: enabling &gmac1 is NOT part of this patch - gmac1_tx_bus2 muxes GPIO3_B5
+away from uart3 and kills the ttyS3 console (see 0003).
+
+---
+ .../rk3588/fs-overlay/etc/dhcpcd.conf         | 53 ++++++++++++++++
+ .../fs-overlay/etc/init.d/S45static-net       | 60 +++++++++++++++++++
+ .../rk3588/fs-overlay/etc/network/interfaces  |  6 ++
+ .../fs-overlay/etc/network/interfaces.d/eth0  |  9 +++
+ .../fs-overlay/etc/network/interfaces.d/eth1  |  7 +++
+ 5 files changed, 135 insertions(+)
+ create mode 100644 buildroot/board/rockchip/rk3588/fs-overlay/etc/dhcpcd.conf
+ create mode 100755 buildroot/board/rockchip/rk3588/fs-overlay/etc/init.d/S45static-net
+ create mode 100644 buildroot/board/rockchip/rk3588/fs-overlay/etc/network/interfaces
+ create mode 100644 buildroot/board/rockchip/rk3588/fs-overlay/etc/network/interfaces.d/eth0
+ create mode 100644 buildroot/board/rockchip/rk3588/fs-overlay/etc/network/interfaces.d/eth1
+
+diff --git a/buildroot/board/rockchip/rk3588/fs-overlay/etc/dhcpcd.conf b/buildroot/board/rockchip/rk3588/fs-overlay/etc/dhcpcd.conf
+new file mode 100644
+index 000000000..a5c2b30fe
+--- /dev/null
++++ b/buildroot/board/rockchip/rk3588/fs-overlay/etc/dhcpcd.conf
+@@ -0,0 +1,53 @@
++# A sample configuration for dhcpcd.
++# See dhcpcd.conf(5) for details.
++
++# Allow users of this group to interact with dhcpcd via the control socket.
++#controlgroup wheel
++
++# Inform the DHCP server of our hostname for DDNS.
++#hostname
++
++# Use the hardware address of the interface for the Client ID.
++#clientid
++# or
++# Use the same DUID + IAID as set in DHCPv6 for DHCPv4 ClientID as per RFC4361.
++# Some non-RFC compliant DHCP servers do not reply with this set.
++# In this case, comment out duid and enable clientid above.
++duid
++
++# Persist interface configuration when dhcpcd exits.
++persistent
++
++# vendorclassid is set to blank to avoid sending the default of
++# dhcpcd-<version>:<os>:<machine>:<platform>
++vendorclassid
++
++# A list of options to request from the DHCP server.
++option domain_name_servers, domain_name, domain_search
++option classless_static_routes
++# Respect the network MTU. This is applied to DHCP routes.
++option interface_mtu
++
++# Request a hostname from the network
++option host_name
++
++# Most distributions have NTP support.
++#option ntp_servers
++
++# Rapid commit support.
++# Safe to enable by default because it requires the equivalent option set
++# on the server to actually work.
++option rapid_commit
++
++# A ServerID is required by RFC2131.
++require dhcp_server_identifier
++
++# Generate SLAAC address using the Hardware Address of the interface
++#slaac hwaddr
++# OR generate Stable Private IPv6 Addresses based from the DUID
++slaac private
++
++# --- ztl cm588: all wired ports get static addresses from S45static-net ---
++# The eth index depends on whether a GMAC netdev won the ethernetN alias, so
++# deny the whole range rather than the two names we happen to see today.
++denyinterfaces eth0 eth1 eth2 eth3
+diff --git a/buildroot/board/rockchip/rk3588/fs-overlay/etc/init.d/S45static-net b/buildroot/board/rockchip/rk3588/fs-overlay/etc/init.d/S45static-net
+new file mode 100755
+index 000000000..b95b04db2
+--- /dev/null
++++ b/buildroot/board/rockchip/rk3588/fs-overlay/etc/init.d/S45static-net
+@@ -0,0 +1,60 @@
++#!/bin/sh
++# ztl cm588: bring both wired NICs up with static addresses at boot.
++#
++# Do NOT bind by name. On this SoC the RK3588 GMAC ports own the DT aliases
++# ethernet0/ethernet1, so if a GMAC probes it takes eth0/eth1 and pushes the
++# real RJ45s (PCIe yt6801) to eth2/eth3 - a hardcoded "eth0" would then address
++# the wrong port. Instead pick the yt6801 netdevs by driver and order them by
++# PCI BDF:
++#   first  (lowest BDF) -> 192.168.80.202/24 + default route via .254  (primary)
++#   second              -> 192.168.80.201/24                            (secondary)
++#
++# This BSP busybox is built without the ifupdown applet, so the
++# /etc/network/interfaces.d/* files are documentation only; addresses are
++# applied here with the busybox ip applet. dhcpcd.conf denies every eth* port
++# so dhcpcd never fights this script.
++
++addr_primary=192.168.80.202
++addr_secondary=192.168.80.201
++gw=192.168.80.254
++
++bring_up() {
++	ifc=$1
++	addr=$2
++	defgw=$3
++	[ -n "$ifc" ] || return 0
++	ip link set "$ifc" up 2>/dev/null
++	ip addr add "$addr/24" dev "$ifc" 2>/dev/null
++	if [ -n "$defgw" ]; then
++		ip route add default via "$defgw" dev "$ifc" 2>/dev/null
++	fi
++	echo "S45static-net: $ifc -> $addr${defgw:+ (default via $defgw)}" > /dev/kmsg 2>/dev/null
++	return 0
++}
++
++case "$1" in
++start)
++	n=0
++	for d in /sys/bus/pci/devices/*/net/*; do
++		[ -e "$d" ] || continue
++		ifc=${d##*/}
++		drv=$(basename "$(readlink -f "/sys/class/net/$ifc/device/driver" 2>/dev/null)" 2>/dev/null)
++		[ "$drv" = "yt6801" ] || continue
++		if [ $n -eq 0 ]; then
++			bring_up "$ifc" "$addr_primary" "$gw"
++		else
++			bring_up "$ifc" "$addr_secondary" ""
++		fi
++		n=$((n + 1))
++	done
++	if [ $n -eq 0 ]; then
++		# fallback: no yt6801 netdev found, use the classic names
++		echo "S45static-net: no yt6801 netdev found, falling back to eth0/eth1" > /dev/kmsg 2>/dev/null
++		bring_up eth0 "$addr_primary" "$gw"
++		bring_up eth1 "$addr_secondary" ""
++	fi
++	;;
++*)
++	;;
++esac
++exit 0
+diff --git a/buildroot/board/rockchip/rk3588/fs-overlay/etc/network/interfaces b/buildroot/board/rockchip/rk3588/fs-overlay/etc/network/interfaces
+new file mode 100644
+index 000000000..682568dfc
+--- /dev/null
++++ b/buildroot/board/rockchip/rk3588/fs-overlay/etc/network/interfaces
+@@ -0,0 +1,6 @@
++# interface file auto-generated by buildroot
++
++auto lo
++iface lo inet loopback
++
++source-directory /etc/network/interfaces.d
+diff --git a/buildroot/board/rockchip/rk3588/fs-overlay/etc/network/interfaces.d/eth0 b/buildroot/board/rockchip/rk3588/fs-overlay/etc/network/interfaces.d/eth0
+new file mode 100644
+index 000000000..728e2b888
+--- /dev/null
++++ b/buildroot/board/rockchip/rk3588/fs-overlay/etc/network/interfaces.d/eth0
+@@ -0,0 +1,9 @@
++# Primary wired port (ztl cm588) - documentation only.
++# Applied at boot by /etc/init.d/S45static-net, which binds by driver (yt6801)
++# and PCI BDF instead of by name; see that script for the authoritative logic.
++auto eth0
++iface eth0 inet static
++    address 192.168.80.202
++    netmask 255.255.255.0
++    gateway 192.168.80.254
++    up ip route add default via 192.168.80.254 dev eth0
+diff --git a/buildroot/board/rockchip/rk3588/fs-overlay/etc/network/interfaces.d/eth1 b/buildroot/board/rockchip/rk3588/fs-overlay/etc/network/interfaces.d/eth1
+new file mode 100644
+index 000000000..ae414a221
+--- /dev/null
++++ b/buildroot/board/rockchip/rk3588/fs-overlay/etc/network/interfaces.d/eth1
+@@ -0,0 +1,7 @@
++# Secondary wired port (ztl cm588) - documentation only.
++# Applied at boot by /etc/init.d/S45static-net (see that script); no default
++# route is set here so the two ports never compete for the default gateway.
++auto eth1
++iface eth1 inet static
++    address 192.168.80.201
++    netmask 255.255.255.0
+-- 
+2.17.1
+

@@ -5,8 +5,16 @@
 > "eth0 为什么拿不到静态地址" 的根因。
 >
 > 前置知识：`docs/dev/RK3588_NETWORK_CONFIG_AND_ETH0_STATIC_IP.md`。
-> 之前的 buildroot 网络修改（提交 `d61788fc1`：`S45static-eth0` + `interfaces.d/eth0` + `dhcpcd.conf`）
+> 之前的 buildroot 网络修改（提交 `d61788fc1`：`S45static-net` + `interfaces.d/eth0|eth1` + `dhcpcd.conf`）
 > **保留不动**，用于无桌面/量产场景；桌面系统仅用于**调试根因**，两者不冲突。
+>
+> **状态（2026-10-28）**：根因已定位，是两条叠加——
+> ① busybox 无 `ifupdown` 小程序，`S40network` 应用不了 `interfaces.d/*`；
+> ② **网口名不可靠**：GMAC 按 `ethernetN` 别名抢占 `eth0/eth1`，把真正的 PCIe `yt6801` RJ45 挤到
+> `eth2/eth3`，"配 eth0"就配到了未插线的口。
+> 现有方案 `S45static-net` 同时绕开这两点（busybox `ip` + 驱动/BDF 绑定），见
+> `RK3588_NETWORK_CONFIG_AND_ETH0_STATIC_IP.md` §2.2 与 `RK3588_TTYS3_CONSOLE_ENABLE.md` §10.1。
+> 本文其余内容作为当时的排查记录保留。
 
 ---
 
@@ -126,7 +134,7 @@ RELEASE=bookworm ARCH=arm64           ./mk-rootfs.sh             # 装 rockchip 
 
 ## 6. 在桌面上手动验证 "之前静态 IP 为什么失效"
 
-> **关键认知**：buildroot 的网络补丁（`S45static-eth0`、`interfaces.d/eth0`、`dhcpcd.conf`）
+> **关键认知**：buildroot 的网络补丁（`S45static-net`、`interfaces.d/eth0|eth1`、`dhcpcd.conf`）
 > 是 **buildroot fs-overlay**，只作用于 buildroot 构建出的 rootfs。**Debian rootfs 里没有这些文件**。
 > 所以在 Debian 上你验证的是**根因本身**，而不是那条补丁。
 
@@ -142,7 +150,9 @@ nmcli device status
 journalctl -u NetworkManager --no-pager | tail -40
 
 # 3) 直测静态地址/路由能否生效（绕过任何网络管理器）
-sudo ip link set eth0 up
+#    先确认哪个口是 RJ45：本板两个 RJ45 是 PCIe yt6801，名字不一定叫 eth0
+ip -o link; ls -l /sys/class/net/*/device/driver
+sudo ip link set eth0 up                  # 换成上一步查到的 yt6801 口名
 sudo ip addr add 192.168.80.202/24 dev eth0
 sudo ip route add default via 192.168.80.254 dev eth0
 ping -I eth0 192.168.80.254
@@ -153,10 +163,11 @@ sudo nmcli con add type ethernet ifname eth0 ip4 192.168.80.202/24 gw4 192.168.8
 ```
 
 借此可现场回答三点：
-- **eth0 到底是不是那颗 RJ45（GMAC0）口**？（若不是，之前所有配置都配错口了）
-- **之前 buildroot 下为什么静态 IP 没生效**？（已确认：本 BSP 的 busybox 没有 `ifupdown` 小程序，
-  `S40network` 的 `ifup -a` 报 "applet not found"，而 `dhcpcd.conf` 又 `denyinterfaces eth0`，
-  于是 eth0 拿不到任何地址 → 不可达。Debian 上 dhcpcd 不存在，直接配静态即可验证连通性。）
+- **eth0 到底是不是那颗 RJ45 口**？→ 已答：**不是**。两个 RJ45 是 PCIe `yt6801`，GMAC 若 probe
+  成功会先占 `eth0/eth1`，把 RJ45 挤到 `eth2/eth3`（详见 `RK3588_TTYS3_CONSOLE_ENABLE.md` §10.1）。
+- **之前 buildroot 下为什么静态 IP 没生效**？→ 已答：两条叠加。① 本 BSP busybox 没有 `ifupdown`
+  小程序，`S40network` 的 `ifup -a` 报 "applet not found"，`interfaces.d/*` 从不被执行；
+  ② `denyinterfaces eth0` + 口名错位，导致真正插线的口既没 DHCP 也没静态地址。
 - **镜像/内核是否真的刷进去了**？（桌面能起来本身就证明烧录成功；再 `uname -a` 核对 6.1.118）
 
 ---
@@ -181,7 +192,7 @@ sudo nmcli con add type ethernet ifname eth0 ip4 192.168.80.202/24 gw4 192.168.8
 ## 8. 保留 buildroot 网络修改的意义
 
 - 提交 `d61788fc1` 的 buildroot 网络补丁**保留**，用于无桌面/量产镜像的静态 IP 固化
-  （`S45static-eth0` 用 busybox `ip` 小程序，已编入 `update.img`）。
+  （现为 `S45static-net`：busybox `ip` 小程序 + 按驱动/BDF 绑定双口，已编入 `update.img`）。
 - 桌面镜像用于**调试根因**；两者独立：用 Debian 镜像定位问题，用 buildroot 镜像（含补丁）做最终固化。
 - 若希望桌面镜像也固化静态 IP，应在 Debian 侧用 netplan / `nmcli` 等价配置（不在本补丁范围）。
 
@@ -247,28 +258,29 @@ BR2_PACKAGE_MATCHBOX=y      # 轻量窗口管理器（仓库已有 matchbox-desk
 若确要 HDMI 文本控制台：重编内核加 `CONFIG_FB=y` + `CONFIG_FRAMEBUFFER_CONSOLE=y`，
 并在 inittab 加 `tty1::respawn:/sbin/getty -L tty1 0 vt100`（且先确认板子确有 HDMI **输出**口，否则用 DP）。
 
-### C. 网络其他问题核查——未发现新缺陷（构建层面正确）
+### C. 网络其他问题核查（本节结论已被 2026-10-28 实测推翻，见文末提示）
 
 - 内核：`STMMAC_ETH=y`、`DWMAC_ROCKCHIP=y`、`PHYLIB=y`、`REALTEK_PHY=y`、`MDIO_DEVICE=y`
-  → 网卡与 RTL8211F PHY 驱动齐全。
-- DTS：`&gmac0` okay（`rgmii-rxid`，mdio0 `phy@1` rtl8211f，reset `gpio4 PB3`）；`&gmac1` **disabled**
-  → **eth0 = gmac0 = RJ45**，接口名正确。
-- `rcS` 是 `for ... $i start`（失败继续）→ `S40network`（`ifup` 缺失）失败**不会中断**，
-  `S45static-eth0` **会执行**。
-- `/etc/dhcpcd.conf` 末尾有 `denyinterfaces eth0`；`/usr/sbin/ip`（iproute2）存在，
-  依赖 `libcap.so.2`/`libc` 齐全；`S45static-eth0` 在镜像中且 0755。
-- → **构建层面网络配置正确，无需再改**。"ip 不可达" 更可能是：
-  面镜像未刷到新版 / 接的不是 gmac0 那颗 RJ45（gmac1 是 disabled 的）/ PC 不在 `192.168.80.0/24` / PHY 链路未起。
+  → GMAC 与 RTL8211F PHY 驱动齐全（**但本板两个 RJ45 实测是 PCIe `yt6801`，不走 GMAC**）。
+- DTS：`&gmac0` okay（`rgmii-rxid`，mdio0 `phy@1` rtl8211f，reset `gpio4 PB3`）；`&gmac1` **disabled**。
+- `rcS` 是 `for ... $i start`（失败继续）→ `S40network`（`ifup` 缺失）失败**不会中断**。
+- `/usr/sbin/ip`（iproute2）存在，依赖 `libcap.so.2`/`libc` 齐全。
+
+> ⚠️ **本节原结论已作废**（原文：`eth0 = gmac0 = RJ45，接口名正确`、`S45static-eth0 会执行`）。
+> 实测：SoC dtsi 的 `aliases { ethernet0 = &gmac0; ethernet1 = &gmac1; }` 会让任何 probe 成功的
+> GMAC 抢占 `eth0/eth1`，把真正的 RJ45 挤到 `eth2/eth3`；脚本也已改名为 `S45static-net` 并按
+> 驱动(`yt6801`)+PCI BDF 绑定。当前方案见 `docs/dev/RK3588_NETWORK_CONFIG_AND_ETH0_STATIC_IP.md` §2.2。
 
 ### D. 串口登录后逐项确认（定位"ip 不可达"）
 
 ```bash
 uname -a                                   # 确认 6.1.118
-cat /etc/init.d/S45static-eth0             # 确认补丁在镜像里
-ip link                                    # eth0 是否存在、是否 UP
-ip addr show eth0                          # 是否 192.168.80.202/24
+cat /etc/init.d/S45static-net              # 确认补丁在镜像里（旧镜像里是 S45static-eth0）
+ip -o link                                 # 两个口各自的名字，别假设 eth0
+ls -l /sys/class/net/*/device/driver       # 驱动应为 yt6801
+grep S45static-net /dev/kmsg               # 脚本实际配给了谁（每口一行）
+ip -br addr show                           # 是否有 192.168.80.202/24 与 .201/24
 ip route                                   # 默认路由
-dmesg | grep -iE 'eth|gmac|stmmac|phy'     # PHY 是否 link up / 报错
-ethtool eth0 2>/dev/null | head            # Speed / Duplex / Link detected
+dmesg | grep -iE 'eth|yt6801|gmac|stmmac|phy'   # 链路是否 up / 报错
 cat /var/log/weston.log 2>/dev/null        # 显示是否 weston 启动失败
 ```

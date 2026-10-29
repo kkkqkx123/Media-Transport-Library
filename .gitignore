@@ -89,6 +89,12 @@ tests/acceptance/logs
 html/
 test.*
 build/
+build-*/
+# Cross-compilation local artifacts (NOT committed; re-export / re-build as needed):
+#   sysroot/  — exported board sysroot (headers + libs), see docs/dev/compile/
+#   staging/  — install tree from the patched DPDK / libmtl / MtlManager cross builds
+sysroot/
+staging/
 out*
 assets/
 *.pkg

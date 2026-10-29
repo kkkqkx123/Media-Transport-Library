@@ -19,13 +19,12 @@
 static atomic_bool g_running = true;
 static void sig_handler(int s) { (void)s; atomic_store(&g_running, false); }
 static uint64_t g_frames = 0;
+static struct v4l2_capturer* g_cap = NULL;
 
-static void on_frame(void* user_data, int dma_fd, int dma_fd_uv,
-                     uint32_t stride, uint32_t size,
-                     uint64_t ts, uint64_t seq) {
+static void on_frame(void* user_data, const struct v4l2_frame* f) {
   struct drm_renderer* r = (struct drm_renderer*)user_data;
-  (void)dma_fd_uv; (void)size; (void)ts; (void)seq;
-  drm_renderer_display(r, dma_fd, stride, 0);
+  drm_renderer_display(r, f->dma_fd, f->stride, 0);
+  if (g_cap) v4l2_capturer_release(g_cap, f->buf_index, f->generation);
   g_frames++;
   if (g_frames % 100 == 0)
     printf("test_io: %llu frames\n", (unsigned long long)g_frames);
@@ -48,6 +47,7 @@ int main(int argc, char** argv) {
 
   struct v4l2_capturer* cap = v4l2_capturer_create(v4l2_dev, 1920, 1080,
                                                     60.0f, 6, on_frame, r);
+  g_cap = cap;
   if (!cap) { fprintf(stderr, "FAIL: capturer\n"); drm_renderer_free(r); return 1; }
 
   printf("Starting (Ctrl-C to stop)...\n");

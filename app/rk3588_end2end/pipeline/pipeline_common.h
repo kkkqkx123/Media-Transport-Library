@@ -21,6 +21,10 @@ struct dmabuf_frame {
     uint32_t stride;        /* row stride in bytes */
     uint64_t timestamp;     /* capture timestamp in ns (CLOCK_MONOTONIC) */
     uint64_t frame_seq;     /* global frame sequence number */
+    /* V4L2 buffer release handle (v4l2_capturer_release) */
+    void*    capture;       /* owning struct v4l2_capturer*, NULL if none */
+    uint32_t buf_index;
+    uint64_t generation;
 };
 
 /* Coded H.264 packet descriptor.

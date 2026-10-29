@@ -61,6 +61,14 @@ struct codec_plugin {
                     int* is_keyframe);
 
   int  (*set_param)(void* ctx, enum codec_param k, int v);
+
+  /** Optional (NULL allowed): last encoder output time (CLOCK_MONOTONIC ns)
+   *  for hang supervision. Implementation must not block. */
+  int  (*get_last_output_ns)(void* ctx, uint64_t* ns);
+
+  /** Optional (NULL allowed): frames dropped because the internal output
+   * ring was full. Implementation must not block. */
+  int  (*get_full_drops)(void* ctx, uint64_t* count);
 };
 
 #endif

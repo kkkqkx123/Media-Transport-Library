@@ -30,31 +30,35 @@ static uint64_t g_frames;
 static FILE* g_file = NULL;
 
 /* ---- RGA mode: capture → RGA → display ---- */
-static void rga_on_frame(void* u, int fd, int fd_uv, uint32_t str, uint32_t sz,
-                         uint64_t ts, uint64_t seq) {
+static void rga_on_frame(void* u, const struct v4l2_frame* f) {
   void** ctx = (void**)u;
   struct drm_renderer* r = (struct drm_renderer*)ctx[0];
   struct rga_converter* rga = (struct rga_converter*)ctx[1];
-  (void)fd_uv; (void)sz; (void)ts; (void)seq;
 
-  int nv12_fd; uint32_t nv12_stride;
-  if (rga_convert(rga, fd, str, &nv12_fd, &nv12_stride) == 0)
+  int nv12_fd, nv12_idx; uint32_t nv12_stride;
+  if (rga_convert(rga, f->dma_fd, f->stride, &nv12_fd, &nv12_stride,
+                  &nv12_idx) == 0) {
     drm_renderer_display(r, nv12_fd, nv12_stride, 0);
+    rga_converter_release(rga, nv12_idx);
+  }
+  v4l2_capturer_release(ctx[2], f->buf_index, f->generation);
   g_frames++;
   if (g_frames % 100 == 0) printf("rga: %llu frames\n", (unsigned long long)g_frames);
 }
 
 /* ---- Encode mode: capture → RGA → MPP enc → file ---- */
-static void enc_on_frame(void* u, int fd, int fd_uv, uint32_t str, uint32_t sz,
-                         uint64_t ts, uint64_t seq) {
+static void enc_on_frame(void* u, const struct v4l2_frame* f) {
   void** ctx = (void**)u;
   struct codec_plugin* enc = (struct codec_plugin*)ctx[0];
   struct rga_converter* rga = (struct rga_converter*)ctx[1];
   struct slab_pool* pool = (struct slab_pool*)ctx[2];
-  (void)fd_uv; (void)sz; (void)ts; (void)seq;
 
-  int nv12_fd; uint32_t nv12_stride;
-  if (rga_convert(rga, fd, str, &nv12_fd, &nv12_stride) != 0) return;
+  int nv12_fd, nv12_idx; uint32_t nv12_stride;
+  if (rga_convert(rga, f->dma_fd, f->stride, &nv12_fd, &nv12_stride,
+                  &nv12_idx) != 0) {
+    v4l2_capturer_release(ctx[3], f->buf_index, f->generation);
+    return;
+  }
 
   enc->send(enc->priv, nv12_fd, nv12_stride);
 
@@ -64,6 +68,8 @@ static void enc_on_frame(void* u, int fd, int fd_uv, uint32_t str, uint32_t sz,
     /* data allocated from slab by encoder, caller must free back to pool */
     slab_free(pool, data);
   }
+  rga_converter_release(rga, nv12_idx);
+  v4l2_capturer_release(ctx[3], f->buf_index, f->generation);
   g_frames++;
   if (g_frames % 100 == 0) printf("enc: %llu frames\n", (unsigned long long)g_frames);
 }
@@ -75,6 +81,7 @@ struct lb_ctx {
   struct codec_plugin* enc;
   struct codec_plugin* dec;
   struct slab_pool* pool;
+  struct v4l2_capturer* capture;
 };
 
 /* rolling stats for end-to-end latency */
@@ -90,17 +97,19 @@ static inline uint64_t now_ns(void) {
   return (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
 }
 
-static void lb_on_frame(void* u, int fd, int fd_uv, uint32_t str, uint32_t sz,
-                        uint64_t ts, uint64_t seq) {
+static void lb_on_frame(void* u, const struct v4l2_frame* vf) {
   struct lb_ctx* ctx = (struct lb_ctx*)u;
-  (void)fd_uv; (void)sz; (void)ts; (void)seq;
 
   /* capture timestamp — start of e2e measurement */
   uint64_t cap_ts = now_ns();
 
   /* RGA: BGR3 → NV12 */
-  int nv12_fd; uint32_t nv12_stride;
-  if (rga_convert(ctx->rga, fd, str, &nv12_fd, &nv12_stride) != 0) return;
+  int nv12_fd, nv12_idx; uint32_t nv12_stride;
+  if (rga_convert(ctx->rga, vf->dma_fd, vf->stride, &nv12_fd, &nv12_stride,
+                  &nv12_idx) != 0) {
+    v4l2_capturer_release(ctx->capture, vf->buf_index, vf->generation);
+    return;
+  }
 
   /* MPP encode */
   ctx->enc->send(ctx->enc->priv, nv12_fd, nv12_stride);
@@ -112,7 +121,7 @@ static void lb_on_frame(void* u, int fd, int fd_uv, uint32_t str, uint32_t sz,
    * The SEI carries cap_ts and frame_seq through the codec pipeline. */
   if (size + SEI_TS_NAL_SIZE <= 512 * 1024) { /* slab block is 512KB */
     memmove(data + SEI_TS_NAL_SIZE, data, size);
-    sei_timestamp_build(data, (uint32_t)seq, cap_ts);
+    sei_timestamp_build(data, (uint32_t)vf->frame_seq, cap_ts);
     size += SEI_TS_NAL_SIZE;
   }
 
@@ -141,6 +150,8 @@ static void lb_on_frame(void* u, int fd, int fd_uv, uint32_t str, uint32_t sz,
     g_lat.displayed++;
   }
   g_frames++;
+  rga_converter_release(ctx->rga, nv12_idx);
+  v4l2_capturer_release(ctx->capture, vf->buf_index, vf->generation);
   if (g_frames % 100 == 0) {
     uint64_t avg = g_lat.count ? g_lat.sum_ns / g_lat.count : 0;
     printf("lb: %llu frames (%llu displayed) | e2e min=%llu avg=%llu max=%llu us\n",
@@ -167,10 +178,11 @@ int main(int argc, char** argv) {
     struct drm_renderer* drm = drm_renderer_create(ddev, "HDMI-A-1","1920x1080@60",
                                                      w,h,DRM_FORMAT_NV12,5);  /* buf_count=5 for safe fb recycling */
     if (!drm) { rga_converter_free(rga); return 1; }
-    void* ctx[2] = {drm, rga};
+    void* ctx[3] = {drm, rga, NULL};
     struct v4l2_capturer* cap = v4l2_capturer_create(vdev,w,h,60,6,
                                                        rga_on_frame, ctx);
     if (!cap) { drm_renderer_free(drm); rga_converter_free(rga); return 1; }
+    ctx[2] = cap; /* release handle used inside the callback */
     printf("RGA mode: BGR3 capture → RGA → NV12 display (correct colors)\n");
     time_t t0 = time(NULL); v4l2_capturer_start(cap);
     while (atomic_load(&g_run)) usleep(100000);
@@ -188,9 +200,10 @@ int main(int argc, char** argv) {
         .bitrate_bps=40000000,.gop_size=60,.low_latency=true,.num_slices=1};
     struct codec_plugin* enc = mpp_encoder_create(&cfg, pool);
     if (!rga||!pool||!enc) { fprintf(stderr,"FAIL: init\n"); return 1; }
-    void* ctx[3] = {enc, rga, pool};
+    void* ctx[4] = {enc, rga, pool, NULL};
     struct v4l2_capturer* cap = v4l2_capturer_create(vdev,w,h,60,6,enc_on_frame,ctx);
     if (!cap) return 1;
+    ctx[3] = cap;
     printf("Encode mode: → test.h264\n");
     time_t t0 = time(NULL); v4l2_capturer_start(cap);
     while (atomic_load(&g_run)) usleep(100000);
@@ -209,9 +222,10 @@ int main(int argc, char** argv) {
     struct drm_renderer* drm = drm_renderer_create(ddev,"HDMI-A-1","1920x1080@60",
                                                      w,h,DRM_FORMAT_NV12,5);  /* buf_count=5 for safe fb recycling */
     if (!rga||!pool||!enc||!dec||!drm) { fprintf(stderr,"FAIL: init\n"); return 1; }
-    struct lb_ctx ctx = {drm, rga, enc, dec, pool};
+    struct lb_ctx ctx = {drm, rga, enc, dec, pool, NULL};
     struct v4l2_capturer* cap = v4l2_capturer_create(vdev,w,h,60,6,lb_on_frame,&ctx);
     if (!cap) return 1;
+    ctx.capture = cap;
     printf("Loopback: V4L2→RGA→MPPenc→MPPdec→DRM\n");
     time_t t0 = time(NULL); v4l2_capturer_start(cap);
     while (atomic_load(&g_run)) usleep(100000);

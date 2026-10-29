@@ -15,8 +15,15 @@ mtl_dep = dependency('mtl', required: false)
 libjson_c_dep = dependency('json-c', required: false)
 
 # ---- Phase 1: HAL (libdrm only) ----
+# sps_vui is pure C (no hardware deps) so its test builds everywhere.
+executable('test_sps_vui', 'tests/test_sps_vui.c',
+  'codec/sps_vui.c',
+  include_directories: include_directories('.'),
+)
+
 e2e_hal_sources = files(
   'hal/dma_allocator.c',
+  'hal/dma32_allocator.c',
   'hal/timer.c',
   'hal/slab_pool.c',
   'hal/sei_timestamp.c',
@@ -60,6 +67,7 @@ if librockchip_mpp_dep.found() and librga_dep.found()
     'codec/rga_converter.c',
     'codec/mpp_encoder.c',
     'codec/mpp_decoder.c',
+    'codec/sps_vui.c',
     link_with: e2e_hal,
     dependencies: [libdrm_dep, librga_dep, librockchip_mpp_dep],
     include_directories: include_directories('.'),

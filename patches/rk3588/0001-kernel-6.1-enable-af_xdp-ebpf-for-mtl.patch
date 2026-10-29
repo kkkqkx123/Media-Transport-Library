@@ -15,17 +15,15 @@ to this rk3588-6.1 SDK (kernel 6.1.118):
 - add kernel-6.1/arch/arm64/configs/ztl_rk3588.config fragment (YT6801 etc.)
 - Config.in.kernel: default RK_KERNEL_CFG to ztl_defconfig and add the
   ztl_rk3588.config fragment for the rk3588 chip family
-- ztl-rk3588-cm.dts: disable i2c4 (board debug, as in the 5.1 XDP tree)
 
 Validated with make ARCH=arm64 ztl_defconfig + merge_config.sh +
 olddefconfig. Port analysis: docs/analysis/RK3588_6.1_XDP_PORT.md in the
 Media-Transport-Library repo.
 ---
  .../rockchip/common/configs/Config.in.kernel  |   4 +-
- .../arm64/boot/dts/rockchip/ztl-rk3588-cm.dts |   4 +
  kernel-6.1/arch/arm64/configs/ztl_defconfig   | 919 ++++++++++++++++++
  .../arch/arm64/configs/ztl_rk3588.config      |  21 +
- 4 files changed, 947 insertions(+), 1 deletion(-)
+ 3 files changed, 943 insertions(+), 1 deletion(-)
  create mode 100644 kernel-6.1/arch/arm64/configs/ztl_defconfig
  create mode 100644 kernel-6.1/arch/arm64/configs/ztl_rk3588.config
 
@@ -51,18 +49,6 @@ index 95556f78f..9103c600a 100644
  
  config RK_KERNEL_DTS_NAME
  	string "device-tree script name"
-diff --git a/kernel-6.1/arch/arm64/boot/dts/rockchip/ztl-rk3588-cm.dts b/kernel-6.1/arch/arm64/boot/dts/rockchip/ztl-rk3588-cm.dts
-index 6de654523..b6360607e 100644
---- a/kernel-6.1/arch/arm64/boot/dts/rockchip/ztl-rk3588-cm.dts
-+++ b/kernel-6.1/arch/arm64/boot/dts/rockchip/ztl-rk3588-cm.dts
-@@ -709,3 +709,7 @@
- 	status = "disabled";
- };
- 
-+
-+&i2c4 {
-+    status = "disabled";
-+};
 diff --git a/kernel-6.1/arch/arm64/configs/ztl_defconfig b/kernel-6.1/arch/arm64/configs/ztl_defconfig
 new file mode 100644
 index 000000000..5c0ae46af

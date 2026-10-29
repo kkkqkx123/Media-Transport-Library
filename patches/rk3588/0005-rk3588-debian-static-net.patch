@@ -1,0 +1,112 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zhanglei <596504085@qq.com>
+Date: Thu, 29 Oct 2026 12:00:00 +0800
+Subject: [PATCH] rk3588/debian: static IP for both wired NICs (driver+BDF bound)
+
+Same driver + PCI BDF binding as the buildroot S45static-net (see 0002), but for
+the Debian rootfs, which is driven by NetworkManager:
+
+- ztl-static-net.sh: walk /sys/bus/pci/devices/*/net/*, keep the netdevs whose
+  driver is yt6801, sort by PCI BDF and give the first 192.168.80.202/24 with the
+  default route via 192.168.80.254, the second 192.168.80.201/24 without a
+  default route. Never bind by name: the RK3588 GMAC owns the ethernet0/1 DT
+  aliases and "eth0" may be a GMAC port that has no PHY at all
+  (stmmac_open: Cannot attach to PHY)
+- ztl-static-net.service: oneshot unit, enabled through the overlay's
+  multi-user.target.wants symlink
+- 90-ztl-unmanaged.conf: unmanaged-devices=driver:yt6801;interface-name:bond0,
+  so NetworkManager does not fight the script and the leftover bond0 device
+  stops showing up in the desktop
+
+---
+diff --git a/debian/overlay/etc/NetworkManager/conf.d/90-ztl-unmanaged.conf b/debian/overlay/etc/NetworkManager/conf.d/90-ztl-unmanaged.conf
+new file mode 100644
+index 000000000..75ac7c566
+--- /dev/null
++++ b/debian/overlay/etc/NetworkManager/conf.d/90-ztl-unmanaged.conf
+@@ -0,0 +1,4 @@
++# ztl cm588: the yt6801 wired ports are addressed by ztl-static-net.service and
++# bond0 is a leftover NetworkManager device with no slaves; keep NM off both.
++[keyfile]
++unmanaged-devices=driver:yt6801;interface-name:bond0
+diff --git a/debian/overlay/etc/systemd/system/multi-user.target.wants/ztl-static-net.service b/debian/overlay/etc/systemd/system/multi-user.target.wants/ztl-static-net.service
+new file mode 120000
+index 000000000..3a180d0ab
+--- /dev/null
++++ b/debian/overlay/etc/systemd/system/multi-user.target.wants/ztl-static-net.service
+@@ -0,0 +1 @@
++/etc/systemd/system/ztl-static-net.service
+\ No newline at end of file
+diff --git a/debian/overlay/etc/systemd/system/ztl-static-net.service b/debian/overlay/etc/systemd/system/ztl-static-net.service
+new file mode 100644
+index 000000000..727527b3d
+--- /dev/null
++++ b/debian/overlay/etc/systemd/system/ztl-static-net.service
+@@ -0,0 +1,14 @@
++[Unit]
++Description=ztl cm588 static IPv4 for the PCIe YT6801 wired ports
++Documentation=file:///usr/local/sbin/ztl-static-net.sh
++After=network-pre.target
++Wants=network-pre.target
++Before=network.target network-online.target
++
++[Service]
++Type=oneshot
++RemainAfterExit=yes
++ExecStart=/usr/local/sbin/ztl-static-net.sh
++
++[Install]
++WantedBy=multi-user.target
+diff --git a/debian/overlay/usr/local/sbin/ztl-static-net.sh b/debian/overlay/usr/local/sbin/ztl-static-net.sh
+new file mode 100755
+index 000000000..93f2a82ad
+--- /dev/null
++++ b/debian/overlay/usr/local/sbin/ztl-static-net.sh
+@@ -0,0 +1,47 @@
++#!/bin/sh
++# ztl cm588: bring the two PCIe YT6801 wired ports up with static addresses.
++#
++# Do NOT bind by name. The RK3588 GMAC (rk_gmac-dwmac) owns the DT aliases
++# ethernet0/ethernet1, so "eth0" may well be a GMAC port that has no PHY at all
++# (stmmac_open: Cannot attach to PHY). Bind by driver + PCI BDF instead:
++#   lowest BDF  -> 192.168.80.202/24 and the default route via 192.168.80.254
++#   higher BDF  -> 192.168.80.201/24, no default route
++set -u
++
++addr_primary=192.168.80.202
++addr_secondary=192.168.80.201
++gw=192.168.80.254
++
++bring_up() {
++    ifc=$1
++    addr=$2
++    defgw=$3
++    [ -n "$ifc" ] || return 0
++    ip link set "$ifc" up 2>/dev/null || return 0
++    ip addr replace "$addr/24" dev "$ifc"
++    if [ -n "$defgw" ]; then
++        ip route replace default via "$defgw" dev "$ifc"
++        echo "ztl-static-net: $ifc -> $addr (default via $defgw)"
++    else
++        echo "ztl-static-net: $ifc -> $addr"
++    fi
++    return 0
++}
++
++n=0
++for dev in $(ls -d /sys/bus/pci/devices/*/net/* 2>/dev/null | sort); do
++    ifc=${dev##*/}
++    drv=$(basename "$(readlink -f "/sys/class/net/$ifc/device/driver" 2>/dev/null)" 2>/dev/null)
++    [ "$drv" = "yt6801" ] || continue
++    if [ "$n" -eq 0 ]; then
++        bring_up "$ifc" "$addr_primary" "$gw"
++    else
++        bring_up "$ifc" "$addr_secondary" ""
++    fi
++    n=$((n + 1))
++done
++
++if [ "$n" -eq 0 ]; then
++    echo "ztl-static-net: no yt6801 netdev found" >&2
++fi
++exit 0

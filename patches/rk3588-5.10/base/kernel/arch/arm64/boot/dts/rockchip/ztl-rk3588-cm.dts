@@ -20,19 +20,26 @@
 	 * Serial consoles (5.10 variant).
 	 *
 	 * rk3588-linux.dtsi sets only "console=ttyFIQ0" (UART2 fiq-debugger,
-	 * 1500000 8N1). Add ttyS3 (UART3, uart3m1: TX GPIO3_B5 / RX GPIO3_B6,
-	 * 115200 8N1) in front of it so UART3 also receives the kernel log.
+	 * 1500000 8N1). This board does NOT wire UART2 out - the only reachable
+	 * debug port is UART3/TTL (uart3m1: TX GPIO3_B5 / RX GPIO3_B6).
 	 *
 	 * Order matters: /dev/console follows the LAST console= argument, so
-	 * ttyFIQ0 stays the shell console, while ttyS3 becomes a second log
-	 * sink (and gets its own shell from the fs-overlay inittab).
+	 * ttyS3 is listed last to make it /dev/console (systemd's getty
+	 * generator then spawns a shell on it). earlycon points at uart3's
+	 * register base 0xfeb60000, NOT 0xfeb50000 (= uart2).
+	 *
+	 * IMPORTANT: this chosen/bootargs is only a fallback. Rockchip u-boot
+	 * builds its own env "bootargs" (androidboot.fwver=... etc.) in
+	 * board_fdt_chosen_bootargs(), and fdt_chosen() REPLACES this property
+	 * wholesale - dropping every console= so the kernel gets no console at
+	 * all. u-boot is patched to append the console= list; keep both in sync.
 	 *
 	 * NOTE: &gmac1 must stay disabled - gmac1_tx_bus2/gmac1_clkinout mux
 	 * GPIO3_B5/GPIO3_B6, i.e. exactly the uart3 pins, and enabling gmac1
 	 * makes ttyS3 completely silent.
 	 */
 	chosen {
-		bootargs = "earlycon=uart8250,mmio32,0xfeb50000 console=ttyS3,115200 console=ttyFIQ0 irqchip.gicv3_pseudo_nmi=0 root=PARTUUID=614e0000-0000 rw rootwait rcupdate.rcu_expedited=1 rcu_nocbs=all";
+		bootargs = "earlycon=uart8250,mmio32,0xfeb60000 console=ttyFIQ0 console=ttyS3,115200 irqchip.gicv3_pseudo_nmi=0 root=PARTUUID=614e0000-0000 rw rootwait rcupdate.rcu_expedited=1 rcu_nocbs=all";
 	};
 
 	vcc4v0_sys: vcc4v0-sys {

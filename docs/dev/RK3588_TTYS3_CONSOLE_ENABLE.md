@@ -17,6 +17,10 @@
 
 即：**内核侧只需改 1 行 cmdline，驱动/引脚/配置零改动**；其余工作都在 rootfs。
 
+> ⚠️ **2026-10-29 修正**：上面这条只在 bootloader 不覆盖 DTB 时成立。本 SDK 的 u-boot 会用
+> 自己的 env `bootargs` **整体替换** `chosen/bootargs`，`console=` 全丢 → 内核无 console、
+> 串口完全静默。**必须同时应用 `0006-rk3588-uboot-keep-ttyS3-console.patch`**，详见 §10.4。
+
 前提事实（均已核对，见 §3）：`uart3` 在板级 DTS 里已 `status = "okay"`，8250 驱动已注册 `/dev/ttyS3`，`CONFIG_SERIAL_8250_CONSOLE=y` 已开。
 
 ---
@@ -222,6 +226,7 @@ stty -F /dev/ttyS3 115200 raw -echo && echo hello > /dev/ttyS3
 | `0003-rk3588-ttyS3-second-console.patch` | DTS `chosen/bootargs`：`console=ttyS3,115200 console=ttyFIQ0`（ttyFIQ0 最后 = 兜底 shell），`&gmac1` 保持 `disabled` |
 | `0004-rk3588-fs-overlay-dual-serial-shell.patch` | fs-overlay `/etc/inittab`：`::respawn:-/bin/sh` + `ttyS3::respawn:-/bin/sh` |
 | `0005-rk3588-debian-chroot-bash-fix.patch` | Debian 构建专用（chroot 显式 `/bin/bash`），buildroot 流程不需要 |
+| `0006-rk3588-uboot-keep-ttyS3-console.patch` | **必需（2026-10-29 追加）**：u-boot `board_fdt_chosen_bootargs()` 把 `console=ttyFIQ0 console=ttyS3,115200 earlycon=…0xfeb60000` 追加进 env `bootargs`，避免 DTB 的 `console=` 被整体覆盖；无此补丁串口必定静默 |
 
 BSP 状态：HEAD = `ab0040897`，工作区 = 基线 + `0001`~`0004`（未提交）；四个补丁依次 `git apply --cached` 后与工作区 `git diff` 为空。
 
@@ -238,7 +243,7 @@ BSP 状态：HEAD = `ab0040897`，工作区 = 基线 + `0001`~`0004`（未提交
 - dtb：`bootargs` 含 `console=ttyS3,115200 console=ttyFIQ0`；`ethernet@fe1c0000`（gmac1）`status = "disabled"`；`serial@feb60000`（uart3）`status = "okay"`；
 - rootfs：`/etc/inittab` 两行 respawn（console + ttyS3）；`S45static-net` 为驱动/BDF 版本。
 
-### 10.3 上板验证
+### 10.3 上板验证（表格已被 §10.4 推翻，见该节）
 
 | 通道 | 参数 | 期望 |
 |---|---|---|
@@ -246,6 +251,52 @@ BSP 状态：HEAD = `ab0040897`，工作区 = 基线 + `0001`~`0004`（未提交
 | UART3（GPIO3_B5/B6，TTL 抽头） | 115200 8N1 | 内核日志 + **root shell**（来自 inittab） |
 
 网络侧串口里可自查：`ip -o link`、`dmesg | grep -i "yt6801\|eth"`、看 `S45static-net` 打在 `/dev/kmsg` 的 `S45static-net: <if> -> <addr>` 行。
+
+### 10.4 2026-10-29：仍然完全静默，真正根因是 **u-boot 覆盖了 DTB 的 bootargs**
+
+10.1 修掉 `gmac1` 之后 ttyS3 依旧没有任何输出；同一板子在 5.10 树上（同一份 u-boot、同样只改 DTS）
+也一模一样。逐层核对后确认：**DTS 的 `chosen/bootargs` 在内核启动前就被 u-boot 整体换掉了**。
+
+链路（`u-boot/arch/arm/mach-rockchip/board.c`）：
+
+1. `board_fdt_chosen_bootargs()` 是**强符号**（不是 `common/fdt_support.c` 里那个 `__weak` 版本），
+   依次调用 `bootargs_add_dtb_dtbo/partition/fwver/android()`；
+2. `CONFIG_ROCKCHIP_PRELOADER_ATAGS=y`，而 `bootargs_add_fwver()` 里 `list2`（`uboot-<版本>-<日期>`）
+   恒非空 → **无条件** `env_update("bootargs", "androidboot.fwver=...")`；
+3. `env_update()`（`cmd/nvedit.c`，注释 "If varname doesn't exist, create it and set varvalue"）
+   在变量不存在时**创建**它 → env `bootargs` 只剩 `androidboot.*`，**一个 `console=` 都没有**；
+4. `fdt_chosen()`（`common/fdt_support.c:337`）拿到 `env_get("bootargs")` 后
+   `fdt_setprop(chosen, "bootargs", str, strlen(str)+1)` —— **整体替换**，DTS 里写的
+   `console=ttyS3,115200 console=ttyFIQ0` 全部丢失；
+5. 内核命令行里没有任何 `console=` → **不注册任何 console** → 串口完全静默，也没有 shell。
+
+> 因此 §1 里"内核侧只需改 1 行 cmdline"只在 bootloader 不覆盖 DTB 时成立；本 SDK 不成立。
+
+修复：`0006-rk3588-uboot-keep-ttyS3-console.patch`，在 `board_fdt_chosen_bootargs()` 的 `return` 前
+往**同一个** env 变量追加 console：
+
+```c
+	env_update("bootargs",
+		   "console=ttyFIQ0 console=ttyS3,115200 earlycon=uart8250,mmio32,0xfeb60000");
+	/* env_update() 可能重分配，必须重新取指针，否则 bootargs 悬空 */
+	bootargs = env_get("bootargs");
+```
+
+配套调整（`0003` 已同步修改）：
+
+- `console=` 顺序**反转**为 `console=ttyFIQ0 console=ttyS3,115200`：本板 UART2 FIQ **未引出**，
+  必须让 ttyS3 成为最后一个 console（`/dev/console` 落到 UART3），否则 shell 起在看不见的口上；
+- `earlycon` 由 `0xfeb50000`（uart2）改为 `0xfeb60000`（uart3），早期日志才落在能看到的端口。
+
+上板预期（取代 §10.3 表格）：
+
+| 通道 | 参数 | 期望 |
+|---|---|---|
+| UART2 调试口 | 1500000 8N1 | **无输出**——本板未引出，u-boot 自身日志（`CONFIG_BAUDRATE=1500000`）也走这里 |
+| UART3（GPIO3_B5/B6，TTL） | 115200 8N1 | **从内核 earlycon 行开始**有日志；随后 systemd 在 ttyS3 上起 getty |
+
+若按 §10.4 修完 UART3 仍无输出，才轮到物理层：TTL 侧 TX/RX 需交叉、载板 ttl/232/485 跳线是否在 TTL、
+波特率是否 115200 8N1。
 
 ---
 

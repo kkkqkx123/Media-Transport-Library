@@ -65,12 +65,20 @@ buildroot 镜像在这一路上电即给 **root shell**（无登录、无桌面�
 |---|---|---|---|---|
 | uart0 | `/dev/ttyS0` | okay（`uart0m2`） | `ztl-rk3588-cm.dts:542-545` | 需自加 getty |
 | uart1 | — | disabled | `rk3588s.dtsi` | — |
-| uart2 | `/dev/ttyFIQ0` | 被 fiq-debugger 占用（uart2 本身 disabled） | `rk3588-linux.dtsi:42-53` | ✅ **开箱即用** |
-| uart3 | `/dev/ttyS3` | okay（默认组 `uart3m1`）；前提是 `gmac1` 保持 disabled | `ztl-rk3588-cm.dts:538-540` | ✅ 内核 console + inittab shell（`0003`/`0004` 补丁） |
+| uart2 | `/dev/ttyFIQ0` | 被 fiq-debugger 占用（uart2 本身 disabled） | `rk3588-linux.dtsi:42-53` | ⚠️ 驱动层可用，但**本板排针未引出**，实际看不到输出 |
+| uart3 | `/dev/ttyS3` | okay（默认组 `uart3m1`）；前提是 `gmac1` 保持 disabled | `ztl-rk3588-cm.dts:538-540` | ✅ 唯一可用的调试口（TTL 抽头）；需 `0003` + **`0006`** + `0004` 三个补丁 |
 | uart4/5/6 | — | disabled | `rk3588s.dtsi` | — |
 | uart7 | `/dev/ttyS7` | okay（默认组 `uart7m1`） | `ztl-rk3588-cm.dts:547-549` | 需自加 getty |
 | uart8 | `/dev/ttyS8` | okay（`uart8m1` + ctsn） | `ztl-rk3588-cm.dts:275-279` | 蓝牙占用，不建议 |
 | uart9 | — | 板级显式 disabled（evb7 dtsi 里是 okay） | `ztl-rk3588-cm.dts:708-710` | — |
+
+> ⚠️ **改 DTS 的 `chosen/bootargs` 不足以让 ttyS3 变成 console**（2026-10-29 实测）：
+> Rockchip u-boot 的 `board_fdt_chosen_bootargs()` 会往 env `bootargs` 里追加 `androidboot.*`，
+> 随后 `fdt_chosen()` 用 `fdt_setprop()` **整体替换** DTB 的 `chosen/bootargs`，`console=` 全部丢失，
+> 内核因此不注册任何 console、串口完全静默。必须同时应用
+> `patches/rk3588/0006-rk3588-uboot-keep-ttyS3-console.patch`（u-boot 侧追加
+> `console=ttyFIQ0 console=ttyS3,115200 earlycon=…0xfeb60000`）。
+> 详见 `docs/dev/RK3588_TTYS3_CONSOLE_ENABLE.md` §10.4。
 
 ---
 

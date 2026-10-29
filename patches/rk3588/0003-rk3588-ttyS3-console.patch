@@ -1,0 +1,141 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zhanglei <596504085@qq.com>
+Date: Thu, 29 Oct 2026 12:00:00 +0800
+Subject: [PATCH] rk3588: make ttyS3 a serial console (dts + inittab + u-boot)
+
+The board only wires out UART3 (uart3m1: TX GPIO3_B5, RX GPIO3_B6, TTL); the
+UART2 fiq-debugger port is not brought out. Three things are needed to make it
+usable, and they only work together, so they live in one patch:
+
+1. DTS chosen/bootargs
+   earlycon moves to uart3's register base 0xfeb60000 (uart2 is 0xfeb50000) and
+   console=ttyS3,115200 is put LAST, because /dev/console follows the LAST
+   console= argument. console=ttyFIQ0 stays in front as a harmless second sink.
+
+2. u-boot keeps the console list
+   The DTS bootargs alone are not enough: Rockchip u-boot builds its own env
+   "bootargs" (androidboot.*, env_update() creates the variable when absent) in
+   board_fdt_chosen_bootargs(), and fdt_chosen() then does
+   fdt_setprop(chosen, "bootargs", ...) which REPLACES the DTB property
+   wholesale. Every console= is lost, the kernel registers no console at all and
+   the port stays completely silent - no log, no shell. Append the console list
+   to the same env variable before returning, and refresh the bootargs pointer
+   because env_update() may reallocate.
+
+3. rootfs inittab
+   Replace the stock buildroot inittab with one that keeps the automatic root
+   shell on /dev/console (= ttyFIQ0) and adds a second one on ttyS3 at 115200.
+   Both lines are "::respawn:-/bin/sh" style, so neither port depends on
+   getty/login and both give the same passwordless root shell.
+
+uart3 is already enabled in this DTS with the default uart3m1 group and
+CONFIG_SERIAL_8250_CONSOLE is on, so no driver or Kconfig change is needed.
+
+IMPORTANT: &gmac1 must stay disabled on this board. gmac1_tx_bus2 muxes
+GPIO3_B5 (gmac1_txen) and gmac1_clkinout muxes GPIO3_B6, i.e. exactly the uart3
+pins; enabling gmac1 made ttyS3 completely silent and also broke the ethernet
+naming (see 0002).
+
+Also disable i2c4: the CM588 carrier board keeps it in a debug-only state and
+leaving it enabled produced noisy probe failures at boot.
+
+---
+diff --git a/kernel-6.1/arch/arm64/boot/dts/rockchip/ztl-rk3588-cm.dts b/kernel-6.1/arch/arm64/boot/dts/rockchip/ztl-rk3588-cm.dts
+index 6de654523..b21f979a1 100644
+--- a/kernel-6.1/arch/arm64/boot/dts/rockchip/ztl-rk3588-cm.dts
++++ b/kernel-6.1/arch/arm64/boot/dts/rockchip/ztl-rk3588-cm.dts
+@@ -20,6 +20,22 @@
+ 	model = "ztl, CM588";
+ 	compatible = "rockchip,rk3588-evb7-v11", "rockchip,rk3588";
+ 
++	/*
++	 * Serial consoles.
++	 * /dev/console follows the LAST console= argument, so with
++	 *   console=ttyS3,115200 -> uart3 (m1 pins, GPIO3_B5/B6), kernel log
++	 *   console=ttyFIQ0      -> UART2 debug port, kernel log AND the
++	 *                           "::respawn:-/bin/sh" root shell
++	 * the guaranteed shell stays on the UART2 debug port, while ttyS3 gets
++	 * its own shell from /etc/inittab (fs-overlay).
++	 * NOTE: keep &gmac1 disabled - gmac1_tx_bus2 muxes GPIO3_B5 away from
++	 * uart3 and silently kills this console (see
++	 * docs/hw/RK3588_UART_CONSOLE_AND_SERIAL_ACCESS.md).
++	 */
++	chosen {
++		bootargs = "earlycon=uart8250,mmio32,0xfeb60000 console=ttyFIQ0 console=ttyS3,115200 irqchip.gicv3_pseudo_nmi=0 root=PARTUUID=614e0000-0000 rw rootwait rcupdate.rcu_expedited=1 rcu_nocbs=all";
++	};
++
+ 	vcc4v0_sys: vcc4v0-sys {
+ 		compatible = "regulator-fixed";
+ 		regulator-name = "vcc4v0_sys";
+@@ -709,3 +725,7 @@
+ 	status = "disabled";
+ };
+ 
++
++&i2c4 {
++    status = "disabled";
++};
+diff --git a/buildroot/board/rockchip/rk3588/fs-overlay/etc/inittab b/buildroot/board/rockchip/rk3588/fs-overlay/etc/inittab
+new file mode 100644
+index 000000000..5d157f240
+--- /dev/null
++++ b/buildroot/board/rockchip/rk3588/fs-overlay/etc/inittab
+@@ -0,0 +1,31 @@
++# /etc/inittab - ztl CM588 (Rockchip buildroot)
++#
++# Two independent interactive consoles, both as a passwordless root shell:
++#   * /dev/console -> last console= on the cmdline -> ttyFIQ0 (UART2 debug
++#     port, 1500000 8N1): the always-present fallback, present even if the
++#     UART3 header is mis-wired.
++#   * ttyS3        -> uart3 (TTL header), 115200 8N1 set by console=ttyS3,115200.
++#
++# Both use "-/bin/sh" (login shell, no getty/login prompt), which is the same
++# mechanism buildroot uses for /dev/console via BR2_TARGET_SERIAL_SHELL_SH.
++#
++# NOTE: do NOT add the "# GENERIC_SERIAL" marker line to this file. buildroot's
++# BUSYBOX_SET_GETTY hook (package/busybox/busybox.mk) rewrites that line and
++# would spawn a second shell competing for /dev/console.
++
++::sysinit:/bin/mount -t proc proc /proc
++::sysinit:/bin/mkdir -p /dev/pts /dev/shm
++::sysinit:/bin/mount -a
++::sysinit:/bin/mkdir -p /run/lock/subsys
++::sysinit:/sbin/swapon -a
++null::sysinit:/bin/ln -sf /proc/self/fd /dev/fd
++null::sysinit:/bin/ln -sf /proc/self/fd/0 /dev/stdin
++null::sysinit:/bin/ln -sf /proc/self/fd/1 /dev/stdout
++null::sysinit:/bin/ln -sf /proc/self/fd/2 /dev/stderr
++::sysinit:/bin/hostname -F /etc/hostname
++::sysinit:/etc/init.d/rcS
++::respawn:-/bin/sh
++ttyS3::respawn:-/bin/sh
++::shutdown:/etc/init.d/rcK
++::shutdown:/sbin/swapoff -a
++::shutdown:/bin/umount -a -r
+-- 
+2.17.1
+diff --git a/u-boot/arch/arm/mach-rockchip/board.c b/u-boot/arch/arm/mach-rockchip/board.c
+index 8d33833bd..4e34b09c5 100644
+--- a/u-boot/arch/arm/mach-rockchip/board.c
++++ b/u-boot/arch/arm/mach-rockchip/board.c
+@@ -1488,6 +1488,18 @@ char *board_fdt_chosen_bootargs(void *fdt)
+ 	if (verbose)
+ 		printf("## bootargs(merged): %s\n\n", bootargs);
+ 
++	/*
++	 * cm588: u-boot env bootargs (androidboot.fwver=...) replaces the DTB
++	 * chosen bootargs inside fdt_chosen(), which drops every console= and
++	 * leaves the kernel without any console. Keep ttyS3 (UART3, TTL) last
++	 * so that it becomes /dev/console (UART2 FIQ is not wired out).
++	 */
++	env_update("bootargs",
++		   "console=ttyFIQ0 console=ttyS3,115200 earlycon=uart8250,mmio32,0xfeb60000");
++
++	/* env_update() may reallocate, refresh the pointer */
++	bootargs = env_get("bootargs");
++
+ 	return (char *)bootargs;
+ }
+ 
+-- 
+2.17.1

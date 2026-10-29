@@ -16,6 +16,7 @@
 | `0003-rk3588-ttyS3-second-console.patch` | DTS 双 console（`console=ttyS3,115200 console=ttyFIQ0`），串口排障用；**`&gmac1` 保持 disabled** |
 | `0004-rk3588-fs-overlay-dual-serial-shell.patch` | fs-overlay `/etc/inittab`：`/dev/console`(ttyFIQ0) 与 `ttyS3` 各一个免登录 root shell |
 | `0005-rk3588-debian-chroot-bash-fix.patch` | Debian 构建专用（chroot 显式 `/bin/bash`），buildroot 流程无关 |
+| `0006-rk3588-uboot-keep-ttyS3-console.patch` | **必需**：u-boot `board_fdt_chosen_bootargs()` 用 env `bootargs` 整体覆盖 DTB 的 `chosen`，`console=` 全丢 → 内核无 console、串口完全静默；此补丁把 `console=ttyFIQ0 console=ttyS3,115200 earlycon=…0xfeb60000` 追加回 env |
 
 
 ---

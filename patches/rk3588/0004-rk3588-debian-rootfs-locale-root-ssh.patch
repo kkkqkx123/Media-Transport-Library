@@ -1,0 +1,65 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: zhanglei <596504085@qq.com>
+Date: Thu, 29 Oct 2026 12:00:00 +0800
+Subject: [PATCH] rk3588/debian: chroot via bash, en_US.UTF-8, root ssh login, root password
+
+Rootfs defaults for the cm588 debug images. Debootstrap leaves the chroot entry
+point as the host's shell and ships no locale/ssh/password defaults, so set them
+explicitly while the target rootfs is still chrooted:
+
+- run the heredoc with /bin/bash; the body uses bash-isms and the host /bin/sh
+  is dash under Debian
+- locale: enable en_US.UTF-8 in /etc/locale.gen, run locale-gen and point
+  /etc/default/locale at it. Verified on hardware: `locale -a` lists en_US.utf8
+  and `LANG=en_US.UTF-8 locale charmap` reports UTF-8
+- ssh: drop /etc/ssh/sshd_config.d/10-ztl-root-login.conf with
+  "PermitRootLogin yes" + "PasswordAuthentication yes", so root can log in with
+  either a key or the password
+- root password: 123456. `linaro` keeps whatever the base tarball shipped
+
+---
+diff --git a/debian/mk-rootfs-bookworm.sh b/debian/mk-rootfs-bookworm.sh
+index df370e826..87b119498 100755
+--- a/debian/mk-rootfs-bookworm.sh
++++ b/debian/mk-rootfs-bookworm.sh
+@@ -48,7 +48,7 @@ echo -e "\033[36m Change root.....................\033[0m"
+ 
+ ID=$(stat --format %u $TARGET_ROOTFS_DIR)
+ 
+-cat << EOF | sudo chroot $TARGET_ROOTFS_DIR
++cat << EOF | sudo chroot $TARGET_ROOTFS_DIR /bin/bash
+ 
+ # Fixup owners
+ if [ "$ID" -ne 0 ]; then
+@@ -237,4 +237,31 @@ rm -rf /var/lib/apt/lists/*
+ rm -rf /var/cache/
+ rm -rf /packages/
+ 
++# >>> ztl: locale / root ssh / root password
++# System language -> en_US.UTF-8 (verified on hardware: locale -a shows en_US.utf8,
++# /etc/default/locale LANG=en_US.UTF-8, `LANG=en_US.UTF-8 locale charmap` = UTF-8).
++if [ -f /etc/locale.gen ]; then
++    sed -i 's/^# *en_US\.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
++    grep -q '^en_US\.UTF-8 UTF-8' /etc/locale.gen || echo 'en_US.UTF-8 UTF-8' >> /etc/locale.gen
++    if command -v locale-gen >/dev/null 2>&1; then locale-gen; fi
++fi
++if command -v update-locale >/dev/null 2>&1; then
++    update-locale LANG=en_US.UTF-8
++else
++    echo 'LANG=en_US.UTF-8' > /etc/default/locale
++fi
++
++# Allow root over ssh (both key and password). Debian ships
++# "#PermitRootLogin prohibit-password" commented out; drop an explicit drop-in so
++# it also wins over an sshd_config that is regenerated later.
++mkdir -p /etc/ssh/sshd_config.d
++cat > /etc/ssh/sshd_config.d/10-ztl-root-login.conf <<'ZTL_SSHD'
++PermitRootLogin yes
++PasswordAuthentication yes
++ZTL_SSHD
++chmod 644 /etc/ssh/sshd_config.d/10-ztl-root-login.conf
++
++# Default root password. `linaro` keeps whatever the base tarball shipped.
++echo 'root:123456' | chpasswd
++# <<< ztl: locale / root ssh / root password
+ EOF

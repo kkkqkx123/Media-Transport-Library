@@ -144,7 +144,7 @@ int mt_macaddr_get(struct mtl_main_impl* impl, enum mtl_port port,
                    struct rte_ether_addr* mac_addr);
 
 /* default with stack */
-#define MT_MEMPOOL_OPS_DEFAULT ("stack")
+#define MT_MEMPOOL_OPS_DEFAULT ("ring_mp_mc")
 
 struct rte_mempool* mt_mempool_create_by_ops(struct mtl_main_impl* impl, const char* name,
                                              unsigned int n, unsigned int cache_size,

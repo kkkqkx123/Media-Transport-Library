@@ -1,8 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * MPP H.264 hardware decoder (RK3588 VPU).
- * H.264 Annex B packets → NV12 dma-buf frames.
- */
-
 #include "mpp_decoder.h"
 #include <drm_fourcc.h>
 #include <errno.h>

@@ -1,9 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * RX Pipeline — orchestrates MTL RX → decode → playout → render + audio.
- * Extended from E2E rx_pipeline with ALSA audio and A/V sync.
- */
-
 #ifndef _RX_PIPELINE_MP4_H_
 #define _RX_PIPELINE_MP4_H_
 

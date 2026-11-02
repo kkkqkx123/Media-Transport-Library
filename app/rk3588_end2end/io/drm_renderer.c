@@ -1,7 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2024 Intel Corporation
- */
-
 #include "drm_renderer.h"
 #include <drm_fourcc.h>
 #include <errno.h>

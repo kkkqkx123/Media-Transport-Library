@@ -1,9 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * Display viewport / multi-layer layout (Phase A: single NV12 layer).
- * Phase B: pip_streams[] up to MP4_PIP_MAX_LANES (v1 NV12 direct: 4).
- */
-
 #ifndef _MP4_DISPLAY_LAYOUT_H_
 #define _MP4_DISPLAY_LAYOUT_H_
 

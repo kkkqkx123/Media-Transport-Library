@@ -1,7 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2024 Intel Corporation
- */
-
 #include "timer.h"
 #if defined(HAVE_MTL) && __has_include(<mtl_api.h>)
 #include <mtl_api.h>

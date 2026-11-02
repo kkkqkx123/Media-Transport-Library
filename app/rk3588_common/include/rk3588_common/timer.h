@@ -1,11 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2024 Intel Corporation
- *
- * High-resolution timer for latency measurement.
- * Phase 1-4: CLOCK_MONOTONIC fallback (no MTL dependency).
- * Phase 5: wraps MTL's mtl_ptp_read_time() when MTL handle is available.
- */
-
 #ifndef _E2E_TIMER_H_
 #define _E2E_TIMER_H_
 

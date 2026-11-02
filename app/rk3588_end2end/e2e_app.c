@@ -1,21 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Phase 5: E2E App with MTL ST22 integration.
- *
- * Modes:
- *   tx:   V4L2 → RGA → MPP Enc → MTL TX → network
- *   rx:   network → MTL RX → MPP Dec → DRM
- *   both: single-board dual-NIC (enP3p49s0 TX + eth0 RX in parallel)
- *
- * Usage:
- *   ./e2e_app tx  [seconds] [--port NAME] [--lip IP] [--dip IP] [--udp PORT]
- *   ./e2e_app rx  [seconds] [--port NAME] [--lip IP] [--sip IP] [--udp PORT]
- *   ./e2e_app both [seconds]  (uses defaults below)
- *
- * Defaults (single-board dual-NIC):
- *   TX: native_af_xdp:enP3p49s0  lip=192.168.80.213  dip=192.168.80.212
- *   RX: native_af_xdp:eth0       lip=192.168.80.212  sip=192.168.80.213 (source)
- */
-
 #include "e2e_config.h"
 #include "slab_pool.h"
 #include "mtl_tx.h"

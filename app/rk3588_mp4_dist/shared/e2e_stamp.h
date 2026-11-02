@@ -1,9 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * In-band E2E capture timestamp prefix on ST22 codestream (TX → RX).
- * Prepended before H.264 Annex B; stripped in mtl_rx_bridge before decode.
- */
-
 #ifndef _E2E_STAMP_H_
 #define _E2E_STAMP_H_
 

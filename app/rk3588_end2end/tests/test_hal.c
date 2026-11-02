@@ -1,13 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2024 Intel Corporation
- *
- * Phase 1 verification: HAL layer self-test
- *   - dma_allocator: allocate dma-buf, export fd, verify size/stride
- *   - timer: measure clock precision
- *   - slab_pool: allocate/free cycle, concurrent stress
- *   - sei_timestamp: build/extract round-trip
- */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

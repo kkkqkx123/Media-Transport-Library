@@ -1,21 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2024 Intel Corporation
- *
- * H.264 Slice-level reassembler. Concatenates multiple slices of a single
- * picture into a complete frame buffer.
- *
- * Only activated when codec.num_slices > 1. For frame-level encoding
- * (slices=1) this module is a transparent no-op.
- *
- * Usage (in Decode Thread):
- *   if (num_slices > 1) {
- *       slice_reasm_feed(reasm, pkt, &frame, &frame_size);
- *       if (frame) mpp_dec_feed(dec, frame, frame_size);
- *   } else {
- *       mpp_dec_feed(dec, pkt.data, pkt.size);
- *   }
- */
-
 #ifndef _E2E_SLICE_REASSEMBLER_H_
 #define _E2E_SLICE_REASSEMBLER_H_
 

@@ -1,8 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * ALSA PCM playback wrapper for RX audio output.
- */
-
 #ifndef _ALSA_AUDIO_H_
 #define _ALSA_AUDIO_H_
 

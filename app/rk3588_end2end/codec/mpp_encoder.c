@@ -1,19 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * MPP H.264 encoder (MPP 1.5.0). NV12 dma-buf → H.264 Annex B packets.
- *
- * Async model (mirrors zlmediakit HdmiInAsyncEncoder):
- *   - send()  : Feeder path — import dma-buf, put_frame, return immediately.
- *   - Collector thread: drain encode_get_packet with a bounded timeout (the
- *     single output-timeout entry point), assemble packets until EOI into a
- *     slab buffer, push into a bounded frame ring (drop-on-full + counter).
- *   - recv()/recv_into(): pop from the ring; -EAGAIN when empty.
- * This removes the in-thread busy-wait that previously stalled the encode
- * thread for up to 10ms per frame inside a 16.7ms frame budget.
- *
- * Hang-guard bookkeeping (last_output_ns) is maintained here; supervision
- * lives in the pipeline layer (see docs/plan/RK3588_END2END_IMPROVEMENT_PLAN.md).
- */
-
 #include "codec_plugin.h"
 #include "slab_pool.h"
 #include <errno.h>

@@ -1,5 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause */
-
 #include "h264_prep.h"
 #include "../tx/extradata_handler.h"
 #include <stdbool.h>

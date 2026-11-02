@@ -1,9 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * Audio/Video synchronization engine.
- * Master clock: audio (ALSA hardware clock mapped to TAI via first audio frame).
- */
-
 #ifndef _AV_SYNC_H_
 #define _AV_SYNC_H_
 

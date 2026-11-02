@@ -1,12 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2024 Intel Corporation
- *
- * Lock-free SPSC (Single Producer, Single Consumer) ring buffer.
- *
- * push/pop remain non-blocking. pop_wait blocks the consumer on empty
- * using pthread_cond (replaces usleep polling).
- */
-
 #ifndef _E2E_RING_BUFFER_H_
 #define _E2E_RING_BUFFER_H_
 

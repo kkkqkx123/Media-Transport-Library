@@ -1,11 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * MTL RX Bridge — copies codestream from MTL hugepage buffers to slab pool,
- * then pushes codec_packet to the decode ring.
- *
- * Adapted from E2E mtl_rx_bridge.
- */
-
 #ifndef _MTL_RX_BRIDGE_H_
 #define _MTL_RX_BRIDGE_H_
 

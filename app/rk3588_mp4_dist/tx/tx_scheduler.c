@@ -1,9 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * TX Scheduler — session pull model: N video lanes + optional audio on main lane.
- * MTL get_next_frame drives wire pacing (no PTS sleep, no TX rings).
- */
-
 #define _GNU_SOURCE
 #include "tx_scheduler.h"
 #include "mp4_playlist.h"

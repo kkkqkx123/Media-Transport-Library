@@ -1,5 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause */
-
 #include "../shared/display_layout.h"
 #include <stdio.h>
 #include <stdlib.h>

@@ -1,8 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * DRM mode string helpers — derive refresh from content fps (P4).
- */
-
 #ifndef _MP4_DRM_MODE_H_
 #define _MP4_DRM_MODE_H_
 

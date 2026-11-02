@@ -1,9 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2024 Intel Corporation
- *
- * DRM/KMS HDMI renderer � dma-buf import + page_flip display.
- */
-
 #ifndef _E2E_DRM_RENDERER_H_
 #define _E2E_DRM_RENDERER_H_
 

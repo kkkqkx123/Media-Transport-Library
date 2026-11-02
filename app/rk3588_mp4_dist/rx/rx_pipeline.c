@@ -1,9 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * RX Pipeline — MPP decode and DRM render on separate threads.
- * P2: decode pushes playout_buffer; render pops at scheduled PTS.
- */
-
 #define _GNU_SOURCE
 #include "rx_pipeline.h"
 #include "mtl_rx_audio.h"

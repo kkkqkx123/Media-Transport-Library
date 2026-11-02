@@ -1,13 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2024 Intel Corporation
- *
- * TX Pipeline: V4L2 capture → RGA convert → MPP encode → ring buffer output.
- *
- * Phase 4 (no MTL): the output ring is consumed by rx_pipeline for local
- * loopback testing. Phase 5 will replace the ring consumer with MTL ST22
- * session for network transmission.
- */
-
 #ifndef _E2E_TX_PIPELINE_H_
 #define _E2E_TX_PIPELINE_H_
 

@@ -1,9 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * P7: map MTL absolute session epoch → stream-relative TAI ns for ST22/ST30
- * USER_TIMESTAMP pacing.
- */
-
 #ifndef _TX_TAI_TS_H_
 #define _TX_TAI_TS_H_
 

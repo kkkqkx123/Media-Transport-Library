@@ -1,10 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * Unit tests for media_clk unwrap + PTS timeline.
- *
- * Usage: test_media_clk
- */
-
 #include "../rx/media_clk.h"
 #include <stdio.h>
 #include <stdlib.h>

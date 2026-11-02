@@ -1,8 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * A/V sync: video frame TAI PTS vs audio TAI timeline (ALSA elapsed + anchor).
- */
-
 #include "av_sync.h"
 #include <stdio.h>
 #include <time.h>

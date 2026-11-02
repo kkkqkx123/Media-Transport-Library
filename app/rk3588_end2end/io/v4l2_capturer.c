@@ -1,22 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2024 Intel Corporation
- *
- * V4L2 HDMI capture using Multiplanar API (required by RK3588 rk_hdmirx).
- * Captures NV12/BGR3 frames and exports dma-buf fds for zero-copy to MPP.
- *
- * Robustness notes (mirrors zlmediakit HdmiInV4l2Capture):
- *  - S_FMT is never trusted: G_FMT is read back and the fourcc must match,
- *    otherwise the next candidate format is tried.
- *  - Placeholder resolutions (<=128x128) are treated as "no signal" and fail
- *    with -ENODATA so the caller can retry later.
- *  - Kernel frame timestamps (V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC) are
- *    preferred; dequeue time is only a fallback. PTS never goes backwards.
- *  - Buffers are re-queued only via v4l2_capturer_release(): generation +
- *    claim-bit CAS guarantees each buffer is queued at most once per frame,
- *    protecting against double-release and use-after-requeue races with the
- *    async MPP/RGA consumers.
- */
-
 #include "v4l2_capturer.h"
 #include <drm_fourcc.h>
 #include <errno.h>

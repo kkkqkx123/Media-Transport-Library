@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: BSD-3-Clause
 # MP4 Distribution over MTL ST22 — independent meson project
 #
 # RK3588 (TX + RX):

@@ -1,14 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * Extradata handler — parses AVCC-format extradata from FFmpeg,
- * converts to Annex B format (start-code delimited), and splices
- * SPS+PPS before IDR frames when needed.
- *
- * Note: When the h264_mp4toannexb BSF is active, SPS+PPS are already
- * embedded in the first IDR frame by FFmpeg. This handler provides
- * an additional safety net for late joiners and non-BSF paths.
- */
-
 #include "extradata_handler.h"
 #include <stdio.h>
 #include <stdlib.h>

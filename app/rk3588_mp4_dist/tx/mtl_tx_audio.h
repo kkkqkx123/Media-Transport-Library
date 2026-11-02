@@ -1,8 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * ST30 TX session wrapper — framebuff pool + lcore pull callbacks.
- */
-
 #ifndef _MTL_TX_AUDIO_H_
 #define _MTL_TX_AUDIO_H_
 

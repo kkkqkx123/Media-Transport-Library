@@ -1,10 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * Abstract codec plugin interface (common union version).
- * Superset of both rk3588 apps' codec_plugin.h: keeps mp4_dist base and
- * adds end2end's intra_refresh fields and optional supervision callbacks.
- */
-
 #ifndef _RK3588_COMMON_CODEC_PLUGIN_H_
 #define _RK3588_COMMON_CODEC_PLUGIN_H_
 

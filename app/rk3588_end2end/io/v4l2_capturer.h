@@ -1,16 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2024 Intel Corporation
- *
- * V4L2 HDMI capture using Multiplanar API (required by RK3588 rk_hdmirx).
- * Captures NV12/BGR3 frames and exports dma-buf fds for zero-copy to MPP.
- *
- * Buffer lifetime: frames are NOT re-queued when the callback returns — the
- * consumer must call v4l2_capturer_release() with the frame's
- * (buf_index, generation) once it has finished with the dma-buf fd. Release
- * is idempotent: a stale or repeated release for an already-requeued or
- * recycled buffer is silently ignored (generation + claim-bit CAS).
- */
-
 #ifndef _E2E_V4L2_CAPTURER_H_
 #define _E2E_V4L2_CAPTURER_H_
 

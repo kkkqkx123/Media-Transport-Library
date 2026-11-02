@@ -1,10 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2024 Intel Corporation
- *
- * Bridges MTL ST22 RX output (rx_pkt ring) to rx_pipeline input (codec_packet ring).
- * Copies codestream into slab_pool and returns MTL framebuff immediately.
- */
-
 #ifndef _E2E_MTL_RX_BRIDGE_H_
 #define _E2E_MTL_RX_BRIDGE_H_
 

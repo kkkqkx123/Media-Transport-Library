@@ -1,8 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * Common types and defines shared across all MP4 distribution modules.
- */
-
 #ifndef _MP4_DIST_APP_H_
 #define _MP4_DIST_APP_H_
 

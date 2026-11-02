@@ -1,11 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Phase 2: V4L2→DRM pipeline verification.
- *
- * RK3588 rk_hdmirx defaults to BGR3. DRM passes NV12 framebuffers.
- * This causes color distortion but proves zero-copy dma-buf sharing works.
- * Phase 3 will add RGA hardware BGR3→NV12 conversion.
- */
-
 #include <drm_fourcc.h>
 #include <signal.h>
 #include <stdatomic.h>

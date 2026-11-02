@@ -1,8 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * H.264 Annex B prep for MPP: validate, cache SPS/PPS, inject before IDR.
- */
-
 #ifndef _H264_PREP_H_
 #define _H264_PREP_H_
 

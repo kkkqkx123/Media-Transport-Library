@@ -1,9 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * Extradata handler — SPS/PPS extraction and IDR-frame prepending.
- * Ensures every IDR frame carries codec configuration for RX decoder init.
- */
-
 #ifndef _EXTRADATA_HANDLER_H_
 #define _EXTRADATA_HANDLER_H_
 

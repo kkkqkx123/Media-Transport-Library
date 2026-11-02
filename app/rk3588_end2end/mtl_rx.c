@@ -1,12 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2024 Intel Corporation
- *
- * MTL ST22 RX wrapper — see mtl_rx.h for architecture.
- *
- * notify_frame_ready callback runs in MTL lcore tasklet (non-blocking).
- * Uses a pre-allocated packet pool to avoid malloc in the hot path.
- */
-
 #include "mtl_rx.h"
 #include "ring_buffer.h"
 #include <errno.h>

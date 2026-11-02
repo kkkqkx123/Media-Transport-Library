@@ -1,21 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2024 Intel Corporation
- *
- * H.264 SEI NAL (user_data_unregistered) timestamp embedding.
- * Embeds capture timestamp + frame sequence into the codestream
- * for cross-machine end-to-end latency measurement.
- *
- * SEI NAL format (25 bytes total):
- *   [00 00 00 01]  Annex B start code         (4 bytes)
- *   [06]           NAL header: type=6(SEI)    (1 byte)
- *   [05]           payloadType=5              (1 byte)
- *   [10]           payloadSize=16             (1 byte)
- *   [4B UUID]      "MTLT" identifier          (4 bytes)
- *   [4B frame_seq]  global frame sequence     (4 bytes, little-endian)
- *   [8B cap_ts_ns]  capture PTP timestamp     (8 bytes, little-endian)
- *   [80]           RBSP trailing bits         (1 byte)
- */
-
 #ifndef _E2E_SEI_TIMESTAMP_H_
 #define _E2E_SEI_TIMESTAMP_H_
 

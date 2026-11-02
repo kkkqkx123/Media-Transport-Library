@@ -1,8 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * MP4 playlist — separate video/audio demux per file, loop and seek support.
- */
-
 #include "mp4_playlist.h"
 #include <errno.h>
 #include <pthread.h>

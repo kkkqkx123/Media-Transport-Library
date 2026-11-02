@@ -1,7 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2024 Intel Corporation
- */
-
 #include "slab_pool.h"
 #include <pthread.h>
 #include <stdatomic.h>

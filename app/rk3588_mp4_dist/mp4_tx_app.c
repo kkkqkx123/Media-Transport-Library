@@ -1,11 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * MP4 Distribution TX — MP4 file → FFmpeg demux → MTL ST22/ST30.
- *
- * Single stream (legacy): mp4_file / --mp4
- * Multi-session (same NIC): tx_streams[] in JSON — one process, N ST22 sessions
- */
-
 #include "mp4_dist_app.h"
 #include "mp4_dist_config.h"
 #include "shared/display_layout.h"

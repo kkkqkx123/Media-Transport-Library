@@ -1,8 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * FFmpeg-based MP4 file demuxer implementation.
- */
-
 #include "mp4_demux.h"
 #include <errno.h>
 #include <stdio.h>

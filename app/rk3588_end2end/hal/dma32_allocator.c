@@ -1,7 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * DMA32 dma-heap allocator (see dma32_allocator.h).
- */
-
 #include "dma32_allocator.h"
 
 #include <errno.h>

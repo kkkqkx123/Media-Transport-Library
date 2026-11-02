@@ -1,8 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * Configuration management: JSON file loading + CLI argument parsing.
- */
-
 #ifndef _MP4_DIST_CONFIG_H_
 #define _MP4_DIST_CONFIG_H_
 

@@ -1,14 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * DMA32 dma-heap allocator.
- *
- * RGA's internal MMU is 32-bit: buffers with physical addresses above 4GiB
- * fail kernel mapping ("rga_mm: unsupported memory larger than 4G"), and on
- * 4GiB boards the top ~256MiB sits in the high window where mpp_buffer_get /
- * generic CMA may land. Allocating from the DMA32 dma-heap guarantees
- * physical addresses below 4GiB. The resulting dmabuf fd imports into MPP
- * (MPP_BUFFER_TYPE_EXT_DMA) and feeds RGA fd-to-fd blits zero-copy.
- */
-
 #ifndef _E2E_DMA32_ALLOCATOR_H_
 #define _E2E_DMA32_ALLOCATOR_H_
 

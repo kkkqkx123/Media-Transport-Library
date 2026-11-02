@@ -1,11 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * Common pipeline types (union of both rk3588 apps).
- * Superset of app/rk3588_end2end/pipeline/pipeline_common.h and
- * app/rk3588_mp4_dist/shared/pipeline_common.h. Field sets from both are
- * retained; callers use only the fields their build needs.
- */
-
 #ifndef _RK3588_COMMON_PIPELINE_COMMON_H_
 #define _RK3588_COMMON_PIPELINE_COMMON_H_
 

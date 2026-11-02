@@ -1,10 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2024 Intel Corporation
- *
- * Pre-allocated slab pool for variable-length coded data.
- * Avoids malloc/free on the hot path (TX Fill Thread).
- */
-
 #ifndef _E2E_SLAB_POOL_H_
 #define _E2E_SLAB_POOL_H_
 

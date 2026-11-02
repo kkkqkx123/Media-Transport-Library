@@ -1,5 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause */
-
 #include "ptp_time.h"
 #include <stdio.h>
 #include <string.h>

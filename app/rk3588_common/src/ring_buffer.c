@@ -1,7 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2024 Intel Corporation
- */
-
 #include "ring_buffer.h"
 #include <errno.h>
 #include <pthread.h>

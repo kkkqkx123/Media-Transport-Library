@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: BSD-3-Clause
 # RK3588 E2E HDMI-MTL-HDMI — Phase 1-5 build
 
 project('rk3588_e2e', 'c', default_options: ['buildtype=release', 'warning_level=3'])

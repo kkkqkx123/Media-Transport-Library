@@ -1,8 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * ST30 RX session — lcore callback hands frames to ALSA thread via lock-free SPSC.
- */
-
 #ifndef _MTL_RX_AUDIO_H_
 #define _MTL_RX_AUDIO_H_
 

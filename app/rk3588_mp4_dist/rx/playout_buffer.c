@@ -1,8 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * Playout buffer implementation — thread-safe decoded frame queue.
- */
-
 #include "playout_buffer.h"
 #include <errno.h>
 #include <stdio.h>

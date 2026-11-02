@@ -1,18 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * RGA hardware BGR3→NV12 converter.
- *
- * Pool semantics: NV12 output buffers carry an occupancy flag; rga_convert()
- * acquires a free slot, and the consumer must rga_converter_release() it once
- * the encoder is done (MPP import is async). Exhaustion drops the frame.
- *
- * Allocation: DMA32 dma-heap first (RGA's 32-bit MMU cannot map buffers in
- * the >4GiB physical window); falls back to the legacy RGA allocator.
- *
- * Fallback chain: fd→fd hardware blit → after 3 consecutive fd-path failures,
- * a sticky CPU (mmap + software) conversion path; single failures just drop
- * the frame and count.
- */
-
 #include "rga_converter.h"
 #include "../hal/dma32_allocator.h"
 #include <errno.h>

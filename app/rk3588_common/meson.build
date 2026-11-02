@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: BSD-3-Clause
 # RK3588 shared common utilities — additive-only shared static library.
 
 project('rk3588_common', 'c', default_options: ['buildtype=release', 'warning_level=3'])

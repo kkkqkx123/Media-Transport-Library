@@ -1,12 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2024 Intel Corporation
- *
- * MTL ST22 RX wrapper: notify_frame_ready callback → ring → decode thread.
- *
- * The notify_frame_ready callback runs in MTL lcore tasklet (Core 0, isolcpus).
- * It must be non-blocking: ring_push only, no malloc, no mutex.
- */
-
 #ifndef _E2E_MTL_RX_H_
 #define _E2E_MTL_RX_H_
 

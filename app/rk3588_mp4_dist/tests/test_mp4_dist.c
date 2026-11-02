@@ -1,16 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * Progressive test harness for MP4 Distribution pipeline.
- * Each phase validates one component independently.
- *
- * Usage:
- *   test_mp4_dist phase1 <mp4_file>
- *   test_mp4_dist phase2 <mp4_file>
- *   test_mp4_dist phase3 <mp4_file> [frame_count]
- *   test_mp4_dist phase4 <mp4_file> [max_packets=1440]
- *   test_mp4_dist phase4_neg <mp4_file> [max_packets=500]
- */
-
 #include "../tx/mp4_demux.h"
 #include "../tx/extradata_handler.h"
 #include <libavcodec/avcodec.h>

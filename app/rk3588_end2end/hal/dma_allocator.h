@@ -1,10 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2024 Intel Corporation
- *
- * dma-buf memory allocator using DRM dumb buffers.
- * Provides dma-buf fd export for zero-copy sharing between V4L2, MPP, DRM.
- */
-
 #ifndef _E2E_DMA_ALLOCATOR_H_
 #define _E2E_DMA_ALLOCATOR_H_
 

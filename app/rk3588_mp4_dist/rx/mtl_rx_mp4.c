@@ -1,11 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * MTL ST22 RX wrapper — session API, notify_frame_ready callback,
- * codestream frames pushed to a ring buffer.
- *
- * Adapted from E2E mtl_rx.c.
- */
-
 #include "mtl_rx_mp4.h"
 #include "ring_buffer.h"
 #include "../shared/au_trace.h"

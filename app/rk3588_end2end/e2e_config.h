@@ -1,9 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2024 Intel Corporation
- *
- * JSON configuration loader for e2e_app (optional --config).
- */
-
 #ifndef _E2E_CONFIG_H_
 #define _E2E_CONFIG_H_
 

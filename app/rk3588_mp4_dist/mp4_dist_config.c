@@ -1,8 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * Configuration: defaults, JSON loading, CLI parsing.
- */
-
 #include "mp4_dist_config.h"
 #include "shared/drm_mode.h"
 #include "shared/display_layout.h"

@@ -1,5 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause */
-
 #include "au_trace.h"
 #include <pthread.h>
 #include <stdio.h>

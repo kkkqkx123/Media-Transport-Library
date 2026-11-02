@@ -1,5 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause */
-
 #include "rx_e2e_stats.h"
 #include <stdio.h>
 #include <string.h>

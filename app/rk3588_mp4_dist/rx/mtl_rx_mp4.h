@@ -1,9 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * MTL ST22 RX wrapper for MP4 distribution.
- * Adapted from E2E mtl_rx — uses session API with notify_frame_ready callback.
- */
-
 #ifndef _MTL_RX_MP4_H_
 #define _MTL_RX_MP4_H_
 

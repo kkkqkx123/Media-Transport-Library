@@ -1,13 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Phase 3: Codec verification.
- * Modes:
- *   rga:     V4L2 → RGA(BGR3→NV12) → DRM  (正确颜色回环)
- *   encode:  V4L2 → RGA → MPP enc → .h264 file
- *   loopback:V4L2 → RGA → MPP enc → MPP dec → DRM  (本地编解码回环)
- *
- * Usage: ./test_codec [rga|encode|loopback] [/dev/video0] [/dev/dri/card0]
- */
-
 #include <drm_fourcc.h>
 #include <signal.h>
 #include <stdatomic.h>

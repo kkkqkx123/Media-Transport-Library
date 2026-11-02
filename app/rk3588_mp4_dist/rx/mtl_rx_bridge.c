@@ -1,11 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * MTL RX Bridge — copies codestream from MTL framebuffers to slab pool,
- * pushes codec_packet to decode ring. Dedicated pthread.
- *
- * Adapted from E2E mtl_rx_bridge.c.
- */
-
 #include "mtl_rx_bridge.h"
 #include "mtl_rx_mp4.h"
 #include "ring_buffer.h"

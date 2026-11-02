@@ -1,18 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * test_drm_plane — verify RK3588 VOP overlay plane scaling/positioning (Phase A PiP).
- *
- * Draws a black fullscreen primary CRTC + NV12 test pattern on an overlay plane
- * scaled into a configurable rectangle. Optionally animates the rectangle.
- *
- * Usage:
- *   ./test_drm_plane [options]
- *   ./test_drm_plane --list-planes-only
- *
- * Requires DRM master (no Xorg/Weston on the same card). Run from a VT or stop the
- * display manager first.
- */
-
 #include <drm.h>
 #include <drm_fourcc.h>
 #include <errno.h>

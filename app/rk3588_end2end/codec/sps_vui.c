@@ -1,7 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Port of zlmediakit HdmiInSpsVui to C. See sps_vui.h.
- */
-
 #include "sps_vui.h"
 
 #include <stdbool.h>

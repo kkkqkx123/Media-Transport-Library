@@ -1,8 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * MP4 playlist — multi-file, loop, seek; separate video/audio demux instances.
- */
-
 #ifndef _MP4_PLAYLIST_H_
 #define _MP4_PLAYLIST_H_
 

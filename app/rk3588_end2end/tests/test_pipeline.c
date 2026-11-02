@@ -1,18 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Phase 4: Pipeline integration test — local loopback with latency measurement.
- *
- * Thread model:
- *   Core 1: V4L2 Capture
- *   Core 2: RGA + MPP Encode + SEI inject
- *   Core 3: SEI extract + MPP Decode + DRM Render
- *
- * Rings:
- *   CAP2ENC (dmabuf_frame, size=3): Capture → Encode
- *   ENC2DEC (codec_packet, size=3): Encode → Decode+Render
- *
- * Usage: ./test_pipeline [seconds]
- */
-
 #include "../pipeline/tx_pipeline.h"
 #include "../pipeline/rx_pipeline.h"
 #include <signal.h>

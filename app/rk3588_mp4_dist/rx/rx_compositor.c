@@ -1,8 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * RX compositor — multi-lane ST22 decode + DRM multi-plane display (Phase B).
- */
-
 #define _GNU_SOURCE
 #include "rx_compositor.h"
 #include "mtl_rx_mp4.h"

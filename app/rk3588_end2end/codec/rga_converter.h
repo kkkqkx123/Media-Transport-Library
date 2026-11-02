@@ -1,19 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * RGA hardware BGR3→NV12 converter.
- * Zero-copy: imports src dma-buf, writes to pre-allocated dst dma-buf.
- *
- * Pool semantics: output buffers are ACQUIRED per frame and must be
- * RELEASED by the consumer once the encoder has finished with the fd
- * (MPP import is async — a blind ring rotation could hand the same buffer
- * to a new blit while MPP still reads the old one). Pool exhaustion drops
- * the new frame with a counter instead of silently reusing a busy buffer.
- *
- * Fallback chain: fd→fd blit failure alone drops the frame; 3 consecutive
- * failures on the fd path degrade it (sticky) to an mmap + CPU copy
- * conversion. DMA32 heap allocation guarantees RGA 32-bit MMU mapping.
- */
-
 #ifndef _E2E_RGA_CONVERTER_H_
 #define _E2E_RGA_CONVERTER_H_
 

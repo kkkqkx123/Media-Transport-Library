@@ -1,10 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * ALSA PCM playback implementation.
- * All snd_pcm_* calls are serialized — decode (A/V sync) and audio RX threads
- * must never touch the handle concurrently.
- */
-
 #include "alsa_audio.h"
 #include <alsa/asoundlib.h>
 #include <errno.h>

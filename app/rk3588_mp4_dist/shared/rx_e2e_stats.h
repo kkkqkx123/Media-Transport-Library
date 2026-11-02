@@ -1,8 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * RX E2E-C latency stats: present_ptp - in-band capture_tai_ns.
- */
-
 #ifndef _RX_E2E_STATS_H_
 #define _RX_E2E_STATS_H_
 

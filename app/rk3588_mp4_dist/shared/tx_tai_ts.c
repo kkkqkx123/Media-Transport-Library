@@ -1,5 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause */
-
 #include "tx_tai_ts.h"
 #include <stdio.h>
 

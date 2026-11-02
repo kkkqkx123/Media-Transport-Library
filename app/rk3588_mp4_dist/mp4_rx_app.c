@@ -1,15 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * MP4 Distribution RX — network → MTL RX → MPP decode → DRM + ALSA.
- *
- * Usage:
- *   ./mp4_dist_rx [sec] [--config FILE] [--port P] [--lip IP] [--sip IP]
- *       [--udp PORT] [--audio-udp PORT] [--width W] [--height H] [--fps FPS]
- *       [--probe-mp4 FILE] [--mtl-log-level LEVEL]
- *
- * Phase B: config with pip_streams[] → rx_compositor (multi-lane PiP).
- */
-
 #include "mp4_dist_app.h"
 #include "mp4_dist_config.h"
 #include "rx/rx_pipeline.h"

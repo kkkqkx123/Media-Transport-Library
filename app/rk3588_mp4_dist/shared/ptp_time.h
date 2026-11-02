@@ -1,8 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * PTP/TAI time helpers for mp4_dist (linuxptp + MTL external time source).
- */
-
 #ifndef _MP4_PTP_TIME_H_
 #define _MP4_PTP_TIME_H_
 

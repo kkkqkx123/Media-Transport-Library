@@ -1,9 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * Playout buffer — fixed-size queue of decoded frames with PTS ordering.
- * Decode thread pushes, render thread pops at scheduled PTS.
- */
-
 #ifndef _PLAYOUT_BUFFER_H_
 #define _PLAYOUT_BUFFER_H_
 

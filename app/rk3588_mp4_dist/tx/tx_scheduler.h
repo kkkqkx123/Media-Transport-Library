@@ -1,9 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * TX Scheduler — orchestrates MP4 demux → extradata → MTL TX with frame pacing.
- * Runs the main TX loop in a dedicated thread (or synchronously in TX mode).
- */
-
 #ifndef _TX_SCHEDULER_H_
 #define _TX_SCHEDULER_H_
 

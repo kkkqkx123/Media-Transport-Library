@@ -1,10 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * SPS VUI injection self-test: builds a synthetic baseline SPS Annex-B packet,
- * injects VUI colour signalling, and re-parses the output to verify
- * vui_parameters_present_flag / video_signal_type / colour description.
- * Pure bitstream logic — runs on any host, no RK3588 hardware needed.
- */
-
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>

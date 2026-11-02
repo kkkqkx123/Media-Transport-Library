@@ -1,8 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * RX compositor — N video lanes (ST22+decode) + single DRM multi-plane output.
- */
-
 #ifndef _RX_COMPOSITOR_H_
 #define _RX_COMPOSITOR_H_
 

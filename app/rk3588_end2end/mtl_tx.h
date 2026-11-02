@@ -1,15 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2024 Intel Corporation
- *
- * MTL ST22 TX wrapper: framebuff pool + lcore callbacks.
- *
- * Encode thread writes codestream directly into MTL hugepage framebuffs
- * (acquire → fill → publish). No fill thread or intermediate slab copy.
- *
- * State machine (lock-free atomics, lcore-safe):
- *   FREE →(encode thread) FILLING → READY →(get_next_frame) SENDING →(notify_done) FREE
- */
-
 #ifndef _E2E_MTL_TX_H_
 #define _E2E_MTL_TX_H_
 

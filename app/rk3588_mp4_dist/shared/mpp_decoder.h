@@ -1,10 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * MPP H.264 hardware decoder (RK3588 VPU).
- * Input: H.264 Annex B coded packets
- * Output: NV12 dma-buf frames
- */
-
 #ifndef _E2E_MPP_DECODER_H_
 #define _E2E_MPP_DECODER_H_
 

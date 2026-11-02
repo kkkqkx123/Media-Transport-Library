@@ -1,13 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2024 Intel Corporation
- *
- * RX Pipeline: ring buffer → MPP decode → DRM render.
- *
- * Phase 4 (no MTL): input ring is connected to tx_pipeline output for
- * local loopback. Phase 5 will replace the ring producer with MTL ST22
- * session (network receive).
- */
-
 #ifndef _E2E_RX_PIPELINE_H_
 #define _E2E_RX_PIPELINE_H_
 

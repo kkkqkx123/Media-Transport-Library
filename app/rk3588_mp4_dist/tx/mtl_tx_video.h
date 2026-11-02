@@ -1,9 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * ST22 TX session wrapper — framebuff pool + lcore pull callbacks.
- * Producer thread: acquire_fb → fill → publish_fb (MTL get_next_frame paces wire).
- */
-
 #ifndef _MTL_TX_VIDEO_H_
 #define _MTL_TX_VIDEO_H_
 

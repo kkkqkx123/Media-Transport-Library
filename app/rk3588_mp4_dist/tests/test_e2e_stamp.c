@@ -1,5 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause */
-
 #include "../shared/e2e_stamp.h"
 #include <assert.h>
 #include <stdio.h>

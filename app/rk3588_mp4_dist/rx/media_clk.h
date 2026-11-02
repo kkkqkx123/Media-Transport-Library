@@ -1,8 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * ST2110 media clock (90k RTP) → presentation timeline (PTP/TAI or monotonic).
- */
-
 #ifndef _MEDIA_CLK_H_
 #define _MEDIA_CLK_H_
 

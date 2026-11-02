@@ -1,12 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2024 Intel Corporation
- *
- * H.264 Slice reassembler — see slice_reassembler.h for design.
- *
- * UE Golomb decoding of first_mb_in_slice is based on:
- *   ITU-T H.264 (V12) §9.1 Parsing process for Exp-Golomb codes.
- */
-
 #include "slice_reassembler.h"
 #include <stdlib.h>
 #include <string.h>

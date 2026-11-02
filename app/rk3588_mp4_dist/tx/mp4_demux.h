@@ -1,10 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- *
- * FFmpeg-based MP4 file demuxer.
- * Opens an MP4 file, reads AVPackets without video decoding.
- * Video packets are returned in Annex B format (FFmpeg auto-converts).
- */
-
 #ifndef _MP4_DEMUX_H_
 #define _MP4_DEMUX_H_
 

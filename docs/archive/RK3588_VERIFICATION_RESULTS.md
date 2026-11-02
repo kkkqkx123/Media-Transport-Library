@@ -83,3 +83,76 @@
 
 - 已验证通过：库加载、组件测试（6 项）、MTL AF_XDP 传输初始化、V4L2 1080p60 采集、RGA/MPP 编码初始化。
 - 待补齐：MtlManager、MP4 测试片源、HDMI 显示器、linuxptp，以完成 e2e_app / mp4_dist 全链路与双机 PTP 验证。
+---
+
+## 9. 补充验证：内核后端 TX/RX
+
+### 9.1 mp4_dist_tx（kernel backend）
+
+- 配置：`tx_port=kernel:enP2p33s0`，TX/RX IP 均为 `192.168.80.202`
+- 结果：MTL 初始化成功，`st22_tx_create` / `st30_tx_create` 成功，链路发送约 4.06 Mb/s、11238 packets
+- 说明：`config_parse_json: open json file kahawai.json fail` 为非致命默认配置缺失
+
+**结果：✅ TX 数据面通过（内核后端）**
+
+### 9.2 rx_minimal（kernel backend）
+
+- 结果：MTL 与 mempool 初始化成功；在同机回环条件下未收到帧（0 frames）
+- 说明：内核后端/AF_XDP 的本机回环接收可能受限，需对端设备或抓包进一步确认
+
+**结果：⚠️ RX 初始化通过，回环收帧未验证**
+
+---
+
+## 10. MtlManager 补充与 AF_XDP 可用性
+
+### 10.1 构建结果
+
+- 使用板端原生 `g++-10` 成功编译 `MtlManager`（含 XDP 支持）。
+- 安装 `xdp-dispatcher.o` 到 `/lib/bpf/`。
+- MtlManager 可启动并监听客户端。
+
+### 10.2 AF_XDP 运行结果
+
+- `e2e_app tx` 仍失败：`register fail` / `AF_XDP backend must run with MTL Manager!`
+- Manager 日志显示：`Underlying driver does not support XDP in native mode`
+- 结论：板端网卡驱动（`enP2p33s0`）在当前 5.10 内核下不支持 native XDP，因此 AF_XDP 路径不可用。
+
+### 10.3 可用替代路径
+
+- 使用 `kernel:` 后端进行 MTL 验证，不依赖 MtlManager 与 XDP 驱动支持。
+- `mp4_dist_tx` 已在内核后端成功发送 ST22/ST30 数据。
+
+---
+
+## 11. AF_XDP 不可用根因分析
+
+### 11.1 现象
+
+- `mt_dev_xdp_init`: `Underlying driver does not support XDP in native mode`
+- MtlManager 尝试 native attach 失败，skb fallback 也失败。
+
+### 11.2 原因
+
+- 板端网卡驱动为 `yt6801`（PCI 1F0A:6801）。
+- 该驱动源码（`drivers/net/ethernet/yt6801`）未实现 `ndo_bpf` / `ndo_xdp_xmit`，因此不支持 XDP。
+- 内核配置已启用 `XDP_SOCKETS` / `BPF_SYSCALL`，但驱动层不具备 XDP 能力。
+- `rk_gmac-dwmac`（eth0）同样未实现 XDP；仅 USB 网卡驱动支持通用 XDP。
+
+### 11.3 结论
+
+- 这是**驱动/硬件能力限制**，不是内核配置问题。
+- `patches/rk3588-5.10` 的 0001 仅启用 AF_XDP/BPF 配置；0002 引入 YT6801 驱动但未添加 XDP 支持。
+- 若要启用 AF_XDP，需要为 YT6801 驱动实现 XDP hook，或更换支持 XDP 的 NIC/驱动。
+- 当前推荐验证路径：使用 `kernel:` 后端，不依赖 AF_XDP。
+
+
+---
+
+## 12. ALSA HDMI 音频采集验证
+
+- 设备：`hw:3,0` = `rockchip,hdmiin`
+- 方法：`ffmpeg -f alsa -i hw:3,0 -t 4 ...`
+- 结果：成功采集 4s 音频，非静音（mean_volume -20.8 dB，max_volume -2.3 dB）
+- 说明：`arecord` 默认 U8 格式不可用，需显式指定 S16_LE/S24_LE/S32_LE
+- 结论：✅ ALSA HDMI 输入音频采集通过

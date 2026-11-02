@@ -11,13 +11,13 @@
 
 ## 0. 完成情况总览（2026-10-29 实测代码）
 
-对 `app/` 实际代码与本方案逐项核对，**所有阶段均未落地**：
+对 `app/` 实际代码与本方案逐项核对（2026-10-29 更新：阶段 1 已落地，阶段 3 部分落地）：
 
 | 阶段 | 状态 | 证据 |
 |---|---|---|
-| 阶段 1：建立 `app/rk3588_common/` + A 档模块 + `check_sync.sh` | **未开始** | `app/rk3588_common/` 不存在；仓库内无 `check_sync.sh`；两个 meson.build 无 `rk3588_common` 引用 |
-| 阶段 2：新代码改用 common（惯性迁移） | **未开始** | 两侧 meson.build 未追加 `../../rk3588_common/include`，无 `librk3588_common.a` 链接 |
-| 阶段 3：B 档超集合并（timer / pipeline_common / codec_plugin） | **未开始** | 两侧本地拷贝仍各自存在；`pipeline_common.h` 并非 mp4_dist 对 end2end 的超集，需重新评估（见 §1 修订） |
+| 阶段 1：建立 `app/rk3588_common/` + A 档模块 + `check_sync.sh` | **已完成** | `app/rk3588_common/` 已创建（meson.build、include/src、A 档 3 组模块）；`check_sync.sh` 已添加并通过；common 在 devs 上构建成功（mtl 可选） |
+| 阶段 2：新代码改用 common（惯性迁移） | **重新定义** | 不再强制迁移存量代码；common 作为可选依赖提供（include 路径/链接按需追加），见 §7 |
+| 阶段 3：B 档超集合并（timer / pipeline_common / codec_plugin） | **部分完成** | `timer.c` 已以 mp4_dist 超集版进入 common（mtl 可选）；`codec_plugin.h` 已以并集版进入 common；`pipeline_common.h` 因同名类型字段不兼容暂不合并（阻塞，见 §1 修订） |
 | 阶段 4：C 档深度分叉（drm_renderer / mpp_decoder） | **未开始** | 两份拷贝仍独立，无合并信号触发 |
 
 A 档 3 组模块的 md5 一致性已复核（仍完全相同），可作为阶段 1 的直接输入：
@@ -79,7 +79,7 @@ app/
 
 ## 3. 分阶段实施
 
-### 阶段 1：建立 common 工程 + 同步校验（零风险，先行落地）【未开始】
+### 阶段 1：建立 common 工程 + 同步校验（零风险，先行落地）【已完成】
 
 1. 新建 `app/rk3588_common/`，按 §2 形态放入 A 档模块（`ring_buffer`、`slab_pool`、
    `timer`），`timer.c` 采纳 mp4_dist 超集版本（PTP 优先、单调时钟兜底，兼容两侧语义）。
@@ -99,7 +99,7 @@ app/
   `rk3588_common/…` 头并从本地拷贝中删除——由开发者按当前改动节奏自然收敛，
   不做一次性大迁移。
 
-### 阶段 3：B 档超集合并（有明确验收后再做）【未开始，pipeline_common 需重新评估】
+### 阶段 3：B 档超集合并（有明确验收后再做）【部分完成：timer.c + codec_plugin.h】
 
 - `timer.c`：已由阶段 1 覆盖（超集行为兼容 end2end：end2end 不传 `mtl_handle`
   即等价旧逻辑）。两侧本地拷贝删除后，由 check_sync.sh 保证不再回潮。
@@ -135,6 +135,59 @@ app/
 2. `ninja -C build` 两侧构建产物与改造前一致（二进制行为不变）；
 3. `check_sync.sh` 全绿；
 4. `app/rk3588_mp4_dist` 的 5 个 meson test 与 `rk3588_end2end/tests/` 四组单测通过。
+
+## 7. 阶段 2/3 剩余任务：设计评估与修改方案
+
+### 7.1 设计评估结论
+
+- **additive-only 约束与原计划冲突**：原阶段 3 的"两侧本地拷贝删除"必须触碰存量 `.c/.h`，
+  与"原始代码不改动"约束矛盾。该删除步骤应从计划中移除，改为"机会主义迁移"。
+- **阶段 2 无法被强制执行**：它是开发约定而非代码任务；在不改存量源码的前提下，
+  只能提供可用的 common 与消费方式，不能强制新代码使用。
+- **B 档并非全部可合并**：
+  - `timer.c`：mp4_dist 为真超集，已入 common（未来代码可用）。
+  - `codec_plugin.h`：可形成并集，已入 common（未来代码可用）。
+  - `pipeline_common.h`：**不是**超集关系，同名 `codec_packet` 字段语义不同
+    （`cap_timestamp`/`frame_seq`/`mtl_owner` vs `capture_tai_ns`/`owner`），且各自
+    独有类型。强行合并只会得到"字段堆积的 god header"，不统一语义，反而增加耦合。
+- **common 当前状态**：是"未来可用"的 additive 库，不替代存量拷贝；存量应用继续使用
+  本地拷贝，三方 A 档仍由 `check_sync.sh` 保证一致。
+
+### 7.2 修改方案（建议）
+
+**A. 阶段 2（消费方式）— 调整为"按需、可选"**
+1. 不修改两个应用的 `.c/.h`。
+2. 允许（Q3 认可的最小改动）在应用 `meson.build` 中**仅追加** common 的 include 路径
+   `include_directories('../../rk3588_common/include')`，使新代码可 `#include "rk3588_common/..."`。
+   不追加链接依赖，避免把 common 的 `.c` 强行编入应用。
+3. 功能性模块（ring/slab/timer）需要链接时，由开发者显式将 `librk3588_common.a`
+   加入链接，或通过 meson subproject/安装前缀消费；common 提供 `pkg-config` 元数据
+   （后续可加 `pkg.generate`）。
+4. 新增模块一律优先进 common；是否迁回应用由开发者在后续功能改动时自行决定。
+
+**B. 阶段 3（B 档）— 拆分处理**
+1. `timer.c`：保持现状（common 已含超集版，本地拷贝保留）。
+2. `codec_plugin.h`：保持现状（common 已含并集版，本地拷贝保留）。
+3. `pipeline_common.h`：**不合并**。若未来 common 需要相关类型，新增独立类型名
+   （如 `rk_common_packet`），不复用应用侧的 `codec_packet`，避免 ODR 与语义混淆。
+4. 删除本地拷贝：从计划移除；改为"机会主义迁移清单"——仅当某应用因功能改动而触碰
+   对应模块时，顺手切 include 并删除本地拷贝。
+
+**C. check_sync 范围**
+1. 仅校验 A 档模块（ring_buffer、slab_pool、timer.h），保持严格 md5 一致。
+2. B 档超集/并集文件（timer.c、codec_plugin.h）不纳入 md5 校验；如需校验，改为
+   "common 必须包含本地全部字段"的编译期检查，而非字节相等。
+3. `pipeline_common.h` 不纳入 common，无需校验。
+
+**D. 阶段 4（C 档）**
+保持原触发条件不变（同一模块第二次修同一 bug，或出现第三个消费方），不承诺时间点。
+
+### 7.3 验收口径调整
+
+1. 存量应用 `.c/.h` 零改动；`meson.build` 仅允许 §7.2.A.2 的 include 路径追加。
+2. `check_sync.sh` 全绿（A 档）。
+3. common 独立构建通过（mtl 可选）。
+4. 不要求存量应用切换到 common，也不要求删除本地拷贝。
 
 ## 6. 参考
 

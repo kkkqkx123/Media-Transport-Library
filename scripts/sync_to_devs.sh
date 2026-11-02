@@ -64,7 +64,7 @@ if [ "$INIT_GIT" = "1" ]; then
 fi
 
 # Ensure remote base exists
-ssh "$REMOTE" "mkdir -p '$REMOTE_DIR'"
+ssh -n "$REMOTE" "mkdir -p '$REMOTE_DIR'"
 
 # Sync files
 while IFS= read -r -d '' f; do
@@ -74,7 +74,7 @@ while IFS= read -r -d '' f; do
   if [ "$DRY" = "1" ]; then
     echo "PUT $f"
   else
-    ssh "$REMOTE" "mkdir -p '$rdir'" >/dev/null
+    ssh -n "$REMOTE" "mkdir -p '$rdir'" >/dev/null
     scp -q "$f" "$REMOTE:$REMOTE_DIR/$f"
     echo "PUT $f"
   fi
@@ -86,7 +86,7 @@ while IFS= read -r -d '' f; do
   if [ "$DRY" = "1" ]; then
     echo "DEL $f"
   else
-    ssh "$REMOTE" "rm -f '$REMOTE_DIR/$f'" && echo "DEL $f"
+    ssh -n "$REMOTE" "rm -f '$REMOTE_DIR/$f'" && echo "DEL $f"
   fi
 done < "$del_tmp"
 

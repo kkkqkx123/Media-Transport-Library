@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include "mp4_dist_config.h"
+#include "ipc/ipc_server.h"
 
 static void usage(const char* prog) {
   fprintf(stderr, "Usage: %s [--config <json>] [--ipc-sock <path>]\n", prog);
@@ -34,7 +35,8 @@ int main(int argc, char** argv) {
   }
 
   if (ipc_sock) {
-    printf("dvs-media: ipc socket %s (stub)\n", ipc_sock);
+    printf("dvs-media: ipc socket %s\n", ipc_sock);
+    return dvs_ipc_server_run(ipc_sock);
   } else {
     printf("dvs-media: static mode\n");
   }

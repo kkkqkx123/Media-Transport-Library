@@ -1,0 +1,172 @@
+/* Node-only TDesign layout. Business state and handlers stay in node-admin.html. */
+body[data-proto-page="node-admin"] .proto-side {
+  width: 64px;
+  flex: 0 0 64px;
+}
+body[data-proto-page="node-admin"] .proto-side-menu { padding: 0 8px; }
+body[data-proto-page="node-admin"] .proto-side-item {
+  width: 48px;
+  height: 54px;
+  min-height: 54px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px 0;
+  font-size: 10px;
+  line-height: 12px;
+}
+body[data-proto-page="node-admin"] .proto-side-item .t-icon { font-size: 20px; line-height: 20px; }
+body[data-proto-page="node-admin"] .proto-header-brand { width: 132px; flex-basis: 132px; }
+body[data-proto-page="node-admin"] .proto-header-brand .proto-brand-name { font-size: 14px; }
+body[data-proto-page="node-admin"] .proto-header-right { gap: 16px; }
+body[data-proto-page="node-admin"] .proto-header-right .proto-btn { height: 32px; padding: 0 12px; font-size: 14px; }
+.node-header-action { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: 0; background: transparent; color: var(--proto-text); cursor: pointer; }
+.node-header-action:hover { color: var(--proto-primary); }
+.node-header-action .t-icon { font-size: 24px; }
+body[data-proto-page="node-admin"] .proto-side-sub { width: 200px; flex: 0 0 200px; padding: 16px 8px 40px; }
+body[data-proto-page="node-admin"] .proto-side-sub-parent { cursor: pointer; }
+body[data-proto-page="node-admin"] .proto-side-sub-children a.is-muted { color: var(--proto-text-disabled); cursor: pointer; }
+body[data-proto-page="node-admin"] .proto-side-sub-children a.is-muted.is-active { color: var(--proto-primary); }
+body[data-proto-page="node-admin"] .proto-content { padding: 16px; }
+body[data-proto-page="node-admin"] .proto-card { padding: 24px; margin: 0 0 16px; border-radius: 6px; box-shadow: 0 1px 2px rgba(0,0,0,.1); }
+.node-zone-title { font-size: 16px; line-height: 24px; }
+.node-zone-help { margin-bottom: 16px; font-size: 14px; line-height: 22px; }
+body[data-proto-page="node-admin"] :is(#zone-role, #zone-input, #zone-output, #zone-ops) > .node-zone-help {
+  margin: 0 0 16px;
+}
+body[data-proto-page="node-admin"] #zone-role > .node-zone-title { margin-bottom: 16px; }
+body[data-proto-page="node-admin"] #zone-role > .proto-field { gap: 16px; }
+body[data-proto-page="node-admin"] #zone-role > .config-state-line { margin-top: 16px; }
+body[data-proto-page="node-admin"] #zone-role > .proto-form-actions { margin-top: 24px; padding-top: 0; }
+.node-section-title { margin: 16px 0 16px; padding-top: 16px; border-color: #e7e7e7; font-size: 16px; line-height: 24px; }
+body[data-proto-page="node-admin"] .zone > .proto-field { margin-bottom: 16px; }
+body[data-proto-page="node-admin"] .zone .proto-field { gap: 8px; }
+body[data-proto-page="node-admin"] .zone .proto-field > label { font-size: 14px; line-height: 22px; }
+body[data-proto-page="node-admin"] .zone .proto-input,
+body[data-proto-page="node-admin"] .zone .proto-select { width: 400px; max-width: 100%; height: 32px; }
+body[data-proto-page="node-admin"] .zone .proto-form-grid { grid-template-columns: repeat(2, minmax(0, 400px)); gap: 16px 32px; max-width: 832px !important; }
+body[data-proto-page="node-admin"] .zone .proto-form-grid > .proto-field { margin-bottom: 0 !important; }
+body[data-proto-page="node-admin"] .zone .proto-form-actions { display: flex; justify-content: flex-start; align-items: center; gap: 8px; margin-top: 16px; padding-top: 16px; border-top: 0; }
+body[data-proto-page="node-admin"] #zone-input.is-active,
+body[data-proto-page="node-admin"] #zone-output.is-active { display: flex; flex-direction: column; min-height: 0; }
+body[data-proto-page="node-admin"] #zone-input > .proto-form-actions,
+body[data-proto-page="node-admin"] #zone-output > .proto-form-actions { margin-top: 24px; }
+.config-state-line { margin-top: 16px; font-size: 14px; line-height: 22px; }
+.tag-state, .tag-ok, .tag-pending, .tag-info { border-radius: 3px; font-size: 12px; line-height: 20px; }
+.na-note, .danger-note { border-style: solid; border-radius: 3px; font-size: 14px; line-height: 22px; }
+.info-grid { grid-template-columns: 120px minmax(0, 1fr) 120px minmax(0, 1fr); gap: 16px 24px; max-width: 960px; font-size: 14px; line-height: 22px; }
+.info-grid .k { color: var(--proto-text-secondary); }
+.info-grid .v { min-width: 0; }
+/* 本机信息按多卡片详情页的节奏拉开标题、说明与字段行距。 */
+body[data-proto-page="node-admin"] #zone-info > .node-zone-title { margin: 0 0 20px; }
+body[data-proto-page="node-admin"] #zone-info > .node-zone-help { margin: 0 0 24px; }
+body[data-proto-page="node-admin"] #zone-info .info-grid { row-gap: 24px; column-gap: 32px; }
+.task-current { border-color: #e7e7e7; border-radius: 3px; background: #fff; margin-bottom: 16px; }
+.task-table { border-color: #e7e7e7; border-radius: 3px; }
+.task-row { min-height: 56px; padding: 12px 16px; border-color: #e7e7e7; }
+.task-row:hover { background: #f8f8f8; }
+.task-status { border-radius: 3px; }
+/* Playback uses three independent section cards. */
+body[data-proto-page="node-admin"] #zone-playback.proto-card.zone {
+  padding: 0;
+  margin: 0;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+body[data-proto-page="node-admin"] #zone-playback #playback-body:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+body[data-proto-page="node-admin"] #zone-playback .playback-module {
+  margin: 0;
+  padding: 20px 24px;
+  border: 1px solid #e7e7e7;
+  border-radius: 3px;
+  background: #fff;
+}
+body[data-proto-page="node-admin"] #zone-playback .playback-module > .node-section-title {
+  margin: 0 0 16px;
+  padding: 0;
+  border: 0;
+  font-weight: 600;
+}
+body[data-proto-page="node-admin"] #zone-playback .task-current { margin-bottom: 0; }
+body[data-proto-page="node-admin"] #zone-playback > .na-note:not([hidden]) {
+  display: block;
+  margin: 0;
+  padding: 20px 24px;
+  background: #fff;
+}
+.ops-btns { gap: 8px; }
+#btn-pick-fw { display: inline-flex; align-items: center; gap: 8px; background: #fff; }
+#btn-pick-fw .t-icon { font-size: 16px; }
+#btn-factory { color: var(--proto-danger); border-color: var(--proto-danger); background: #fff; }
+#btn-factory:hover { background: #fff7f7; }
+.login-card { border: 0; border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.12); }
+.login-card .proto-input { width: 100%; }
+
+/* Network settings use the Figma multi-card layout: one surface per section. */
+body[data-proto-page="node-admin"] #zone-net.proto-card.zone {
+  padding: 0;
+  margin: 0;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+body[data-proto-page="node-admin"] #zone-net.proto-card.zone.is-active {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+body[data-proto-page="node-admin"] #zone-net > .node-config-block {
+  margin: 0;
+  padding: 20px;
+  border: 1px solid #e7e7e7;
+  border-radius: 3px;
+  background: #fff;
+}
+body[data-proto-page="node-admin"] #zone-net > .node-config-block > .node-zone-title,
+body[data-proto-page="node-admin"] #zone-net > .node-config-block > .node-section-title {
+  margin: 0 0 8px;
+  padding: 0;
+  border: 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+}
+body[data-proto-page="node-admin"] #zone-net > .node-config-block > .node-zone-help {
+  margin: 0 0 16px;
+  font-size: 14px;
+  line-height: 22px;
+}
+body[data-proto-page="node-admin"] #zone-net > .node-config-block > .node-zone-title,
+body[data-proto-page="node-admin"] #zone-net > .node-config-block > .node-section-title {
+  margin-bottom: 16px;
+}
+body[data-proto-page="node-admin"] #zone-net > .node-config-block > .proto-field + #static-fields {
+  margin-top: 16px;
+}
+body[data-proto-page="node-admin"] #zone-net > .node-config-block .proto-form-actions {
+  margin-top: 16px;
+  padding-top: 0;
+  border-top: 0;
+}
+@media (max-width: 700px) {
+  body[data-proto-page="node-admin"] #zone-net > .node-config-block { padding: 16px; }
+}
+@media (max-width: 1200px) {
+  .info-grid { grid-template-columns: 120px minmax(0, 1fr); }
+}
+@media (max-width: 900px) {
+  body[data-proto-page="node-admin"] .proto-side { width: 64px; flex-basis: 64px; }
+  body[data-proto-page="node-admin"] .proto-side-item { font-size: 10px; }
+  body[data-proto-page="node-admin"] .zone .proto-form-grid { grid-template-columns: minmax(0, 1fr); }
+}

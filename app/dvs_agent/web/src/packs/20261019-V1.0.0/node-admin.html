@@ -1,0 +1,1358 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <link rel="stylesheet" href="../../vendor/tdesign.min.css" />
+    <link rel="stylesheet" href="../../vendor/iconfont.css" />
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>节点设备后台 | 分布式视频管理</title>
+    <link rel="icon" href="../../_shared/favicon.svg" />
+    <link rel="stylesheet" href="../../_shared/theme.css" />
+    <link rel="stylesheet" href="../../_shared/ids-admin.css" />
+    <style>
+      /* 节点后台：配置入口采用“主导航 + 功能分组 + 单区详情”的轻量结构。业务事实见 PAGE-DVS-010。 */
+      [hidden] { display: none !important; }
+      .proto-content .zone { display: none; }
+      .proto-content .zone.is-active { display: block; }
+      body[data-proto-page="node-admin"] .proto-side-sub-parent { display: flex; align-items: center; gap: 8px; height: 36px; padding: 7px 16px; color: rgba(0,0,0,.6); }
+      body[data-proto-page="node-admin"] .proto-side-sub-parent .proto-menu-ico { width: 20px; height: 20px; flex: 0 0 20px; font-size: 20px; line-height: 20px; color: currentColor; }
+      body[data-proto-page="node-admin"] .proto-side-sub-parent .proto-menu-caret { margin-left: auto; }
+      body[data-proto-page="node-admin"] .proto-side-sub-group.is-active > .proto-side-sub-parent { color: rgba(0,0,0,.9); background: transparent; }
+      .proto-side-sub-children a.is-muted { color: var(--proto-text-disabled); cursor: not-allowed; }
+      .nav-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #f59e0b; margin-left: 6px; vertical-align: middle; }
+      .zone .opt { font-weight: 400; margin-right: 16px; }
+      .tag-pending { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 10px; background: rgba(245, 158, 11, 0.14); color: #b45309; }
+      .tag-ok { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 10px; background: var(--proto-primary-10); color: var(--proto-primary); }
+      .na-note { border: 1px dashed var(--proto-border); border-radius: 6px; background: var(--proto-surface-subtle); color: var(--proto-text-secondary); font-size: 13px; padding: 10px 12px; margin-bottom: 16px; line-height: 1.7; }
+.info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 40px; font-size: 13px; }
+      .info-grid .k { color: var(--proto-text-secondary); }
+      .info-grid .v { color: var(--proto-text); word-break: break-all; }
+      .ops-btns { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+      .last-ops { margin-top: 16px; padding-top: 12px; border-top: 1px dashed var(--proto-border); font-size: 12px; color: var(--proto-text-secondary); }
+      .task-current { border: 1px solid var(--proto-border); border-radius: 8px; padding: 16px; background: var(--proto-surface-subtle); margin-bottom: 20px; }
+      .task-current-head, .task-row { display: flex; align-items: center; gap: 12px; }
+      .task-current-head strong, .task-row .task-main { flex: 1; }
+      .task-id, .task-meta { color: var(--proto-text-secondary); font-size: 12px; }
+      .task-status { display: inline-block; padding: 3px 9px; border-radius: 12px; font-size: 12px; background: var(--proto-surface-subtle); color: var(--proto-text-secondary); white-space: nowrap; }
+      .task-status.is-playing, .task-status.is-success { color: #047857; background: #ecfdf5; }
+      .task-status.is-pending, .task-status.is-executing { color: #b45309; background: #fffbeb; }
+      .task-status.is-failed, .task-status.is-cancelled, .task-status.is-expired { color: #b91c1c; background: #fef2f2; }
+      .task-table { border: 1px solid var(--proto-border); border-radius: 8px; overflow: hidden; }
+      .task-row { min-height: 58px; padding: 10px 12px; border-bottom: 1px solid var(--proto-border); }
+      .task-row:last-child { border-bottom: 0; }
+      .task-row .task-main { min-width: 0; }
+      .task-row .task-name { font-weight: 600; }
+      .task-row .task-meta { margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .task-row .task-actions { display: flex; gap: 6px; flex-shrink: 0; }
+      .task-records { margin-top: 20px; }
+      .task-records .task-row { min-height: 46px; }
+      .task-empty { color: var(--proto-text-secondary); padding: 18px 12px; text-align: center; }
+      .prog { height: 8px; border-radius: 4px; background: var(--proto-surface-subtle); overflow: hidden; margin-top: 10px; max-width: 420px; }
+      .prog > div { height: 100%; background: var(--proto-primary); width: 0; transition: width 0.2s; }
+      .proto-header-right .proto-btn { padding: 3px 10px; font-size: 12px; }
+      .login-mask { position: fixed; inset: 0; background: var(--proto-main-bg); display: flex; align-items: center; justify-content: center; z-index: 60; }
+      .login-card { width: 380px; background: var(--proto-surface); border: 1px solid var(--proto-border); border-radius: var(--proto-radius-card); box-shadow: var(--proto-shadow-popover); padding: 28px; }
+      .login-card h3 { margin: 0 0 4px; font-size: 18px; }
+      .login-card .sub { font-size: 12px; color: var(--proto-text-tertiary); margin-bottom: 18px; }
+      .pwd-hint { font-size: 12px; color: var(--proto-text-tertiary); margin-top: 12px; line-height: 1.7; }
+      .keep-reset { display: flex; gap: 12px; font-size: 13px; }
+      .keep-reset > div { flex: 1; border: 1px solid var(--proto-border); border-radius: 6px; padding: 10px; }
+      .keep-reset ul { margin: 6px 0 0; padding-left: 18px; line-height: 1.8; }
+      .keep-reset .keep b { color: var(--proto-success); }
+      .keep-reset .reset b { color: var(--proto-danger); }
+      .role-effects { text-align: left; font-size: 13px; line-height: 1.9; }
+      .role-effects ul { margin: 6px 0; padding-left: 18px; }
+
+      /* 节点后台局部设计规范：减少空白、强化层级、统一状态与操作位置。 */
+      body[data-proto-page="node-admin"] .proto-side { width: 72px; }
+      body[data-proto-page="node-admin"] .proto-side-menu { padding: 10px 8px; }
+      body[data-proto-page="node-admin"] .proto-side-item { min-height: 54px; }
+      body[data-proto-page="node-admin"] .proto-side-item.is-active { background: var(--proto-primary); }
+      body[data-proto-page="node-admin"] .proto-side-item .proto-side-icon::after { content: "设"; font-size: 12px; font-weight: 600; }
+      body[data-proto-page="node-admin"] .proto-side-item[data-page="node"] .proto-side-icon::after { content: "配"; }
+      body[data-proto-page="node-admin"] .proto-side-item[data-page="hub"] { display: none; }
+      body[data-proto-page="node-admin"] .proto-content { padding: 24px 32px 40px; }
+      body[data-proto-page="node-admin"] .proto-card { min-height: auto; width: 100%; max-width: none; margin: 0 0 20px; }
+      body[data-proto-page="node-admin"] .proto-card.zone { box-shadow: 0 1px 2px rgba(15, 23, 42, .04); }
+      .node-menu-divider { margin: 12px 16px 6px 34px; color: var(--proto-text-tertiary); font-size: 11px; font-weight: 600; letter-spacing: .04em; }
+      .node-zone-title { margin-bottom: 5px; font-size: 18px; font-weight: 600; line-height: 26px; }
+      .node-zone-help { margin: 0 0 22px; color: var(--proto-text-secondary); font-size: 13px; line-height: 20px; }
+      .node-section-title { margin: 24px 0 12px; padding-top: 18px; border-top: 1px solid var(--proto-border); font-size: 15px; font-weight: 600; }
+      .node-section-title:first-of-type { margin-top: 0; padding-top: 0; border-top: none; }
+      body[data-proto-page="node-admin"] .node-config-block { padding: 16px; border: 1px solid var(--proto-border); border-radius: 6px; margin-top: 16px; }
+      body[data-proto-page="node-admin"] .node-config-block:first-of-type { margin-top: 0; }
+      body[data-proto-page="node-admin"] .node-config-block > .node-zone-title,
+      body[data-proto-page="node-admin"] .node-config-block > .node-section-title { margin: 0 0 12px; padding: 0; border: 0; font-size: 16px; font-weight: 600; line-height: 24px; }
+      body[data-proto-page="node-admin"] .node-config-block > .node-zone-help { margin: -4px 0 16px; }
+body[data-proto-page="node-admin"] #zone-net .node-config-block {
+  padding: 24px;
+}
+body[data-proto-page="node-admin"] #zone-net .node-config-block > .node-zone-help {
+  margin: -4px 0 20px;
+}
+body[data-proto-page="node-admin"] #zone-net .proto-form-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 32px;
+  max-width: none !important;
+}
+body[data-proto-page="node-admin"] #zone-net .proto-form-grid .proto-input,
+body[data-proto-page="node-admin"] #zone-net .node-config-block > .proto-field .proto-input {
+  width: 100%;
+  max-width: 400px;
+}
+body[data-proto-page="node-admin"] #static-fields > .hint {
+  color: rgba(0, 0, 0, .4);
+  font-size: 12px;
+  line-height: 20px;
+  margin-top: 8px;
+}
+body[data-proto-page="node-admin"] #zone-net .node-config-block > .proto-field {
+  max-width: 400px !important;
+}
+body[data-proto-page="node-admin"] #zone-info {
+  padding: 28px 32px;
+}
+body[data-proto-page="node-admin"] #zone-info .node-zone-help {
+  margin-bottom: 20px;
+}
+body[data-proto-page="node-admin"] #zone-info .info-grid {
+  grid-template-columns: 120px minmax(0, 1fr) 120px minmax(0, 1fr);
+  column-gap: 32px;
+  row-gap: 16px;
+  max-width: none;
+  font-size: 14px;
+  line-height: 22px;
+}
+body[data-proto-page="node-admin"] #zone-info .info-grid .v {
+  min-width: 0;
+}
+@media (max-width: 1100px) {
+  body[data-proto-page="node-admin"] #zone-net .proto-form-grid {
+    grid-template-columns: minmax(0, 400px);
+    max-width: 400px !important;
+  }
+  body[data-proto-page="node-admin"] #zone-info .info-grid {
+    grid-template-columns: 120px minmax(0, 1fr);
+  }
+}
+      .node-status-line { display: flex; align-items: center; gap: 8px; margin-top: 10px; color: var(--proto-text-secondary); font-size: 13px; }
+      .tag-info { display: inline-block; padding: 2px 8px; border-radius: 10px; background: var(--proto-surface-subtle); color: var(--proto-text-secondary); font-size: 11px; }
+      .config-state-line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 14px; color: var(--proto-text-secondary); font-size: 12px; }
+      .config-state-label { color: var(--proto-text-secondary); }
+      .tag-state { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+      .tag-state.state-idle { background: var(--proto-surface-subtle); color: var(--proto-text-secondary); }
+      .tag-state.state-pending { background: rgba(245, 158, 11, .14); color: #b45309; }
+      .tag-state.state-applying { background: rgba(59, 130, 246, .12); color: var(--proto-primary); }
+      .tag-state.state-applied { background: rgba(16, 185, 129, .12); color: #047857; }
+      .tag-state.state-failed { background: rgba(239, 68, 68, .12); color: #b91c1c; }
+      .tag-state.state-online { background: rgba(16, 185, 129, .12); color: #047857; }
+      .tag-state.state-danger { background: rgba(239, 68, 68, .12); color: #b91c1c; }
+      .tag-state.state-working { background: rgba(245, 158, 11, .14); color: #b45309; }
+      .config-state-detail { color: var(--proto-text-tertiary); }
+      .danger-note { border: 1px solid rgba(239, 68, 68, .22); border-radius: 6px; background: #fff7f7; color: #991b1b; padding: 9px 12px; margin: 12px 0 16px; font-size: 12px; line-height: 1.7; }
+      .ops-state { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; border: 1px solid var(--proto-border); border-radius: 6px; background: var(--proto-surface-subtle); padding: 10px 12px; margin: 0 0 16px; font-size: 12px; }
+      .ops-state-label { color: var(--proto-text-secondary); }
+      .ops-state-detail { color: var(--proto-text-tertiary); }
+      @media (max-width: 900px) {
+        body[data-proto-page="node-admin"] .proto-side { width: 60px; }
+        body[data-proto-page="node-admin"] .proto-side-item { font-size: 11px; }
+      }
+    </style>
+    <link rel="stylesheet" href="../../_shared/itc-adapter.css" />
+    <link rel="stylesheet" href="../../_shared/node-admin.css" />
+  </head>
+  <body class="itc-platform" data-itc-page="node-admin" data-proto-page="node-admin" data-proto-l1="node">
+    <div class="proto-shell">
+      <aside class="proto-side">
+        <div class="proto-side-logo"><div class="proto-side-logo-mark"><img src="../../assets/brand/ITC Design-logo-write.svg" alt="ITC" /></div></div>
+        <nav class="proto-side-menu">
+          <a class="proto-side-item is-active" data-page="node" href="#"><i class="t-icon t-icon-setting-filled" aria-hidden="true"></i><span>配置</span></a>
+        </nav>
+      </aside>
+      <div class="proto-body">
+        <header class="proto-header">
+          <div class="proto-header-left">
+            <a class="proto-header-brand proto-brand-link" href="node-admin.html" title="节点设备后台">
+              <i class="t-icon t-icon-component-radio" aria-hidden="true"></i>
+            <span class="proto-brand-name">节点设备后台</span>
+            </a>
+            <button type="button" class="proto-fold-sub" id="proto-fold-sub" title="收起二级菜单"><i class="t-icon t-icon-view-list" aria-hidden="true"></i></button>
+            <nav class="proto-breadcrumb">
+              <span>节点单机后台</span><span>/</span><span id="node-breadcrumb-zone" class="current">节点角色</span>
+            </nav>
+          </div>
+          <div class="proto-header-right">
+            <button type="button" class="proto-btn" id="btn-changepwd">修改密码</button>
+            <span class="proto-header-user"><i class="t-icon t-icon-user-circle" aria-hidden="true"></i>本机维护人员</span>
+            <button type="button" class="node-header-action" id="btn-logout" aria-label="退出登录" title="退出登录"><i class="t-icon t-icon-logout" aria-hidden="true"></i></button>
+          </div>
+        </header>
+        <main class="proto-main">
+          <aside class="proto-side-sub">
+            <div class="proto-side-sub-group is-open is-active" data-nav-group="config">
+              <button type="button" class="proto-side-sub-parent">
+                <span class="proto-menu-ico"><i class="t-icon t-icon-setting-filled" aria-hidden="true"></i></span><span class="proto-menu-label">设备配置</span><span class="proto-menu-caret"><i class="t-icon t-icon-chevron-down" aria-hidden="true"></i></span>
+              </button>
+              <div class="proto-side-sub-children">
+                <a class="is-active" data-zone="role" href="#">节点角色<span class="nav-dot" id="nav-dot-role" hidden title="存在待重启生效的切换"></span></a>
+                <a data-zone="input" href="#" title="仅输入盒适用">输入口</a>
+                <a data-zone="output" href="#" title="仅输出盒适用">输出设置</a>
+                <a data-zone="net" href="#">网络与注册</a>
+              </div>
+            </div>
+            <div class="proto-side-sub-group is-open" data-nav-group="playback">
+              <button type="button" class="proto-side-sub-parent">
+                <span class="proto-menu-ico"><i class="t-icon t-icon-play-circle-filled" aria-hidden="true"></i></span><span class="proto-menu-label">播放执行</span><span class="proto-menu-caret"><i class="t-icon t-icon-chevron-down" aria-hidden="true"></i></span>
+              </button>
+              <div class="proto-side-sub-children">
+                <a data-zone="playback" href="#" title="仅输出盒适用">播放任务</a>
+              </div>
+            </div>
+            <div class="proto-side-sub-group is-open" data-nav-group="maintenance">
+              <button type="button" class="proto-side-sub-parent">
+                <span class="proto-menu-ico"><i class="t-icon t-icon-tools-filled" aria-hidden="true"></i></span><span class="proto-menu-label">查看与维护</span><span class="proto-menu-caret"><i class="t-icon t-icon-chevron-down" aria-hidden="true"></i></span>
+              </button>
+              <div class="proto-side-sub-children">
+                <a data-zone="info" href="#">本机信息</a>
+                <a data-zone="ops" href="#">维护操作</a>
+              </div>
+            </div>
+          </aside>
+          <div class="proto-content">
+            <section class="proto-card zone is-active" id="zone-role">
+              <div class="node-zone-title">节点角色 <span class="tag-pending" id="tag-pending" hidden>待重启生效</span></div>
+              <p class="node-zone-help">选择这台节点用于接收信号，还是输出画面。切换需要重启，重启前可以撤销。</p>
+              <div class="proto-field">
+                <label>节点角色</label>
+                <div class="proto-pair">
+                  <label class="opt"><input type="radio" name="role" value="output" checked /> 输出盒</label>
+                  <label class="opt"><input type="radio" name="role" value="input" /> 输入盒</label>
+                </div>
+                <div class="hint">切换后，平台会解除当前绑定并关闭受影响画面。</div>
+              </div>
+              <div class="config-state-line"><span class="config-state-label">配置状态</span><span class="tag-state state-applied" id="role-config-state">已生效</span><span class="config-state-detail" id="role-config-state-detail">当前角色：输出盒</span></div>
+              <div class="proto-form-actions">
+                <button type="button" class="proto-btn" id="btn-undo-role" hidden>撤销切换</button>
+              </div>
+            </section>
+
+            <section class="proto-card zone" id="zone-input">
+              <div class="node-zone-title">输入口 <span class="tag-pending" id="tag-input-pending" hidden>待重启生效</span></div>
+              <div class="na-note" id="na-input" hidden>当前节点角色为<b>输出盒</b>，输入口区不适用；节点角色为输入盒时显示。切换角色见左侧「节点角色」。</div>
+              <p class="node-zone-help">选择节点使用的输入接口，并查看当前信号。</p>
+              <div class="proto-field">
+                <label for="sel-inputport">采集口</label>
+                <select id="sel-inputport" class="proto-select"></select>
+                <div class="hint" style="margin-top: 8px">信号状态：<b style="color: var(--proto-success)">有信号 · 1080p60</b></div>
+              </div>
+              <div class="config-state-line"><span class="config-state-label">配置状态</span><span class="tag-state state-applied" id="input-config-state">已生效</span><span class="config-state-detail" id="input-config-state-detail">当前采集口：HDMI1</span></div>
+              <div class="proto-form-actions">
+                <button type="button" class="proto-btn proto-btn-primary btn-save-zone" data-zone="input">保存</button>
+              </div>
+            </section>
+
+            <section class="proto-card zone" id="zone-output">
+              <div class="node-zone-title">输出设置 <span class="tag-pending" id="tag-output-pending" hidden>待重启生效</span></div>
+              <div class="na-note" id="na-output" hidden>当前节点角色为<b>输入盒</b>，输出分辨率与模式区不适用；节点角色为输出盒时显示。切换角色见左侧「节点角色」。</div>
+              <p class="node-zone-help">设置输出分辨率、刷新率和输出方式。</p>
+              <div class="proto-field">
+                <label for="sel-outputport">输出口</label>
+                <select id="sel-outputport" class="proto-select"></select>
+                <div class="hint" id="output-capability-note" style="margin-top: 8px">能力读取中…</div>
+              </div>
+              <div class="proto-field" style="margin-top: 16px">
+                <label for="sel-res">输出分辨率</label>
+                <select id="sel-res" class="proto-select"></select>
+              </div>
+              <div class="proto-form-grid" id="custom-res" style="display: none; max-width: 560px">
+                <div class="proto-field"><label for="res-w">宽（px）</label><input id="res-w" class="proto-input" type="number" placeholder="640~7680" /></div>
+                <div class="proto-field"><label for="res-h">高（px）</label><input id="res-h" class="proto-input" type="number" placeholder="480~4320" /></div>
+                <div class="proto-field"><label for="res-hz">刷新率（Hz）</label><input id="res-hz" class="proto-input" type="number" placeholder="24~60" /></div>
+              </div>
+              <div class="proto-field" style="margin-top: 16px">
+                <label>输出模式</label>
+                <div class="proto-pair">
+                  <label class="opt"><input type="radio" name="outmode" value="force" checked /> 强推</label>
+                  <label class="opt"><input type="radio" name="outmode" value="hotplug" /> 热插拔</label>
+                </div>
+              </div>
+              <div class="config-state-line"><span class="config-state-label">配置状态</span><span class="tag-state state-applied" id="output-config-state">已生效</span><span class="config-state-detail" id="output-config-state-detail">当前输出：1920×1080 · 强推</span></div>
+              <div class="proto-form-actions">
+                <button type="button" class="proto-btn proto-btn-primary btn-save-zone" data-zone="output">保存</button>
+              </div>
+            </section>
+
+            <section class="proto-card zone" id="zone-net">
+              <div class="node-config-block">
+              <div class="node-zone-title">网络与注册</div>
+              <p class="node-zone-help">配置网络、设备注册和可选的 SIP 接入。</p>
+              <div class="danger-note" id="network-risk" hidden>网络参数应用期间节点会短暂断连；请保持当前页面打开，并准备使用新地址重新访问。</div>
+              <div class="proto-field">
+                <label>网络方式</label>
+                <div class="proto-pair">
+                  <label class="opt"><input type="radio" name="netmode" value="dhcp" checked /> DHCP</label>
+                  <label class="opt"><input type="radio" name="netmode" value="static" /> 静态</label>
+                </div>
+              </div>
+              <div id="static-fields" style="display: none">
+                <div class="proto-form-grid" style="max-width: 560px">
+                  <div class="proto-field"><label for="in-ip">IP</label><input id="in-ip" class="proto-input" value="192.168.10.51" /></div>
+                  <div class="proto-field"><label for="in-mask">掩码</label><input id="in-mask" class="proto-input" value="255.255.255.0" /></div>
+                  <div class="proto-field"><label for="in-gw">网关</label><input id="in-gw" class="proto-input" value="192.168.10.1" /></div>
+                  <div class="proto-field"><label for="in-dns">DNS</label><input id="in-dns" class="proto-input" value="192.168.10.1" /></div>
+                </div>
+                <div class="err" id="net-err" style="display: none"></div>
+                <div class="hint">IP 冲突时将自动回滚到原有网络配置。</div>
+              </div>
+              <div class="proto-field" style="max-width: 420px; margin-top: 16px">
+                <label for="in-server">注册服务器地址</label>
+                <input id="in-server" class="proto-input" value="192.168.10.200:8080" />
+                <div class="hint">平台服务地址（端口以平台部署为准）</div>
+              </div>
+              <div class="proto-form-actions">
+                <button type="button" class="proto-btn proto-btn-primary" id="btn-save-net">保存</button>
+              </div>
+              <div class="config-state-line"><span class="config-state-label">网络配置状态</span><span class="tag-state state-applied" id="network-config-state">已生效</span><span class="config-state-detail" id="network-config-state-detail">当前方式：DHCP</span></div>
+              </div>
+
+              <div class="node-config-block">
+              <div class="node-section-title">设备注册</div>
+              <div class="proto-form-grid" style="max-width: 680px">
+                <div class="proto-field">
+                  <label>注册方式</label>
+                  <div class="proto-pair">
+                    <label class="opt"><input type="radio" name="regmode" value="auto" checked /> 自动注册</label>
+                    <label class="opt"><input type="radio" name="regmode" value="manual" /> 手动注册</label>
+                  </div>
+                </div>
+                <div class="proto-field"><label>设备编号</label><input class="proto-input" value="SN202610190001" readonly /></div>
+              </div>
+              <div class="hint" style="margin-top: 8px">注册状态：<span class="tag-ok" id="reg-state">已注册 · 输出盒-D1</span></div>
+              <div class="config-state-line"><span class="config-state-label">注册配置状态</span><span class="tag-state state-applied" id="registration-config-state">已生效</span><span class="config-state-detail" id="registration-config-state-detail">自动注册配置已应用</span></div>
+              <div class="proto-form-actions">
+                <button type="button" class="proto-btn" id="btn-register">立即注册</button>
+                <button type="button" class="proto-btn proto-btn-primary" id="btn-save-registration">保存注册配置</button>
+              </div>
+              </div>
+
+              <div class="node-config-block">
+              <div class="node-section-title">SIP 接入 <span class="tag-info">可选</span></div>
+              <div class="proto-field">
+                <label class="opt"><input type="checkbox" id="sip-enabled" /> 启用 SIP 接入</label>
+              </div>
+              <div id="sip-fields" hidden>
+                <div class="proto-form-grid" style="max-width: 680px">
+                  <div class="proto-field"><label for="sip-server">SIP 服务器地址</label><input id="sip-server" class="proto-input" placeholder="例如 192.168.10.210" /></div>
+                  <div class="proto-field"><label for="sip-port">端口</label><input id="sip-port" class="proto-input" type="number" placeholder="5060" /></div>
+                  <div class="proto-field"><label for="sip-device">设备编号</label><input id="sip-device" class="proto-input" value="SN202610190001" /></div>
+                  <div class="proto-field"><label for="sip-user">账号</label><input id="sip-user" class="proto-input" placeholder="请输入账号" /></div>
+                  <div class="proto-field"><label for="sip-pwd">密码</label><input id="sip-pwd" class="proto-input" type="password" placeholder="请输入密码" /></div>
+                </div>
+              </div>
+              <div class="hint" style="margin-top: 8px">SIP 状态：<span class="tag-pending" id="sip-state">未启用</span></div>
+              <div class="config-state-line"><span class="config-state-label">SIP 配置状态</span><span class="tag-state state-idle" id="sip-config-state">未保存</span><span class="config-state-detail" id="sip-config-state-detail">SIP 当前未启用</span></div>
+              <div class="proto-form-actions">
+                <button type="button" class="proto-btn proto-btn-primary" id="btn-save-sip">保存 SIP 配置</button>
+              </div>
+              </div>
+            </section>
+
+            <section class="proto-card zone" id="zone-playback">
+              <div class="na-note" id="na-playback" hidden>当前节点角色为<b>输入盒</b>，播放任务仅输出盒适用；切换为输出盒并完成注册后可用。</div>
+              <div id="playback-body">
+                <div class="proto-card playback-module">
+                  <div class="node-zone-title">播放任务</div>
+                  <p class="node-zone-help">当前播放、任务列表和播放记录使用同一份任务数据。</p>
+                  <div class="task-current" id="playback-current" data-task-id="">
+                    <div class="task-current-head"><strong>当前播放</strong><span class="task-status" id="playback-current-status">暂无播放</span></div>
+                    <div class="task-meta" id="playback-current-detail" style="margin-top: 10px">当前节点没有正在播放的任务</div>
+                  </div>
+                </div>
+                <div class="proto-card playback-module">
+                  <div class="node-section-title">任务列表</div>
+                  <div class="task-table" id="playback-task-list"></div>
+                </div>
+                <div class="proto-card playback-module">
+                  <div class="node-section-title">播放记录</div>
+                  <div class="task-table" id="playback-record-list"></div>
+                </div>
+              </div>
+            </section>
+
+            <section class="proto-card zone" id="zone-info">
+              <div class="node-zone-title">本机信息</div>
+              <p class="node-zone-help">查看本机硬件、网络和运行状态；此处不提供编辑。</p>
+              <div class="info-grid">
+                <span class="k">型号</span><span class="v" id="info-model">DVS-NODE-R1</span>
+                <span class="k">主板</span><span class="v" id="info-board">RK-3588</span>
+                <span class="k">能力基线</span><span class="v" id="info-capability">RK3588 官方能力基线</span>
+                <span class="k">跨节点同帧</span><span class="v" id="info-sync">需控制服务与统一时钟联调</span>
+                <span class="k">序列号</span><span class="v" id="info-sn">SN202610190001</span>
+                <span class="k">固件版本</span><span class="v" id="fw-ver">V1.0.0-20261019</span>
+                <span class="k">当前角色</span><span class="v" id="info-role">输出盒</span>
+                <span class="k">IP</span><span class="v" id="info-ip">192.168.10.51</span>
+                <span class="k">MAC</span><span class="v" id="info-mac">00:11:22:33:44:55</span>
+                <span class="k">在线时长</span><span class="v" id="info-uptime">3 天 4 小时</span>
+                <span class="k">注册方式</span><span class="v" id="info-regmode">自动注册</span>
+                <span class="k">SIP 状态</span><span class="v" id="info-sipstate">未启用</span>
+                <span class="k">当前播放</span><span class="v" id="info-playback">未播放</span>
+                <span class="k">异常原因</span><span class="v" id="info-exception">—</span>
+                <span class="k">CPU 温度</span><span class="v" id="info-temp">—</span>
+                <span class="k">内存占用</span><span class="v" id="info-mem">—</span>
+              </div>
+            </section>
+
+            <section class="proto-card zone" id="zone-ops">
+              <div class="node-zone-title">维护操作</div>
+              <p class="node-zone-help">重启、恢复出厂或升级系统。执行期间会暂时中断画面。</p>
+              <div class="ops-state" id="ops-state">
+                <span class="ops-state-label">节点状态</span><span class="tag-state state-online" id="ops-state-label">在线</span><span class="ops-state-detail" id="ops-state-detail">运行正常</span>
+              </div>
+              <div class="ops-btns">
+                <button type="button" class="proto-btn" id="btn-reboot">重启</button>
+                <button type="button" class="proto-btn" id="btn-factory">恢复出厂</button>
+                <button type="button" class="proto-btn" id="btn-pick-fw"><i class="t-icon t-icon-upload" aria-hidden="true"></i>上传文件</button>
+                <button type="button" class="proto-btn proto-btn-primary" id="btn-upgrade" disabled>开始升级</button>
+                <input type="file" id="fw-input" hidden />
+              </div>
+              <div class="hint" id="fw-note" style="margin-top: 12px">升级走本地上传：先校验版本匹配与文件完整性，再执行升级；失败后保留旧版本，可重新上传。</div>
+              <div class="prog" id="fw-prog" hidden><div id="fw-prog-bar"></div></div>
+              <div class="hint" id="fw-status" hidden>升级中，请勿关闭页面…</div>
+              <div class="last-ops" id="last-ops">最近动作：—</div>
+            </section>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <!-- 登录区（独立登录页，覆盖整页） -->
+    <div class="login-mask" id="login-mask">
+      <div class="login-card">
+        <h3>节点设备后台</h3>
+        <p class="sub" id="node-login-context">输出盒-D1（192.168.10.51）· 本机登录，不依赖平台在线</p>
+        <div class="proto-field" style="margin-bottom: 14px">
+          <label for="login-user">用户名</label>
+          <input id="login-user" class="proto-input" value="admin" />
+        </div>
+        <div class="proto-field" id="field-pwd" style="margin-bottom: 14px">
+          <label for="login-pwd">密码</label>
+          <input id="login-pwd" class="proto-input" type="password" placeholder="初始密码以交付文档为准" />
+          <div class="err" id="login-err" style="display: none"></div>
+        </div>
+        <button type="button" class="proto-btn proto-btn-primary" id="btn-login" style="width: 100%">登录</button>
+        <p class="pwd-hint">
+          首次登录后建议修改密码（弱口令仅提示不阻止）。<br />
+          忘记密码：长按机身<b>物理复位键</b>恢复默认密码（网络设置不受影响，不失联）。
+        </p>
+      </div>
+    </div>
+
+    <!-- 修改密码 -->
+    <div class="proto-mask" id="pwd-modal" hidden>
+      <div class="proto-modal" role="dialog" style="max-width: 380px">
+        <div class="proto-modal-header"><span>修改密码</span></div>
+        <div class="proto-modal-body">
+          <div class="proto-field" style="margin-bottom: 12px"><label>旧密码</label><input id="pwd-old" class="proto-input" type="password" /></div>
+          <div class="proto-field" style="margin-bottom: 12px"><label>新密码</label><input id="pwd-new" class="proto-input" type="password" placeholder="建议 ≥ 8 位" /></div>
+          <div class="proto-field"><label>确认新密码</label><input id="pwd-new2" class="proto-input" type="password" /></div>
+          <div class="err" id="pwd-err" style="display: none"></div>
+        </div>
+        <div class="proto-modal-footer">
+          <button type="button" class="proto-btn" id="pwd-cancel">取消</button>
+          <button type="button" class="proto-btn proto-btn-primary" id="pwd-ok">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 角色切换确认（三项影响） -->
+    <div class="proto-mask" id="role-modal" hidden>
+      <div class="proto-modal" role="dialog" style="max-width: 420px">
+        <div class="proto-modal-header"><span>切换节点角色</span></div>
+        <div class="proto-modal-body role-effects">
+          切换为「<b id="role-target-name">输入盒</b>」将创建受控任务，并产生以下影响：
+          <ul>
+            <li>平台侧<b>解除该节点的全部格位绑定</b>（节点回到未绑定）</li>
+            <li>若作为输入盒在白名单内，将被<b>移出白名单</b></li>
+            <li>使用其信号的<b>受影响窗口将被关闭</b></li>
+          </ul>
+          <div class="hint">任务按“预检查 → 清理 → 重启 → 校验”执行；平台不可达或预检查失败时不会清理资源与重启。</div>
+        </div>
+        <div class="proto-modal-footer">
+          <button type="button" class="proto-btn" id="role-cancel">取消</button>
+          <button type="button" class="proto-btn proto-btn-primary" id="role-ok">确认切换</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 恢复出厂确认（保留 / 重置 分列） -->
+    <div class="proto-mask" id="factory-modal" hidden>
+      <div class="proto-modal" role="dialog" style="max-width: 460px">
+        <div class="proto-modal-header"><span>恢复出厂</span></div>
+        <div class="proto-modal-body">
+          <div class="keep-reset">
+            <div class="keep"><b>保留项</b>
+              <ul><li>网络设置（IP / 掩码 / 网关 / DNS）</li><li>注册服务器地址</li></ul>
+            </div>
+            <div class="reset"><b>重置项</b>
+              <ul><li>节点角色（回默认：输出盒）</li><li>输入口选择</li><li>输出分辨率与模式</li><li>登录密码（回默认）</li></ul>
+            </div>
+          </div>
+          <div class="hint" style="margin-top: 10px">恢复出厂须重启后完成，期间画面中断约 1 分钟。</div>
+        </div>
+        <div class="proto-modal-footer">
+          <button type="button" class="proto-btn" id="factory-cancel">取消</button>
+          <button type="button" class="proto-btn proto-btn-primary" id="factory-ok">确认恢复出厂</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="../../_shared/proto-shell.js"></script>
+    <script src="../../_shared/node-state.js"></script>
+    <script src="../../_shared/hardware-capabilities.js"></script>
+    <script src="../../_shared/playback-tasks.js"></script>
+    <script src="../../_shared/mock-api.js"></script>
+    <script>
+      (function () {
+        var nodeId = "d1";
+        DvsPlaybackTasks.restorePrototypeTasksForNode(nodeId);
+        var nodeSnapshot = DvsNodeState.get(nodeId) || {};
+        var currentRole = nodeSnapshot.role || "output";
+        var pendingRole = nodeSnapshot.pendingRole || null;
+        var opsRunning = false;
+        var fwReady = false;
+        var fwFailure = false;
+        var registrationBusy = false;
+        var configJobs = {};
+        var nodeCapabilities = DvsHardwareCapabilities.resolve(nodeSnapshot);
+
+        function $(id) { return document.getElementById(id); }
+        function roleText(role) { return role === "input" ? "输入盒" : "输出盒"; }
+        function nodeExceptionText(node) {
+          return node && node.exception && node.exception.reason ? node.exception.reason : "—";
+        }
+        function runtimeState(node) {
+          if (node && node.runtimeState) return node.runtimeState;
+          if (node && node.online === false) return "offline";
+          if (node && node.registerState === "registering") return "registering";
+          if (node && node.registerState === "failed") return "register_failed";
+          return "online";
+        }
+        function runtimeStateText(state) {
+          return (DvsNodeState.runtimeStates && DvsNodeState.runtimeStates[state]) || state || "在线";
+        }
+        function runtimeStateClass(state) {
+          if (state === "online") return "state-online";
+          if (state === "rebooting" || state === "factory_resetting" || state === "upgrading" || state === "network_reconfiguring" || state === "registering") return "state-working";
+          return "state-danger";
+        }
+        function portCapabilityText(port) {
+          if (!port) return "未读取端口能力";
+          return port.kind + " · 上限 " + port.maxWidth + "×" + port.maxHeight + " @" + port.maxRefreshHz + "Hz";
+        }
+        function findSafeMode(output) {
+          if (!output) return null;
+          return nodeCapabilities.safeModes.filter(function (mode) {
+            return mode.width === Number(output.width) && mode.height === Number(output.height) && mode.refreshHz === Number(output.refreshHz);
+          })[0] || null;
+        }
+        function renderOutputModes(preferredValue) {
+          var outputSelect = $("sel-outputport");
+          var resSelect = $("sel-res");
+          var outputId = outputSelect.value || (nodeCapabilities.selectedOutput && nodeCapabilities.selectedOutput.id);
+          var selectedPort = nodeCapabilities.outputPorts.filter(function (port) { return port.id === outputId; })[0] || nodeCapabilities.outputPorts[0];
+          if (!selectedPort) return;
+          nodeCapabilities.selectedOutput = selectedPort;
+          var limit = {
+            maxWidth: Number(selectedPort.maxWidth) || nodeCapabilities.customRange.maxWidth,
+            maxHeight: Number(selectedPort.maxHeight) || nodeCapabilities.customRange.maxHeight,
+            maxRefreshHz: Number(selectedPort.maxRefreshHz) || nodeCapabilities.customRange.maxRefreshHz
+          };
+          nodeCapabilities.customRange = {
+            minWidth: nodeCapabilities.profile.customRange.minWidth,
+            maxWidth: limit.maxWidth,
+            minHeight: nodeCapabilities.profile.customRange.minHeight,
+            maxHeight: limit.maxHeight,
+            minRefreshHz: nodeCapabilities.profile.customRange.minRefreshHz,
+            maxRefreshHz: limit.maxRefreshHz
+          };
+          var modes = nodeCapabilities.profile.safeModes.filter(function (mode) {
+            return mode.width <= limit.maxWidth && mode.height <= limit.maxHeight && mode.refreshHz <= limit.maxRefreshHz;
+          });
+          nodeCapabilities.safeModes = modes;
+          resSelect.innerHTML = modes.map(function (mode) { return '<option value="' + mode.id + '">' + mode.label + '</option>'; }).join("") + '<option value="custom">自定义（' + nodeCapabilities.profile.customRange.minWidth + '~' + limit.maxWidth + ' × ' + nodeCapabilities.profile.customRange.minHeight + '~' + limit.maxHeight + '，' + nodeCapabilities.profile.customRange.minRefreshHz + '~' + limit.maxRefreshHz + 'Hz）</option>';
+          var output = nodeSnapshot.output || {};
+          var safe = findSafeMode(output);
+          resSelect.value = preferredValue || (safe ? safe.id : "custom");
+          if (!resSelect.value) resSelect.value = modes.length ? modes[0].id : "custom";
+          $("custom-res").style.display = resSelect.value === "custom" ? "" : "none";
+          $("res-w").placeholder = nodeCapabilities.profile.customRange.minWidth + "~" + limit.maxWidth;
+          $("res-h").placeholder = nodeCapabilities.profile.customRange.minHeight + "~" + limit.maxHeight;
+          $("res-hz").placeholder = nodeCapabilities.profile.customRange.minRefreshHz + "~" + limit.maxRefreshHz;
+          if (resSelect.value === "custom") {
+            $("res-w").value = output.width || "";
+            $("res-h").value = output.height || "";
+            $("res-hz").value = output.refreshHz || "";
+          }
+          $("output-capability-note").textContent = portCapabilityText(selectedPort) + " · 以节点回读能力为准";
+        }
+        function renderHardwareCapabilities() {
+          nodeCapabilities = DvsHardwareCapabilities.resolve(nodeSnapshot);
+          $("sel-inputport").innerHTML = nodeCapabilities.inputPorts.map(function (port) {
+            return '<option value="' + port.id + '">' + port.label + " · " + port.kind + " · 上限 " + port.maxWidth + "×" + port.maxHeight + " @" + port.maxRefreshHz + "Hz</option>";
+          }).join("");
+          $("sel-outputport").innerHTML = nodeCapabilities.outputPorts.map(function (port) {
+            return '<option value="' + port.id + '">' + port.label + " · " + port.kind + "</option>";
+          }).join("");
+          $("sel-inputport").value = nodeSnapshot.input && nodeSnapshot.input.port && nodeCapabilities.inputPorts.some(function (port) { return port.id === nodeSnapshot.input.port; })
+            ? nodeSnapshot.input.port : (nodeCapabilities.inputPorts[0] && nodeCapabilities.inputPorts[0].id);
+          $("sel-outputport").value = nodeSnapshot.output && nodeSnapshot.output.connector && nodeCapabilities.outputPorts.some(function (port) { return port.id === nodeSnapshot.output.connector; })
+            ? nodeSnapshot.output.connector : (nodeCapabilities.outputPorts[0] && nodeCapabilities.outputPorts[0].id);
+          renderOutputModes();
+          $("info-capability").textContent = nodeCapabilities.profile.name + "（官方芯片基线）";
+          $("info-sync").textContent = nodeCapabilities.sync;
+        }
+        function playbackText(node) {
+          return node && node.currentPlayback && node.currentPlayback.status === "playing"
+            ? node.currentPlayback.name + " · " + node.currentPlayback.taskId : "未播放";
+        }
+        function patchNode(patch) {
+          nodeSnapshot = DvsNodeState.update(nodeId, patch) || nodeSnapshot;
+          return nodeSnapshot;
+        }
+        function patchNodeConfig(key, state, detail) {
+          var states = {}, messages = {};
+          states[key] = state;
+          messages[key] = detail;
+          patchNode({ configStates: states, configMessages: messages });
+        }
+        function syncNodeView() {
+          nodeSnapshot = DvsNodeState.get(nodeId) || nodeSnapshot;
+          var state = runtimeState(nodeSnapshot);
+          var stateText = runtimeStateText(state);
+          $("ops-state-label").textContent = stateText;
+          $("ops-state-label").className = "tag-state " + runtimeStateClass(state);
+          $("ops-state-detail").textContent = nodeSnapshot.runtimeMessage || (nodeSnapshot.exception && nodeSnapshot.exception.reason) || "运行正常";
+          $("network-risk").hidden = state !== "network_reconfiguring";
+          $("node-login-context").textContent = (nodeSnapshot.name || "节点") + "（" + (nodeSnapshot.ip || "—") + "）· 本机登录，不依赖平台在线";
+          $("info-model").textContent = nodeSnapshot.model || "—";
+          $("info-board").textContent = nodeSnapshot.board || "—";
+          $("info-sn").textContent = nodeSnapshot.registerId || nodeSnapshot.sn || "—";
+          $("fw-ver").textContent = nodeSnapshot.fw || "—";
+          $("info-role").textContent = pendingRole ? roleText(currentRole) + " → " + roleText(pendingRole) + "（待重启）" : roleText(currentRole);
+          $("info-ip").textContent = nodeSnapshot.ip || "—";
+          $("info-mac").textContent = nodeSnapshot.mac || "—";
+          $("info-uptime").textContent = nodeSnapshot.uptime || "—";
+          $("info-regmode").textContent = nodeSnapshot.registerMode === "manual" ? "手动注册" : "自动注册";
+          $("info-sipstate").textContent = nodeSnapshot.sip && nodeSnapshot.sip.enabled
+            ? (nodeSnapshot.sip.state === "connected" ? "已连接" : "连接失败") : "未启用";
+          $("info-playback").textContent = playbackText(nodeSnapshot);
+          $("info-exception").textContent = nodeExceptionText(nodeSnapshot);
+          $("info-temp").textContent = nodeSnapshot.metrics && nodeSnapshot.metrics.temperature || "—";
+          $("info-mem").textContent = nodeSnapshot.metrics && nodeSnapshot.metrics.memory || "—";
+          if (nodeSnapshot.output) {
+            var output = nodeSnapshot.output;
+            var outputPortId = output.connector && nodeCapabilities.outputPorts.some(function (port) { return port.id === output.connector; })
+              ? output.connector : (nodeCapabilities.outputPorts[0] && nodeCapabilities.outputPorts[0].id);
+            $("sel-outputport").value = outputPortId;
+            if (output.connector !== outputPortId) renderOutputModes();
+            var safe = findSafeMode(output);
+            $("sel-res").value = safe ? safe.id : "custom";
+            $("custom-res").style.display = $("sel-res").value === "custom" ? "" : "none";
+            if ($("sel-res").value === "custom") {
+              $("res-w").value = output.width || "";
+              $("res-h").value = output.height || "";
+              $("res-hz").value = output.refreshHz || "";
+            }
+            var outMode = document.querySelector('input[name="outmode"][value="' + (output.mode === "hotplug" ? "hotplug" : "force") + '"]');
+            if (outMode) outMode.checked = true;
+          }
+          if (nodeSnapshot.input && nodeSnapshot.input.port) $("sel-inputport").value = nodeSnapshot.input.port;
+          var regLabel = nodeSnapshot.registerState === "registered" ? "已注册 · " + roleText(nodeSnapshot.role)
+            : nodeSnapshot.registerState === "registering" ? "注册中…" : "连接失败 · 请检查地址";
+          setRegState(regLabel, nodeSnapshot.registerState === "registered");
+          if ($("reg-state")) $("reg-state").title = nodeSnapshot.registerMessage || "";
+        }
+        function openModal(id) { $(id).hidden = false; $(id).classList.add("is-open"); }
+        function closeModal(id) { $(id).classList.remove("is-open"); $(id).hidden = true; }
+        function now() { return "2026-10-19 16:5" + Math.floor(Math.random() * 9); }
+        function setLastOps(type, result) {
+          $("last-ops").textContent = "最近动作：" + type + " · " + now() + " · " + result;
+        }
+        function setOpsRunning(flag, label) {
+          opsRunning = flag;
+          ["btn-reboot", "btn-factory", "btn-pick-fw", "btn-upgrade"].forEach(function (id) {
+            if (id === "btn-upgrade" && fwReady && !flag) return;
+            if (id === "btn-upgrade") { $(id).disabled = !fwReady || flag; return; }
+            $(id).disabled = flag;
+          });
+          if (label) protoToast(label);
+        }
+        function setConfigState(id, state, detail) {
+          var el = $(id), detailEl = $(id + "-detail");
+          if (!el) return;
+          var labels = { idle: "未保存", pending: "待生效", applying: "应用中", applied: "已生效", failed: "失败" };
+          el.textContent = labels[state] || state;
+          el.className = "tag-state state-" + state;
+          if (detailEl && detail !== undefined) detailEl.textContent = detail;
+        }
+        function applyConfig(id, opts) {
+          var token = (configJobs[id] || 0) + 1;
+          configJobs[id] = token;
+          setConfigState(id, "pending", opts.pendingText || "配置已保存，等待节点应用");
+          if (opts.onPending) opts.onPending();
+          if (opts.button) opts.button.disabled = true;
+          window.setTimeout(function () {
+            if (configJobs[id] !== token) return;
+            setConfigState(id, "applying", opts.applyingText || "正在应用配置");
+            if (opts.onApplying) opts.onApplying();
+            window.setTimeout(function () {
+              if (configJobs[id] !== token) return;
+              var failed = typeof opts.fail === "function" && opts.fail();
+              if (failed) {
+                setConfigState(id, "failed", opts.failedText || "应用失败，可修改后重试");
+                if (opts.onFail) opts.onFail();
+              } else {
+                setConfigState(id, "applied", opts.appliedText || "配置已生效");
+                if (opts.onApplied) opts.onApplied();
+              }
+              if (opts.button) opts.button.disabled = false;
+            }, opts.applyDelay || 800);
+          }, opts.pendingDelay || 350);
+        }
+
+        /* ---------- 播放任务：当前播放与记录均由同一任务真源派生 ---------- */
+        function taskClass(status) {
+          if (status === "playing" || status === "success") return "is-playing";
+          if (status === "pending_check" || status === "pending_execution" || status === "executing") return "is-pending";
+          return "is-failed";
+        }
+        function taskButton(task) {
+          var html = "";
+          if (task.status === "pending_check") html += '<button type="button" class="proto-btn" data-task-action="check">检查</button>';
+          if (task.status === "pending_execution") html += '<button type="button" class="proto-btn proto-btn-primary" data-task-action="start">开始执行</button>';
+          if (task.status === "executing") html += '<button type="button" class="proto-btn" disabled>执行中</button>';
+          if (task.status === "playing") {
+            html += '<button type="button" class="proto-btn proto-btn-primary" data-task-action="finish">结束播放</button>';
+            html += '<button type="button" class="proto-btn" data-task-action="cancel">取消</button>';
+          }
+          return html;
+        }
+        function renderTaskRow(task, showAction) {
+          var status = DvsPlaybackTasks.statuses[task.status] || task.status;
+          var reason = task.errorReason ? " · " + task.errorReason : "";
+          return '<div class="task-row" data-task-id="' + task.id + '">' +
+            '<div class="task-main"><div class="task-name">' + task.name + '</div>' +
+            '<div class="task-meta"><span class="task-id">' + task.id + '</span> · ' + (task.scheduleAt || "未排期") + reason + '</div></div>' +
+            '<span class="task-status ' + taskClass(task.status) + '">' + status + '</span>' +
+            (showAction ? '<div class="task-actions">' + taskButton(task) + '</div>' : '') +
+            '</div>';
+        }
+        function renderPlaybackTasks() {
+          var current = currentRole === "output" ? DvsPlaybackTasks.currentForNode(nodeId) : null;
+          var currentBox = $("playback-current");
+          currentBox.setAttribute("data-task-id", current ? current.id : "");
+          $("playback-current-status").className = "task-status " + (current ? "is-playing" : "");
+          $("playback-current-status").textContent = current ? "播放中" : "暂无播放";
+          $("playback-current-detail").textContent = current
+            ? current.name + " · " + current.id + " · 开始于 " + (current.startedAt || "—") + " · " + (current.wallName || "—")
+            : "当前节点没有正在播放的任务";
+          var tasks = DvsPlaybackTasks.list({ nodeId: nodeId }).filter(function (task) { return !DvsPlaybackTasks.terminal[task.status]; });
+          var records = DvsPlaybackTasks.list({ nodeId: nodeId }).filter(function (task) { return DvsPlaybackTasks.terminal[task.status]; });
+          $("playback-task-list").innerHTML = tasks.length ? tasks.map(function (task) { return renderTaskRow(task, currentRole === "output"); }).join("") : '<div class="task-empty">暂无待执行任务</div>';
+          $("playback-record-list").innerHTML = records.length ? records.map(function (task) { return renderTaskRow(task, false); }).join("") : '<div class="task-empty">暂无播放记录</div>';
+        }
+        function taskAction(action, id) {
+          if (currentRole !== "output") {
+            protoToast("当前节点为输入盒，不能执行播放任务");
+            return;
+          }
+          var result = DvsMockApi.request("POST", "/api/v1/playback-tasks/" + encodeURIComponent(id) + "/" + action, {}, { idempotencyKey: id + ":" + action });
+          if (!result || !result.ok) {
+            protoToast((result && result.msg) || "任务操作未完成");
+            renderPlaybackTasks();
+            return;
+          }
+          protoToast(action === "check" ? "检查通过，任务进入待执行" : action === "start" ? "任务已开始执行" : action === "finish" ? "任务已完成" : "任务已取消");
+          renderPlaybackTasks();
+        }
+
+        /* ---------- 分组菜单 / 右侧功能详情切换 ---------- */
+        function navItem(z) { return document.querySelector('.proto-side-sub-children a[data-zone="' + z + '"]'); }
+        function showZone(id) {
+          if (id === "playback" && currentRole !== "output") protoToast("播放任务仅输出盒适用");
+          var pageTitle = {
+            role: "节点角色",
+            input: "输入口",
+            output: "输出设置",
+            net: "网络与注册",
+            playback: "播放任务",
+            info: "本机信息",
+            ops: "维护操作"
+          }[id] || "节点角色";
+          document.querySelectorAll(".proto-side-sub-children a[data-zone]").forEach(function (a) {
+            a.classList.toggle("is-active", a.getAttribute("data-zone") === id);
+          });
+          var activeItem = navItem(id);
+          document.querySelectorAll(".proto-side-sub-group[data-nav-group]").forEach(function (group) {
+            group.classList.toggle("is-active", group.contains(activeItem));
+          });
+          document.querySelectorAll(".proto-content .zone").forEach(function (s) {
+            s.classList.toggle("is-active", s.id === "zone-" + id);
+          });
+          $("node-breadcrumb-zone").textContent = pageTitle;
+        }
+
+        /* ---------- 登录 ---------- */
+        $("btn-login").onclick = function () {
+          var u = $("login-user").value.trim(), p = $("login-pwd").value;
+          var result = DvsMockApi.request("POST", "/api/v1/node/login", { username: u, password: p }, { idempotencyKey: "login-" + Date.now() });
+          if (!result.ok) {
+            $("field-pwd").classList.add("is-error");
+            $("login-err").style.display = "block";
+            $("login-err").textContent = result.error && result.error.message ? result.error.message : "账号或密码错误";
+            return;
+          }
+          $("field-pwd").classList.remove("is-error");
+          $("login-err").style.display = "none";
+          $("login-mask").style.display = "none";
+          protoToast("登录成功（首次登录建议修改密码）");
+        };
+        $("login-pwd").addEventListener("keydown", function (e) { if (e.key === "Enter") $("btn-login").click(); });
+        $("btn-logout").onclick = function () {
+          $("login-mask").style.display = "flex";
+          $("login-pwd").value = "";
+          protoToast("已退出登录");
+        };
+
+        /* ---------- 修改密码 ---------- */
+        $("btn-changepwd").onclick = function () { $("pwd-err").style.display = "none"; openModal("pwd-modal"); };
+        $("pwd-cancel").onclick = function () { closeModal("pwd-modal"); };
+        $("pwd-ok").onclick = function () {
+          var o = $("pwd-old").value, n = $("pwd-new").value, n2 = $("pwd-new2").value;
+          if (!o || !n) { $("pwd-err").style.display = "block"; $("pwd-err").textContent = "请填写完整"; return; }
+          if (n !== n2) { $("pwd-err").style.display = "block"; $("pwd-err").textContent = "两次输入的新密码不一致"; return; }
+          closeModal("pwd-modal");
+          if (n.length < 8 || /^\d+$/.test(n)) protoToast("密码强度较弱，建议加强（已保存）");
+          else protoToast("密码修改成功");
+          setLastOps("修改密码", "成功");
+        };
+
+        /* ---------- 角色区 ---------- */
+        function renderRole() {
+          var shown = pendingRole || currentRole;
+          /* 角色专属区：清单项置灰 + 进入后给不适用提示（待生效切换时两区均显示） */
+          $("na-input").hidden = shown === "input" || !!pendingRole;
+          $("na-output").hidden = shown === "output" || !!pendingRole;
+          navItem("input").classList.toggle("is-muted", !(shown === "input" || pendingRole));
+          navItem("output").classList.toggle("is-muted", !(shown === "output" || pendingRole));
+          $("nav-dot-role").hidden = !pendingRole;
+          $("tag-pending").hidden = !pendingRole;
+          $("tag-input-pending").hidden = !(pendingRole === "input");
+          $("tag-output-pending").hidden = !(pendingRole === "output");
+          $("btn-undo-role").hidden = !pendingRole;
+          var radio = document.querySelector('input[name="role"][value="' + (pendingRole || currentRole) + '"]');
+          if (radio) radio.checked = true;
+          var roleText = { input: "输入盒", output: "输出盒" };
+          $("info-role").textContent = pendingRole
+            ? roleText[currentRole] + " → " + roleText[pendingRole] + "（待重启）"
+            : roleText[currentRole];
+          var inputSave = document.querySelector('.btn-save-zone[data-zone="input"]');
+          var outputSave = document.querySelector('.btn-save-zone[data-zone="output"]');
+          var playbackNav = navItem("playback");
+          var playbackAvailable = currentRole === "output";
+          if (inputSave) inputSave.disabled = !(shown === "input" || pendingRole);
+          if (outputSave) outputSave.disabled = !(shown === "output" || pendingRole);
+          if (playbackNav) {
+            playbackNav.classList.toggle("is-muted", !playbackAvailable);
+            playbackNav.setAttribute("aria-disabled", playbackAvailable ? "false" : "true");
+          }
+          $("na-playback").hidden = playbackAvailable;
+          $("playback-body").hidden = !playbackAvailable;
+          if (pendingRole) {
+            setConfigState("role-config-state", "pending", "已保存切换意图，重启后应用：" + roleText[pendingRole]);
+          } else {
+            setConfigState("role-config-state", "applied", "当前角色：" + roleText[currentRole]);
+          }
+        }
+        document.querySelectorAll('input[name="role"]').forEach(function (r) {
+          r.addEventListener("change", function () {
+            var target = r.value;
+            if (target === currentRole && !pendingRole) return;
+            $("role-target-name").textContent = target === "input" ? "输入盒" : "输出盒";
+            openModal("role-modal");
+          });
+        });
+        $("role-cancel").onclick = function () { closeModal("role-modal"); renderRole(); };
+        $("role-ok").onclick = function () {
+          pendingRole = document.querySelector('input[name="role"]:checked').value;
+          patchNode({ pendingRole: pendingRole, configStates: { role: "pending" }, configMessages: { role: "已保存切换意图，等待重启应用" } });
+          closeModal("role-modal");
+          renderRole();
+          protoToast("配置已保存，等待重启应用");
+          setLastOps("角色切换配置", "待生效");
+        };
+        $("btn-undo-role").onclick = function () {
+          pendingRole = null;
+          patchNode({ pendingRole: null, configStates: { role: "applied" }, configMessages: { role: "已撤销切换，当前角色：" + roleText(currentRole) } });
+          renderRole();
+          protoToast("已撤销切换，节点保持原角色");
+          setLastOps("角色切换撤销", "已取消");
+        };
+
+        /* ---------- 输入口 / 输出区 ---------- */
+        $("sel-outputport").addEventListener("change", function () {
+          renderOutputModes();
+        });
+        $("sel-res").addEventListener("change", function () {
+          $("custom-res").style.display = this.value === "custom" ? "" : "none";
+        });
+        document.querySelectorAll(".btn-save-zone").forEach(function (btn) {
+          btn.addEventListener("click", function () {
+            var zone = btn.getAttribute("data-zone");
+            if (zone === "input") {
+              var inputPort = $("sel-inputport").value;
+              applyConfig("input-config-state", {
+                button: btn,
+                pendingText: "配置已保存，等待节点应用",
+                applyingText: "正在应用采集口配置",
+                appliedText: "已生效 · 当前采集口：" + inputPort,
+                onPending: function () { patchNodeConfig("input", "pending", "配置已保存，等待节点应用"); },
+                onApplying: function () { patchNodeConfig("input", "applying", "正在应用采集口配置"); },
+                onApplied: function () {
+                  patchNode({ input: { port: inputPort }, configStates: { input: "applied" }, configMessages: { input: "已生效 · 当前采集口：" + inputPort }, exception: null });
+                  syncNodeView();
+                  protoToast("输入口配置已生效：" + inputPort);
+                  setLastOps("输入口配置", "已生效");
+                }
+              });
+            } else {
+              if ($("sel-res").value === "custom") {
+                var w = Number($("res-w").value), h = Number($("res-h").value), hz = Number($("res-hz").value);
+                var range = nodeCapabilities.customRange;
+                if (!(w >= range.minWidth && w <= range.maxWidth) || !(h >= range.minHeight && h <= range.maxHeight) || !(hz >= range.minRefreshHz && hz <= range.maxRefreshHz)) {
+                  setConfigState("output-config-state", "failed", "参数超出本机能力范围");
+                  protoToast("超出当前输出口能力（宽 " + range.minWidth + "~" + range.maxWidth + " / 高 " + range.minHeight + "~" + range.maxHeight + " / 刷新率 " + range.minRefreshHz + "~" + range.maxRefreshHz + "Hz）");
+                  return;
+                }
+                var customLabel = w + "×" + h + " @" + hz + "Hz";
+              } else {
+                var customLabel = $("sel-res").value;
+              }
+              var outputSelection = $("sel-res").value;
+              var selectedMode = nodeCapabilities.profile.safeModes.filter(function (mode) { return mode.id === outputSelection; })[0];
+              var selectedOutput = outputSelection === "custom"
+                ? { width: w, height: h, refreshHz: hz }
+                : selectedMode || nodeCapabilities.safeModes[0] || { width: 1920, height: 1080, refreshHz: 60 };
+              var outMode = document.querySelector('input[name="outmode"]:checked').value === "force" ? "强推" : "热插拔";
+              applyConfig("output-config-state", {
+                button: btn,
+                pendingText: "配置已保存，等待输出重新协商",
+                applyingText: "应用中 · 输出重新协商",
+                appliedText: "已生效 · " + customLabel + " · " + outMode,
+                onPending: function () { patchNodeConfig("output", "pending", "配置已保存，等待输出重新协商"); },
+                onApplying: function () { patchNodeConfig("output", "applying", "正在应用输出配置"); },
+                onApplied: function () {
+                  var outputMode = outMode === "强推" ? "force" : "hotplug";
+                  var outputPatch = { width: selectedOutput.width, height: selectedOutput.height, refreshHz: selectedOutput.refreshHz };
+                  outputPatch.mode = outputMode;
+                  outputPatch.connector = $("sel-outputport").value;
+                  patchNode({ output: outputPatch, configStates: { output: "applied" }, configMessages: { output: "已生效 · " + customLabel + " · " + outMode }, exception: null });
+                  syncNodeView();
+                  protoToast("输出配置已生效，重新协商完成");
+                  setLastOps("输出配置", "已生效");
+                }
+              });
+            }
+          });
+        });
+
+        /* ---------- 网络与注册 ---------- */
+        document.querySelectorAll('input[name="netmode"]').forEach(function (r) {
+          r.addEventListener("change", function () {
+            $("static-fields").style.display = this.value === "static" && this.checked ? "" : "none";
+          });
+        });
+        function ipOk(v) { return /^(\d{1,3}\.){3}\d{1,3}$/.test(v) && v.split(".").every(function (x) { return Number(x) <= 255; }); }
+        $("btn-save-net").onclick = function () {
+          var mode = document.querySelector('input[name="netmode"]:checked').value;
+          if (mode === "static") {
+            var fields = [["IP", "in-ip"], ["掩码", "in-mask"], ["网关", "in-gw"], ["DNS", "in-dns"]];
+            for (var i = 0; i < fields.length; i++) {
+              if (!ipOk($(fields[i][1]).value)) {
+                $("net-err").style.display = "block";
+                $("net-err").textContent = fields[i][0] + " 格式不正确";
+                setConfigState("network-config-state", "failed", fields[i][0] + " 格式不正确，未保存");
+                return;
+              }
+            }
+            $("net-err").style.display = "none";
+            var newIp = $("in-ip").value;
+            protoConfirm({
+              title: "静态 IP 生效确认",
+              content: "生效后请以新 IP 访问本机页（新地址：" + newIp + "）。确认保存？",
+              onOk: function () {
+                applyConfig("network-config-state", {
+                  button: $("btn-save-net"),
+                  pendingText: "配置已保存，等待网络应用",
+                  applyingText: "应用中 · 正在切换网络地址",
+                  appliedText: "已生效 · 请使用新 IP 访问：" + newIp,
+                  fail: function () { return newIp === "192.168.10.53"; },
+                  failedText: "IP 冲突，已回滚原配置",
+                  onPending: function () { patchNodeConfig("network", "pending", "配置已保存，等待网络应用"); },
+                  onApplying: function () {
+                    patchNodeConfig("network", "applying", "正在切换网络地址");
+                    patchNode({ online: false, runtimeState: "network_reconfiguring", runtimeMessage: "网络参数应用中，节点会短暂断连", exception: { code: "NETWORK_RECONFIGURING", reason: "网络改动应用中，节点短暂断连", at: new Date().toISOString() } });
+                    syncNodeView();
+                  },
+                  onFail: function () {
+                    patchNode({ online: true, runtimeState: "online", runtimeMessage: "网络配置失败，已回滚原配置", configStates: { network: "failed" }, configMessages: { network: "IP 冲突，已回滚原配置" }, exception: { code: "IP_CONFLICT", reason: "IP 冲突，已保持原配置", at: new Date().toISOString() } });
+                    syncNodeView();
+                    protoToast("IP 冲突，已保持原配置");
+                    setLastOps("网络配置", "失败（回滚）");
+                  },
+                  onApplied: function () {
+                    patchNode({ ip: newIp, online: true, runtimeState: "online", runtimeMessage: "网络配置已生效", network: { mode: "static", mask: $("in-mask").value, gateway: $("in-gw").value, dns: $("in-dns").value, server: $("in-server").value }, configStates: { network: "applied" }, configMessages: { network: "已生效 · 请使用新 IP 访问：" + newIp }, exception: null });
+                    syncNodeView();
+                    protoToast("网络配置已生效（" + newIp + "）");
+                    setLastOps("网络配置", "已生效");
+                  }
+                });
+              }
+            });
+            return;
+          }
+          protoConfirm({
+            title: "切换 DHCP 确认",
+            content: "应用 DHCP 会让节点短暂断连并重新获取地址。确认保存网络配置？",
+            onOk: function () {
+              applyConfig("network-config-state", {
+                button: $("btn-save-net"),
+                pendingText: "配置已保存，等待网络应用",
+                applyingText: "应用中 · 正在获取 DHCP 地址",
+                appliedText: "已生效 · 当前方式：DHCP",
+                onPending: function () { patchNodeConfig("network", "pending", "配置已保存，等待网络应用"); },
+                onApplying: function () {
+                  patchNodeConfig("network", "applying", "正在获取 DHCP 地址");
+                  patchNode({ online: false, runtimeState: "network_reconfiguring", runtimeMessage: "DHCP 应用中，节点会短暂断连", exception: { code: "NETWORK_RECONFIGURING", reason: "DHCP 应用中，节点短暂断连", at: new Date().toISOString() } });
+                  syncNodeView();
+                },
+                onApplied: function () {
+                  patchNode({ ip: nodeSnapshot.ip || "192.168.10.51", online: true, runtimeState: "online", runtimeMessage: "网络配置已生效", network: { mode: "dhcp", server: $("in-server").value }, configStates: { network: "applied" }, configMessages: { network: "已生效 · 当前方式：DHCP" }, exception: null });
+                  syncNodeView();
+                  protoToast("网络配置已生效（DHCP）");
+                  setLastOps("网络配置", "已生效");
+                }
+              });
+            }
+          });
+        };
+
+        /* ---------- 设备注册 ---------- */
+        function regMode() { return document.querySelector('input[name="regmode"]:checked').value; }
+        function setRegState(text, ok) {
+          $("reg-state").textContent = text;
+          $("reg-state").className = ok ? "tag-ok" : "tag-pending";
+        }
+        function startRegistration() {
+          if (registrationBusy) return;
+          if (!$("in-server").value.trim()) {
+            setConfigState("registration-config-state", "failed", "缺少注册服务器地址");
+            protoToast("请先填写注册服务器地址");
+            return;
+          }
+          registrationBusy = true;
+          $("btn-register").disabled = true;
+          setRegState("注册中…", false);
+          setConfigState("registration-config-state", "applying", "正在提交注册请求");
+          patchNode({ online: true, runtimeState: "registering", runtimeMessage: "正在提交注册请求", registerState: "registering", registerMessage: "正在提交注册请求", configStates: { registration: "applying" }, configMessages: { registration: "正在提交注册请求" } });
+          syncNodeView();
+          setTimeout(function () {
+            registrationBusy = false;
+            $("btn-register").disabled = false;
+            if ($("in-server").value.indexOf("offline") >= 0) {
+              setRegState("连接失败 · 请检查地址", false);
+              setConfigState("registration-config-state", "failed", "注册失败，可修改地址后重试");
+              patchNode({ online: true, runtimeState: "register_failed", runtimeMessage: "注册失败，可修改地址后重试", registerState: "failed", registerMessage: "连接失败（注册回执失败）", lastRegisterAt: new Date().toISOString(), configStates: { registration: "failed" }, configMessages: { registration: "注册失败，可修改地址后重试" }, exception: { code: "REGISTER_FAILED", reason: "注册失败，可修改地址后重试", at: new Date().toISOString() } });
+              syncNodeView();
+              protoToast("注册失败，本机播放不受影响");
+              setLastOps("设备注册", "失败");
+              return;
+            }
+            setRegState("已注册 · " + roleText(currentRole), true);
+            setConfigState("registration-config-state", "applied", "已生效 · 设备已注册");
+            patchNode({ online: true, runtimeState: "online", runtimeMessage: "运行正常", registerState: "registered", registerMessage: "已注册", lastRegisterAt: new Date().toISOString(), configStates: { registration: "applied" }, configMessages: { registration: "已生效 · 设备已注册" }, exception: null });
+            syncNodeView();
+            protoToast("设备注册成功");
+            setLastOps("设备注册", "已生效");
+          }, 900);
+        }
+        $("btn-save-registration").onclick = function () {
+          $("info-regmode").textContent = regMode() === "auto" ? "自动注册" : "手动注册";
+          if (!$("in-server").value.trim()) {
+            setConfigState("registration-config-state", "failed", "缺少注册服务器地址，未保存");
+            protoToast("请先填写注册服务器地址");
+            return;
+          }
+          applyConfig("registration-config-state", {
+            button: $("btn-save-registration"),
+            pendingText: "配置已保存，等待注册应用",
+            applyingText: "应用中 · 正在提交注册配置",
+            appliedText: "已生效 · " + (regMode() === "auto" ? "自动注册" : "手动注册"),
+            onPending: function () { patchNodeConfig("registration", "pending", "配置已保存，等待注册应用"); },
+            onApplying: function () { patchNodeConfig("registration", "applying", "正在提交注册配置"); },
+            onApplied: function () {
+              patchNode({ registerMode: regMode(), network: { server: $("in-server").value }, configStates: { registration: "applied" }, configMessages: { registration: "已生效 · " + (regMode() === "auto" ? "自动注册" : "手动注册") } });
+              syncNodeView();
+              if (regMode() === "auto") {
+                startRegistration();
+              } else {
+                protoToast("注册配置已生效，点击“立即注册”后执行");
+                setLastOps("注册配置", "已生效");
+              }
+            }
+          });
+        };
+        $("btn-register").onclick = function () {
+          if (registrationBusy) return;
+          setConfigState("registration-config-state", "pending", "已提交注册请求，等待节点应用");
+          patchNodeConfig("registration", "pending", "已提交注册请求，等待节点应用");
+          startRegistration();
+        };
+
+        /* ---------- SIP 接入 ---------- */
+        $("sip-enabled").addEventListener("change", function () {
+          $("sip-fields").hidden = !this.checked;
+          setConfigState("sip-config-state", "pending", "有未保存改动");
+        });
+        $("btn-save-sip").onclick = function () {
+          if (!$("sip-enabled").checked) {
+            applyConfig("sip-config-state", {
+              button: $("btn-save-sip"),
+              pendingText: "配置已保存，等待关闭 SIP",
+              applyingText: "应用中 · 正在关闭 SIP",
+              appliedText: "已生效 · SIP 未启用",
+              onPending: function () { patchNodeConfig("sip", "pending", "配置已保存，等待关闭 SIP"); },
+              onApplying: function () { patchNodeConfig("sip", "applying", "正在关闭 SIP"); },
+              onApplied: function () {
+                $("sip-state").textContent = "未启用";
+                $("sip-state").className = "tag-pending";
+                $("info-sipstate").textContent = "未启用";
+                patchNode({ sip: { enabled: false, state: "disabled" }, configStates: { sip: "applied" }, configMessages: { sip: "已生效 · SIP 未启用" }, exception: null });
+                syncNodeView();
+                protoToast("SIP 配置已生效：已关闭");
+                setLastOps("SIP 配置", "已生效");
+              }
+            });
+            return;
+          }
+          var server = $("sip-server").value.trim(), port = Number($("sip-port").value), device = $("sip-device").value.trim(), user = $("sip-user").value.trim();
+          if (!server || !(port >= 1 && port <= 65535) || !device || !user || !$("sip-pwd").value) {
+            setConfigState("sip-config-state", "failed", "参数不完整，未保存");
+            protoToast("请填写完整 SIP 参数（端口 1~65535）");
+            return;
+          }
+          $("sip-state").textContent = "连接中…";
+          $("sip-state").className = "tag-pending";
+          applyConfig("sip-config-state", {
+            button: $("btn-save-sip"),
+            pendingText: "配置已保存，等待 SIP 应用",
+            applyingText: "应用中 · 正在连接 SIP 服务",
+            appliedText: "已生效 · SIP 已连接",
+            fail: function () { return server.indexOf("offline") >= 0; },
+            failedText: "SIP 连接失败，可修改参数后重试",
+            onPending: function () { patchNodeConfig("sip", "pending", "配置已保存，等待 SIP 应用"); },
+            onApplying: function () { patchNodeConfig("sip", "applying", "正在连接 SIP 服务"); },
+            onFail: function () {
+              $("sip-state").textContent = "连接失败 · 可重试";
+              $("sip-state").className = "tag-pending";
+              $("info-sipstate").textContent = "连接失败";
+              patchNode({ sip: { enabled: true, state: "failed", server: server, port: port, deviceId: device, user: user }, configStates: { sip: "failed" }, configMessages: { sip: "SIP 连接失败，可修改参数后重试" }, exception: { code: "SIP_UNREACHABLE", reason: "SIP 服务不可达", at: new Date().toISOString() } });
+              syncNodeView();
+              protoToast("SIP 服务不可达，本机播放不受影响");
+              setLastOps("SIP 配置", "失败");
+            },
+            onApplied: function () {
+              $("sip-state").textContent = "已连接";
+              $("sip-state").className = "tag-ok";
+              $("info-sipstate").textContent = "已连接";
+              patchNode({ sip: { enabled: true, state: "connected", server: server, port: port, deviceId: device, user: user, lastAt: new Date().toISOString() }, configStates: { sip: "applied" }, configMessages: { sip: "已生效 · SIP 已连接" }, exception: null });
+              syncNodeView();
+              protoToast("SIP 配置已生效");
+              setLastOps("SIP 配置", "已生效");
+            }
+          });
+        };
+
+        /* ---------- 运维 ---------- */
+        $("btn-reboot").onclick = function () {
+          protoConfirm({
+            title: "重启确认",
+            content: "重启期间画面中断约 1 分钟。确认重启？" + (pendingRole ? "（本次重启将使角色切换生效）" : ""),
+            onOk: function () {
+              patchNode({ online: false, runtimeState: "rebooting", runtimeMessage: "节点正在重启，暂时无法访问", exception: { code: "REBOOTING", reason: "节点正在重启", at: new Date().toISOString() } });
+              syncNodeView();
+              if (pendingRole) {
+                setConfigState("role-config-state", "applying", "应用中 · 正在清理、重启并校验新角色");
+              }
+              setOpsRunning(true, pendingRole ? "正在清理原角色绑定、窗口与白名单…" : "正在重启…");
+              setTimeout(function () {
+                if (pendingRole) {
+                  setOpsRunning(true, "清理完成，正在重启并校验新角色…");
+                  setTimeout(function () {
+                    currentRole = pendingRole;
+                    pendingRole = null;
+                    patchNode({ role: currentRole, pendingRole: null, online: true, runtimeState: "online", runtimeMessage: "运行正常", registerState: "registered", registerMessage: "已注册", configStates: { role: "applied" }, configMessages: { role: "已生效 · 当前角色：" + roleText(currentRole) }, exception: null, lastHeartbeat: new Date().toISOString() });
+                    renderRole();
+                    syncNodeView();
+                    setConfigState("role-config-state", "applied", "已生效 · 当前角色：" + (currentRole === "input" ? "输入盒" : "输出盒"));
+                    setOpsRunning(false);
+                    protoToast("角色切换成功：清理、重启与新角色校验均已完成");
+                    setLastOps("角色切换任务", "已生效");
+                  }, 1200);
+                } else {
+                  patchNode({ online: true, runtimeState: "online", runtimeMessage: "运行正常", exception: null, lastHeartbeat: new Date().toISOString() });
+                  syncNodeView();
+                  setOpsRunning(false);
+                  protoToast("重启完成");
+                  setLastOps("重启", "成功");
+                }
+              }, 900);
+            }
+          });
+        };
+        $("btn-factory").onclick = function () {
+          if (opsRunning) return;
+          openModal("factory-modal");
+        };
+        $("factory-cancel").onclick = function () { closeModal("factory-modal"); };
+        $("factory-ok").onclick = function () {
+          closeModal("factory-modal");
+          protoConfirm({
+            title: "再次确认恢复出厂",
+            content: "该操作会重置角色、输入口、输出参数和密码，节点将重启并暂时中断画面；网络设置与注册地址保留。仍要继续？",
+            onOk: function () {
+              patchNode({ online: false, runtimeState: "factory_resetting", runtimeMessage: "正在恢复出厂，网络设置将保留", exception: { code: "FACTORY_RESETTING", reason: "正在恢复出厂，节点暂时不可用", at: new Date().toISOString() } });
+              syncNodeView();
+              setOpsRunning(true, "正在恢复出厂（保留网络设置与注册地址）…");
+              setTimeout(function () {
+                setOpsRunning(false);
+                currentRole = "output";
+                pendingRole = null;
+                patchNode({ role: "output", pendingRole: null, online: true, runtimeState: "online", runtimeMessage: "恢复出厂完成，运行正常", exception: null, configStates: { role: "applied", input: "idle", output: "applied" }, configMessages: { role: "已恢复出厂 · 当前角色：输出盒" } });
+                nodeSnapshot = DvsNodeState.get(nodeId) || nodeSnapshot;
+                nodeSnapshot.input = { port: nodeCapabilities.inputPorts[0] && nodeCapabilities.inputPorts[0].id, signal: null };
+                nodeSnapshot.output = { width: 1920, height: 1080, refreshHz: 60, mode: "force", connector: nodeCapabilities.outputPorts[0] && nodeCapabilities.outputPorts[0].id };
+                patchNode({ input: nodeSnapshot.input, output: nodeSnapshot.output });
+                renderHardwareCapabilities();
+                $("custom-res").style.display = "none";
+                $("res-w").value = "";
+                $("res-h").value = "";
+                $("res-hz").value = "";
+                document.querySelector('input[name="outmode"][value="force"]').checked = true;
+                renderRole();
+                syncNodeView();
+                protoToast("恢复出厂完成：网络设置与注册地址已保留，其余已重置（密码回默认）");
+                setLastOps("恢复出厂", "成功（保留网络）");
+              }, 2500);
+            }
+          });
+        };
+
+        $("btn-pick-fw").onclick = function () { $("fw-input").click(); };
+        $("fw-input").addEventListener("change", function () {
+          var f = this.files && this.files[0];
+          if (!f) return;
+          if (!/\.bin$/.test(f.name) || f.name.indexOf("V1.0.1") < 0) {
+            fwReady = false;
+            $("btn-upgrade").disabled = true;
+            protoToast(/\.bin$/.test(f.name) ? "版本不符：固件包版本不匹配本机" : "文件损坏：固件包格式不正确");
+            setLastOps("固件校验", "失败");
+            return;
+          }
+          fwReady = true;
+          fwFailure = f.name.toLowerCase().indexOf("fail") >= 0;
+          $("btn-upgrade").disabled = false;
+          protoToast("固件包校验通过（" + f.name + "），可开始升级" + (fwFailure ? "（将模拟失败）" : ""));
+          setLastOps("固件校验", "通过");
+          this.value = "";
+        });
+        $("btn-upgrade").onclick = function () {
+          if (!fwReady || opsRunning) return;
+          protoConfirm({
+            title: "开始升级确认",
+            content: "升级期间节点会暂时离线，严禁断电或关闭页面。失败时保留当前旧版本并允许重试。确认开始升级？",
+            onOk: function () {
+              patchNode({ online: false, runtimeState: "upgrading", runtimeMessage: "正在升级，请勿断电或关闭页面", exception: { code: "UPGRADING", reason: "节点正在升级，暂时不可用", at: new Date().toISOString() } });
+              syncNodeView();
+              setOpsRunning(true, "升级开始");
+              $("fw-prog").hidden = false;
+              $("fw-status").hidden = false;
+              $("fw-status").textContent = "升级中，请勿关闭页面…";
+              var p = 0;
+              var timer = setInterval(function () {
+                p += 10;
+                $("fw-prog-bar").style.width = p + "%";
+                if (p >= 100) {
+                  clearInterval(timer);
+                  setOpsRunning(false);
+                  if (fwFailure) {
+                    fwReady = true;
+                    $("btn-upgrade").disabled = false;
+                    $("fw-status").hidden = false;
+                    $("fw-status").textContent = "升级失败：节点已回到旧版本，可重新选择固件包重试。";
+                    patchNode({ online: true, runtimeState: "upgrade_failed", runtimeMessage: "升级失败，已保留旧版本，可重试", exception: { code: "UPGRADE_FAILED", reason: "升级失败，已保留旧版本，可重试", at: new Date().toISOString() } });
+                    syncNodeView();
+                    protoToast("升级失败，旧版本仍可运行");
+                    setLastOps("固件升级", "失败（旧版本保留）");
+                  } else {
+                    $("fw-status").hidden = true;
+                    fwReady = false;
+                    fwFailure = false;
+                    $("btn-upgrade").disabled = true;
+                    patchNode({ online: true, runtimeState: "online", runtimeMessage: "运行正常", fw: "V1.0.1-20261019", exception: null });
+                    syncNodeView();
+                    protoToast("升级完成，固件版本已更新为 V1.0.1-20261019");
+                    setLastOps("固件升级", "成功");
+                  }
+                }
+              }, 300);
+            }
+          });
+        };
+
+        [$("playback-task-list"), $("playback-record-list")].forEach(function (container) {
+          container.addEventListener("click", function (e) {
+            var btn = e.target.closest("button[data-task-action]");
+            if (!btn) return;
+            var row = btn.closest("[data-task-id]");
+            if (row) taskAction(btn.getAttribute("data-task-action"), row.getAttribute("data-task-id"));
+          });
+        });
+
+        document.querySelectorAll(".proto-side-sub-children a[data-zone]").forEach(function (a) {
+          a.addEventListener("click", function (e) {
+            e.preventDefault();
+            showZone(a.getAttribute("data-zone"));
+          });
+        });
+        DvsNodeState.subscribe(function () {
+          var latest = DvsNodeState.get(nodeId);
+          if (!latest) return;
+          nodeSnapshot = latest;
+          if (!opsRunning && !registrationBusy) {
+            currentRole = latest.role || currentRole;
+            pendingRole = latest.pendingRole || null;
+          }
+          syncNodeView();
+          renderPlaybackTasks();
+        });
+        DvsPlaybackTasks.subscribe(function () { renderPlaybackTasks(); });
+        renderHardwareCapabilities();
+        syncNodeView();
+        renderPlaybackTasks();
+        showZone("role");
+        renderRole();
+      })();
+    </script>
+  </body>
+</html>

@@ -10,6 +10,8 @@ Two standalone apps live on the `feat/rk3588-apps` branch (commit `add rk3568 ap
 |---|---|
 | `app/rk3588_end2end/` | Low-latency live pipeline: V4L2 capture → MPP encode (+RGA conversion) → MTL TX → MTL RX → MPP decode → DRM render. `codec/` wraps MPP behind `codec_plugin.h`; `hal/` has DMA allocator, slab pool, timer, SEI timestamps; `pipeline/` has TX/RX pipelines, ring buffer, slice reassembler; `mtl_tx.c`/`mtl_rx.c`/`mtl_rx_bridge.c` wrap the MTL session layer. Unit tests in `tests/`. |
 | `app/rk3588_mp4_dist/` | MP4 file distribution: TX demuxes MP4 (`tx/mp4_demux`, playlist, `tx_scheduler`) and sends video/audio over MTL; RX does playout buffering, AV sync, ALSA audio, multi-window composition (`rx/rx_compositor`) and DRM display. `shared/` duplicates MPP decode/DRM/ring/slab helpers from the other app (each app carries its own copy). Includes dual-host PTP configs (`config/ptp/`) and Python log-verification scripts in `tests/`. |
+| `app/dvs_media/` | 节点媒体引擎 (C, MTL/MPP/RGA/DRM/ALSA):由 mp4_dist 演进,支持 IPC configure/prepare/commit/abort/clear/query_state,布局热更新与能力上报。 |
+| `app/dvs_agent/` | 节点代理 (C++17):本地 HTTP + node-device-admin 静态前端,六 scope 配置状态机,注册/心跳,维护操作;依赖 json-c + SQLite amalgamation。 |
 
 ---
 

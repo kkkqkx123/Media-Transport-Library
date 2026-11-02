@@ -122,11 +122,13 @@ app/dvs_media/
 
 ```text
 app/dvs_agent/
-  meson.build            # 建议 Python(原型期)打包为 systemd 服务;评审后可换 Go/C
-  dvs_agent.py           # 主程序
-  config_sm.py           # 六 scope 配置状态机
-  registration.py        # 注册/心跳客户端
-  maintenance.py         # 重启/恢复出厂/升级
+  meson.build            # 独立 meson 工程 (C++17);依赖 json-c、SQLite amalgamation、threads
+  main.cpp               # 主程序 (HTTP 服务 + 路由)
+  node_store.h/.cpp      # 节点状态与六 scope 配置状态机 (SQLite kv)
+  http_server.h/.cpp     # 轻量 HTTP 服务 (POSIX socket)
+  media_ipc.h/.cpp       # dvs-media Unix socket 客户端
+  maintenance.h/.cpp     # 重启/恢复出厂/升级
+  third_party/sqlite/    # SQLite amalgamation (源自 zlmediakit 3rdpart)
   web/                   # 托管 node-device-admin 前端静态文件
   tests/
 ```

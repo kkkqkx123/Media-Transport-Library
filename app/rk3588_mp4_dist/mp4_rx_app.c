@@ -16,8 +16,8 @@
 #include "rx/rx_compositor.h"
 #include "rx/mtl_rx_mp4.h"
 #include "rx/mtl_rx_bridge.h"
-#include "shared/ring_buffer.h"
-#include "shared/slab_pool.h"
+#include "ring_buffer.h"
+#include "slab_pool.h"
 #include <errno.h>
 #include <pthread.h>
 #include <signal.h>

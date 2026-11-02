@@ -29,6 +29,11 @@ mtl_dep     = dependency('mtl', required: true)
 
 common_c_args = ['-D_GNU_SOURCE', '-DALLOW_EXPERIMENTAL_API', '-Wno-pedantic']
 
+# ---- common shared utilities (single source of truth) ----
+common_inc = include_directories('../rk3588_common/include',
+                                '../rk3588_common/include/rk3588_common')
+mp4_inc = [include_directories('.'), common_inc]
+
 # ---- FFmpeg + json-c (TX and/or RX config probe) ----
 libavformat_dep = disabler()
 libavcodec_dep  = disabler()
@@ -68,9 +73,9 @@ endif
 # ============================================================
 mp4_shared = static_library('mp4_shared',
   files(
-    'shared/ring_buffer.c',
-    'shared/slab_pool.c',
-    'shared/timer.c',
+    '../rk3588_common/src/ring_buffer.c',
+    '../rk3588_common/src/slab_pool.c',
+    '../rk3588_common/src/timer.c',
     'shared/au_trace.c',
     'shared/drm_mode.c',
     'shared/display_layout.c',
@@ -79,8 +84,9 @@ mp4_shared = static_library('mp4_shared',
     'shared/e2e_stamp.c',
     'shared/rx_e2e_stats.c',
   ),
-  c_args: common_c_args,
+  c_args: common_c_args + ['-DHAVE_MTL=1'],
   dependencies: [threads_dep, mtl_dep],
+  include_directories: [include_directories('shared'), common_inc],
 )
 
 test_tx_tai_ts = executable('test_tx_tai_ts',
@@ -88,6 +94,7 @@ test_tx_tai_ts = executable('test_tx_tai_ts',
   c_args: common_c_args,
   dependencies: [mtl_dep],
   link_with: [mp4_shared],
+  include_directories: mp4_inc,
 )
 test('tx_tai_ts', test_tx_tai_ts)
 
@@ -95,6 +102,7 @@ test_e2e_stamp = executable('test_e2e_stamp',
   files('tests/test_e2e_stamp.c'),
   c_args: common_c_args,
   link_with: [mp4_shared],
+  include_directories: mp4_inc,
 )
 test('e2e_stamp', test_e2e_stamp)
 
@@ -106,6 +114,7 @@ if build_tx or build_rx
     files('tx/mp4_demux.c'),
     c_args: common_c_args,
     dependencies: [libavformat_dep, libavcodec_dep, libavutil_dep],
+    include_directories: mp4_inc,
   )
 endif
 
@@ -124,6 +133,7 @@ if build_tx
     c_args: common_c_args,
     dependencies: [libavformat_dep, libavcodec_dep, libavutil_dep, mtl_dep],
     link_with: [mp4_shared, mp4_probe],
+    include_directories: mp4_inc,
   )
 
   mp4_dist_tx = executable('mp4_dist_tx',
@@ -132,6 +142,7 @@ if build_tx
     dependencies: [mtl_dep, threads_dep, libjson_c_dep,
                    libavformat_dep, libavcodec_dep, libavutil_dep],
     link_with: [mp4_shared, mp4_probe, mp4_tx],
+    include_directories: mp4_inc,
   )
 
   executable('test_mp4_dist',
@@ -139,6 +150,7 @@ if build_tx
     c_args: common_c_args,
     dependencies: [libavformat_dep, libavcodec_dep, libavutil_dep, threads_dep],
     link_with: [mp4_shared, mp4_probe, mp4_tx],
+    include_directories: mp4_inc,
   )
 endif
 
@@ -169,6 +181,7 @@ if build_rx
     dependencies: [libasound_dep, mtl_dep, threads_dep,
                    rockchip_mpp_dep, libdrm_dep],
     link_with: [mp4_shared],
+    include_directories: mp4_inc,
   )
 
   mp4_dist_rx = executable('mp4_dist_rx',
@@ -177,13 +190,14 @@ if build_rx
     dependencies: [mtl_dep, threads_dep, libasound_dep, libjson_c_dep,
                    libavformat_dep, libavcodec_dep, libavutil_dep],
     link_with: [mp4_shared, mp4_probe, mp4_rx],
+    include_directories: mp4_inc,
   )
 
   test_media_clk = executable('test_media_clk',
     files('tests/test_media_clk.c', 'rx/media_clk.c'),
     c_args: common_c_args,
     dependencies: [mtl_dep],
-    include_directories: include_directories('.'),
+    include_directories: mp4_inc,
   )
   test('media_clk', test_media_clk)
 
@@ -191,18 +205,21 @@ if build_rx
     files('tests/rx_minimal.c'),
     c_args: common_c_args,
     dependencies: [mtl_dep, threads_dep],
+    include_directories: mp4_inc,
   )
 
   test_drm_mode = executable('test_drm_mode',
     files('tests/test_drm_mode.c'),
     c_args: common_c_args,
     link_with: [mp4_shared],
+    include_directories: mp4_inc,
   )
   test('drm_mode', test_drm_mode)
 
   test_display_layout = executable('test_display_layout',
     files('tests/test_display_layout.c', 'shared/display_layout.c'),
     c_args: common_c_args,
+    include_directories: mp4_inc,
   )
   test('display_layout', test_display_layout)
 
@@ -210,5 +227,6 @@ if build_rx
     files('tests/test_drm_plane.c'),
     c_args: common_c_args,
     dependencies: [libdrm_dep],
+    include_directories: mp4_inc,
   )
 endif

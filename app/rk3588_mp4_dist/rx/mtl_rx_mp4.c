@@ -7,9 +7,9 @@
  */
 
 #include "mtl_rx_mp4.h"
-#include "../shared/ring_buffer.h"
+#include "ring_buffer.h"
 #include "../shared/au_trace.h"
-#include "../shared/pipeline_common.h"
+#include "pipeline_common.h"
 #include "media_clk.h"
 #include <errno.h>
 #include <stdatomic.h>
@@ -18,14 +18,14 @@
 #include <string.h>
 #include <st_api.h>
 
-#define RX_POOL_SIZE 16   /* rx_pkt descriptor pool, match mtl_ring depth */
+#define RX_POOL_SIZE 16   /* mp4_rx_pkt descriptor pool, match mtl_ring depth */
 
 struct mtl_rx_mp4 {
     mtl_rx_mp4_params   cfg;
     st22_rx_handle      handle;
     media_clk_anchor    clk;
 
-    struct rx_pkt       pool[RX_POOL_SIZE];
+    struct mp4_rx_pkt       pool[RX_POOL_SIZE];
     atomic_bool         stopping;
 
     uint64_t            stat_received;
@@ -35,7 +35,7 @@ struct mtl_rx_mp4 {
 };
 
 /* ---- pool helpers ---- */
-static struct rx_pkt* rx_pool_acquire(mtl_rx_mp4* rx) {
+static struct mp4_rx_pkt* rx_pool_acquire(mtl_rx_mp4* rx) {
     for (int i = 0; i < RX_POOL_SIZE; i++) {
         int expected = 0;
         if (atomic_compare_exchange_strong(&rx->pool[i].used, &expected, 1))
@@ -44,7 +44,7 @@ static struct rx_pkt* rx_pool_acquire(mtl_rx_mp4* rx) {
     return NULL;
 }
 
-static void rx_pool_release(struct rx_pkt* pkt) {
+static void rx_pool_release(struct mp4_rx_pkt* pkt) {
     if (!pkt) return;
     pkt->frame     = NULL;
     pkt->size      = 0;
@@ -75,7 +75,7 @@ static int rx_notify_frame_ready(void* priv, void* frame,
         return 0;
     }
 
-    struct rx_pkt* pkt = rx_pool_acquire(rx);
+    struct mp4_rx_pkt* pkt = rx_pool_acquire(rx);
     if (!pkt) {
         rx->stat_drops++;
         st22_rx_put_framebuff(rx->handle, frame);
@@ -175,7 +175,7 @@ void mtl_rx_mp4_stop(mtl_rx_mp4* rx) {
             rx_pool_release(&rx->pool[i]);
         }
     }
-    struct rx_pkt* pkt;
+    struct mp4_rx_pkt* pkt;
     while (ring_pop(rx->cfg.output_ring, (void**)&pkt) == 0) {
         if (pkt->frame)
             st22_rx_put_framebuff(rx->handle, pkt->frame);

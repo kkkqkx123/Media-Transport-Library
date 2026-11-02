@@ -9,7 +9,7 @@
 #ifndef _MTL_RX_BRIDGE_H_
 #define _MTL_RX_BRIDGE_H_
 
-#include "../shared/pipeline_common.h"
+#include "pipeline_common.h"
 #include <st20_api.h>
 #include <stdint.h>
 
@@ -19,7 +19,7 @@ struct mtl_rx_mp4;
 typedef struct mtl_rx_bridge mtl_rx_bridge;
 
 typedef struct mtl_rx_bridge_params {
-    struct ring_buffer* mtl_ring;    /* input: rx_pkt* from mtl_rx_mp4 */
+    struct ring_buffer* mtl_ring;    /* input: mp4_rx_pkt* from mtl_rx_mp4 */
     struct ring_buffer* dec_ring;    /* output: codec_packet* to rx_pipeline */
     st22_rx_handle     rx_handle;   /* for framebuffer release */
     struct slab_pool*  coded_pool;  /* slab for coded data copies */

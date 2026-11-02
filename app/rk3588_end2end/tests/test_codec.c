@@ -19,7 +19,7 @@
 #include "../codec/rga_converter.h"
 #include "../codec/mpp_encoder.h"
 #include "../codec/mpp_decoder.h"
-#include "../hal/slab_pool.h"
+#include "slab_pool.h"
 #include "../hal/sei_timestamp.h"
 #include "../io/v4l2_capturer.h"
 #include "../io/drm_renderer.h"

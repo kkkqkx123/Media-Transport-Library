@@ -15,7 +15,7 @@
  */
 
 #include "codec_plugin.h"
-#include "../hal/slab_pool.h"
+#include "slab_pool.h"
 #include <errno.h>
 #include <pthread.h>
 #include <rockchip/mpp_buffer.h>

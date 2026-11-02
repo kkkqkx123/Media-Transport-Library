@@ -7,7 +7,7 @@
 #ifndef _PLAYOUT_BUFFER_H_
 #define _PLAYOUT_BUFFER_H_
 
-#include "../shared/pipeline_common.h"
+#include "pipeline_common.h"
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>

@@ -8,7 +8,7 @@
 #define _RX_PIPELINE_MP4_H_
 
 #include "../mp4_dist_app.h"
-#include "../shared/pipeline_common.h"
+#include "pipeline_common.h"
 #include "av_sync.h"
 #include "mtl_rx_mp4.h"
 #include "mtl_rx_bridge.h"

@@ -8,7 +8,7 @@
 #define _MTL_RX_MP4_H_
 
 #include "../mp4_dist_app.h"
-#include "../shared/pipeline_common.h"
+#include "pipeline_common.h"
 #include "media_clk.h"
 #include <st20_api.h>
 
@@ -18,7 +18,7 @@ typedef struct mtl_rx_mp4 mtl_rx_mp4;
 /** Parameters for creating the RX session. */
 typedef struct mtl_rx_mp4_params {
     mtl_handle      st;
-    struct ring_buffer* output_ring;    /* push rx_pkt* here */
+    struct ring_buffer* output_ring;    /* push mp4_rx_pkt* here */
     int             framebuff_cnt;
     int             width;
     int             height;

@@ -13,7 +13,7 @@
 
 #include "tx_pipeline.h"
 #include "ring_buffer.h"
-#include "../hal/slab_pool.h"
+#include "slab_pool.h"
 #include "../hal/sei_timestamp.h"
 #include "../codec/rga_converter.h"
 #include "../codec/mpp_encoder.h"

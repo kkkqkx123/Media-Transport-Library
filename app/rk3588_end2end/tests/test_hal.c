@@ -14,8 +14,8 @@
 #include <assert.h>
 #include <drm_fourcc.h>
 #include "../hal/dma_allocator.h"
-#include "../hal/timer.h"
-#include "../hal/slab_pool.h"
+#include "timer.h"
+#include "slab_pool.h"
 #include "../hal/sei_timestamp.h"
 
 static int test_dma_allocator(void) {

@@ -5,9 +5,9 @@
 
 #include "mtl_rx_bridge.h"
 #include "mtl_rx.h"
-#include "pipeline/ring_buffer.h"
-#include "pipeline/pipeline_common.h"
-#include "../hal/slab_pool.h"
+#include "ring_buffer.h"
+#include "pipeline_common.h"
+#include "slab_pool.h"
 #include <errno.h>
 #include <pthread.h>
 #include <sched.h>

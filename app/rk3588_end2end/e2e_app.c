@@ -17,13 +17,13 @@
  */
 
 #include "e2e_config.h"
-#include "hal/slab_pool.h"
+#include "slab_pool.h"
 #include "mtl_tx.h"
 #include "mtl_rx.h"
 #include "mtl_rx_bridge.h"
 #include "pipeline/tx_pipeline.h"
 #include "pipeline/rx_pipeline.h"
-#include "pipeline/ring_buffer.h"
+#include "ring_buffer.h"
 #include <errno.h>
 #include <mtl_api.h>
 #include <pthread.h>

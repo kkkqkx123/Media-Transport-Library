@@ -6,7 +6,7 @@
 #ifndef _MP4_DIST_APP_H_
 #define _MP4_DIST_APP_H_
 
-#include "shared/pipeline_common.h"
+#include "pipeline_common.h"
 #include "shared/display_layout.h"
 #include <mtl_api.h>
 #include <st20_api.h>

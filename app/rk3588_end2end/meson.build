@@ -14,30 +14,40 @@ librockchip_mpp_dep = dependency('rockchip_mpp', required: false)
 mtl_dep = dependency('mtl', required: false)
 libjson_c_dep = dependency('json-c', required: false)
 
+# ---- common shared utilities (single source of truth) ----
+common_c_args = []
+if mtl_dep.found()
+  common_c_args += '-DHAVE_MTL=1'
+endif
+common_inc = include_directories('../rk3588_common/include',
+                                '../rk3588_common/include/rk3588_common')
+e2e_inc = [include_directories('.'), common_inc]
+
 # ---- Phase 1: HAL (libdrm only) ----
 # sps_vui is pure C (no hardware deps) so its test builds everywhere.
 executable('test_sps_vui', 'tests/test_sps_vui.c',
   'codec/sps_vui.c',
-  include_directories: include_directories('.'),
+  include_directories: e2e_inc,
 )
 
 e2e_hal_sources = files(
   'hal/dma_allocator.c',
   'hal/dma32_allocator.c',
-  'hal/timer.c',
-  'hal/slab_pool.c',
+  '../rk3588_common/src/timer.c',
+  '../rk3588_common/src/slab_pool.c',
   'hal/sei_timestamp.c',
 )
 
 e2e_hal = static_library('e2e_hal', e2e_hal_sources,
+  c_args: common_c_args,
   dependencies: [libdrm_dep],
-  include_directories: include_directories('.'),
+  include_directories: e2e_inc,
 )
 
 executable('test_hal', 'tests/test_hal.c',
   link_with: e2e_hal,
   dependencies: [libdrm_dep],
-  include_directories: include_directories('.'),
+  include_directories: e2e_inc,
 )
 
 # ---- Phase 2: IO (V4L2 capture + DRM display) ----
@@ -49,13 +59,13 @@ e2e_io_sources = files(
 e2e_io = static_library('e2e_io', e2e_io_sources,
   link_with: e2e_hal,
   dependencies: [libdrm_dep, libpthread_dep],
-  include_directories: include_directories('.'),
+  include_directories: e2e_inc,
 )
 
 executable('test_io', 'tests/test_io.c',
   link_with: [e2e_hal, e2e_io],
   dependencies: [libdrm_dep, libpthread_dep],
-  include_directories: include_directories('.'),
+  include_directories: e2e_inc,
 )
 
 # ---- Phase 3: Codec (RGA + MPP) ----
@@ -70,20 +80,20 @@ if librockchip_mpp_dep.found() and librga_dep.found()
     'codec/sps_vui.c',
     link_with: e2e_hal,
     dependencies: [libdrm_dep, librga_dep, librockchip_mpp_dep],
-    include_directories: include_directories('.'),
+    include_directories: e2e_inc,
   )
 
   executable('test_codec', 'tests/test_codec.c',
     link_with: [e2e_hal, e2e_io, e2e_codec],
     dependencies: [libdrm_dep, librga_dep, librockchip_mpp_dep, libpthread_dep],
-    include_directories: include_directories('.'),
+    include_directories: e2e_inc,
   )
 endif
 
 # ---- Phase 4: Pipeline (ring buffers + TX/RX pipeline) ----
 if librockchip_mpp_dep.found() and librga_dep.found()
   e2e_pipe_sources = files(
-    'pipeline/ring_buffer.c',
+    '../rk3588_common/src/ring_buffer.c',
     'pipeline/slice_reassembler.c',
     'pipeline/tx_pipeline.c',
     'pipeline/rx_pipeline.c',
@@ -97,7 +107,7 @@ if librockchip_mpp_dep.found() and librga_dep.found()
   e2e_pipe = static_library('e2e_pipe', e2e_pipe_sources,
     link_with: [e2e_hal, e2e_codec, e2e_io],
     dependencies: e2e_pipe_deps,
-    include_directories: include_directories('.'),
+    include_directories: e2e_inc,
   )
 
   test_pipeline_deps = [libdrm_dep, librga_dep, librockchip_mpp_dep, libpthread_dep]
@@ -108,7 +118,7 @@ if librockchip_mpp_dep.found() and librga_dep.found()
   executable('test_pipeline', 'tests/test_pipeline.c',
     link_with: [e2e_hal, e2e_codec, e2e_io, e2e_pipe],
     dependencies: test_pipeline_deps,
-    include_directories: include_directories('.'),
+    include_directories: e2e_inc,
   )
 endif
 
@@ -124,6 +134,6 @@ if librockchip_mpp_dep.found() and librga_dep.found() and mtl_dep.found() and li
     link_with: [e2e_hal, e2e_codec, e2e_io, e2e_pipe],
     dependencies: [libdrm_dep, librga_dep, librockchip_mpp_dep, libpthread_dep,
                    mtl_dep, libjson_c_dep],
-    include_directories: include_directories('.'),
+    include_directories: e2e_inc,
   )
 endif

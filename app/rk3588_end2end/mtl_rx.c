@@ -8,7 +8,7 @@
  */
 
 #include "mtl_rx.h"
-#include "pipeline/ring_buffer.h"
+#include "ring_buffer.h"
 #include <errno.h>
 #include <stdatomic.h>
 #include <stdio.h>

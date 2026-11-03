@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <link rel="stylesheet" href="../../vendor/tdesign.min.css" />
+    <link rel="stylesheet" href="../../vendor/iconfont.css" />
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>拼墙设置 · 图像调节 · 示意</title>
+    <link rel="icon" href="../../_shared/favicon.svg" />
+    <link rel="stylesheet" href="../../_shared/theme.css" />
+    <link rel="stylesheet" href="../../_shared/ids-admin.css" />
+    <style>
+      .bind-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--proto-border); margin-bottom: 16px; }
+      .bind-tabs a { padding: 8px 16px; font-size: 14px; color: var(--proto-text-secondary); text-decoration: none; border-bottom: 2px solid transparent; cursor: pointer; }
+      .bind-tabs a.is-active { color: var(--proto-primary); border-bottom-color: var(--proto-primary); font-weight: 600; }
+      .adj-form { max-width: 560px; }
+      .adj-row { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+      .adj-row label { width: 64px; font-size: 13px; flex-shrink: 0; }
+      .adj-row input[type="range"] { flex: 1; }
+      .adj-row .val { width: 48px; text-align: center; font-size: 13px; color: var(--proto-primary); }
+      .set-footer { display: flex; gap: 8px; justify-content: flex-start; margin-top: 32px; padding-top: 16px; border-top: 1px solid #e7e7e7; max-width: 560px; }
+      .note-line { font-size: 12px; color: var(--proto-text-tertiary); max-width: 560px; line-height: 1.7; }
+    </style>
+      <link rel="stylesheet" href="../../_shared/itc-adapter.css" />
+    <script src="../../_shared/itc-adapter.js" defer></script>
+  </head>
+  <body data-proto-page="wall-image" data-proto-l1="schedule">
+    <div class="proto-shell">
+      <aside class="proto-side">
+        <div class="proto-side-logo"><div class="proto-side-logo-mark">D</div></div>
+        <nav class="proto-side-menu">
+          <a class="proto-side-item" data-page="hub" href="hub.html"><span class="proto-side-icon"></span>目录</a>
+          <a class="proto-side-item" data-page="schedule" href="#"><span class="proto-side-icon"></span>信号调度</a>
+        </nav>
+      </aside>
+      <div class="proto-body">
+        <header class="proto-header">
+          <div class="proto-header-left">
+            <a class="proto-header-brand proto-brand-link" href="hub.html" title="返回原型目录">
+              <span class="proto-brand-logo" aria-hidden="true"></span>
+              <span class="proto-brand-name">分布式视频管理</span>
+            </a>
+            <button type="button" class="proto-fold-sub" id="proto-fold-sub" title="收起二级菜单">☰</button>
+            <nav class="proto-breadcrumb">
+              <a href="hub.html">原型目录</a><span>/</span><a href="group-list.html">分组管理</a><span>/</span><a href="wall-list.html">拼墙列表</a><span>/</span><span class="current">设置 · 图像调节（展厅主屏）</span>
+            </nav>
+          </div>
+          <div class="proto-header-right">
+            <span class="proto-header-meta">示意 · REQ-2026-0003 · PAGE-DVS-005 · 2026-10-19 · 非需求正文</span>
+            <span class="proto-header-user">管理员</span>
+          </div>
+        </header>
+        <main class="proto-main">
+          <aside class="proto-side-sub">
+            <div class="proto-side-sub-group is-open">
+              <button type="button" class="proto-side-sub-parent">
+                <span class="proto-menu-ico"></span><span class="proto-menu-label">信号调度</span><span class="proto-menu-caret">▾</span>
+              </button>
+              <div class="proto-side-sub-children">
+                <a data-page="list" href="group-list.html">分组管理</a>
+                <a data-page="wall-list" href="wall-list.html">拼墙管理</a>
+                <a data-page="screen-schedule" href="screen-schedule.html">画面调度</a>
+              </div>
+            </div>
+            <div class="proto-side-sub-group">
+              <button type="button" class="proto-side-sub-parent">
+                <span class="proto-menu-ico"></span><span class="proto-menu-label">设备管理</span><span class="proto-menu-caret">▾</span>
+              </button>
+              <div class="proto-side-sub-children">
+                <a data-page="device-list" href="device-list.html">设备列表</a>
+              </div>
+            </div>
+          </aside>
+          <div class="proto-content">
+            <section class="proto-card">
+              <div class="wall-settings-heading">
+                <a class="proto-back-icon wall-settings-back" data-nav href="wall-list.html" aria-label="返回拼墙管理" title="返回拼墙管理"><i class="t-icon t-icon-chevron-left" aria-hidden="true"></i></a>
+                <h1 class="wall-settings-title"></h1>
+              </div>
+              <div class="bind-tabs" id="tabs">
+                <a data-nav href="wall-basic.html">基本设置</a>
+                <a data-nav href="port-bind.html">端口绑定</a>
+                <a class="is-active">图像调节</a>
+                <a data-nav href="wall-transfer.html">传输配置</a>
+                <a data-nav href="wall-backdrop.html">高清底图</a>
+              </div>
+              <div class="adj-form">
+                <div class="adj-row">
+                  <label for="adj-bright">亮度</label>
+                  <input type="range" id="adj-bright" min="0" max="100" value="50" />
+                  <span class="val" id="v-bright">50</span>
+                </div>
+                <div class="adj-row">
+                  <label for="adj-contrast">对比度</label>
+                  <input type="range" id="adj-contrast" min="0" max="100" value="50" />
+                  <span class="val" id="v-contrast">50</span>
+                </div>
+                <div class="adj-row">
+                  <label for="adj-saturation">饱和度</label>
+                  <input type="range" id="adj-saturation" min="0" max="100" value="50" />
+                  <span class="val" id="v-saturation">50</span>
+                </div>
+                <div class="adj-row">
+                  <label for="adj-hue">色调</label>
+                  <input type="range" id="adj-hue" min="0" max="360" value="180" />
+                  <span class="val" id="v-hue">180</span>
+                </div>
+                <p class="note-line">
+                  拼墙级参数：一次调整作用于本墙全部已绑定输出盒（当前 6/8）；各项取值范围以设备能力为准（示意值）。
+                  保存后立即下发、即时生效，不需重新开窗。
+                </p>
+              </div>
+              <div class="set-footer">
+                <button type="button" class="proto-btn" id="btn-reset">恢复默认</button>
+                <button type="button" class="proto-btn" id="btn-cancel">取消</button>
+                <button type="button" class="proto-btn proto-btn-primary" id="btn-save">保存</button>
+              </div>
+            </section>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <div class="proto-mask" id="unsaved-modal" hidden>
+      <div class="proto-modal" role="dialog" style="max-width: 380px">
+        <div class="proto-modal-header"><span>未保存改动</span></div>
+        <div class="proto-modal-body">当前有未保存的图像参数改动。保存后立即下发并即时生效。</div>
+        <div class="proto-modal-footer">
+          <button type="button" class="proto-btn" id="unsaved-cancel">取消（停留）</button>
+          <button type="button" class="proto-btn" id="unsaved-drop">放弃改动</button>
+          <button type="button" class="proto-btn proto-btn-primary" id="unsaved-save">保存并生效</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="../../_shared/proto-shell.js"></script>
+    <script src="../../_shared/platform-store.js"></script>
+    <script>
+      (function () {
+        var store = window.DvsPlatformStore;
+        var requestedWallId = new URLSearchParams(window.location.search).get("wallId");
+        if (requestedWallId && store.getWall(requestedWallId)) store.setCurrentWall(requestedWallId);
+        var wall = requestedWallId ? store.getWall(requestedWallId) : store.getCurrentWall();
+        if (!wall) { window.location.href = "wall-list.html"; return; }
+        var DEFAULTS = { "adj-bright": 50, "adj-contrast": 50, "adj-saturation": 50, "adj-hue": 180 };
+        var dirty = false;
+        var navTarget = null;
+        function $(id) { return document.getElementById(id); }
+        function loadSaved() {
+          wall = store.getWall(wall.id);
+          var image = wall.settings && wall.settings.image || {};
+          var keys = { "adj-bright": "brightness", "adj-contrast": "contrast", "adj-saturation": "saturation", "adj-hue": "hue" };
+          Object.keys(DEFAULTS).forEach(function (id) {
+            var value = image[keys[id]] == null ? DEFAULTS[id] : image[keys[id]];
+            $(id).value = value;
+            $("v-" + id.split("-")[1]).textContent = value;
+          });
+          dirty = false;
+        }
+        function doSave(done) {
+          var btn = $("btn-save");
+          btn.disabled = true;
+          setTimeout(function () {
+            btn.disabled = false;
+            try {
+              wall = store.updateWall(wall.id, {
+                settings: Object.assign({}, store.getWall(wall.id).settings, { image: {
+                  brightness: Number($("adj-bright").value), contrast: Number($("adj-contrast").value),
+                  saturation: Number($("adj-saturation").value), hue: Number($("adj-hue").value)
+                } })
+              });
+              dirty = false;
+              protoToast("保存成功，已下发至本墙全部已绑定输出盒");
+              if (done) done();
+            } catch (error) { protoToast(error.message || "保存失败"); }
+          }, 300);
+        }
+
+        Object.keys(DEFAULTS).forEach(function (id) {
+          $(id).addEventListener("input", function () {
+            $("v-" + id.split("-")[1]).textContent = this.value;
+            dirty = true;
+          });
+        });
+
+        $("btn-reset").onclick = function () {
+          Object.keys(DEFAULTS).forEach(function (id) {
+            $(id).value = DEFAULTS[id];
+            $("v-" + id.split("-")[1]).textContent = DEFAULTS[id];
+          });
+          dirty = true;
+          protoToast("已恢复系统默认值（保存后生效）");
+        };
+        $("btn-save").onclick = function () { doSave(); };
+        $("btn-cancel").onclick = function () {
+          loadSaved();
+          protoToast("已取消，参数保持已保存值");
+        };
+
+        document.querySelectorAll(".wall-settings-back[data-nav], #tabs a[data-nav]").forEach(function (a) {
+          a.addEventListener("click", function (e) {
+            e.preventDefault();
+            navTarget = a.classList.contains("wall-settings-back")
+              ? "wall-list.html?groupId=" + encodeURIComponent(wall.groupId)
+              : a.getAttribute("href") + "?wallId=" + encodeURIComponent(wall.id);
+            if (!dirty) { window.location.href = navTarget; return; }
+            $("unsaved-modal").hidden = false;
+            $("unsaved-modal").classList.add("is-open");
+          });
+        });
+        function closeModal() {
+          $("unsaved-modal").classList.remove("is-open");
+          $("unsaved-modal").hidden = true;
+          navTarget = null;
+        }
+        $("unsaved-cancel").onclick = closeModal;
+        $("unsaved-drop").onclick = function () { var t = navTarget; closeModal(); if (t) window.location.href = t; };
+        $("unsaved-save").onclick = function () {
+          var t = navTarget;
+          doSave(function () {
+            closeModal();
+            if (t) window.location.href = t;
+          });
+        };
+        var breadcrumb = document.querySelector(".proto-breadcrumb .current");
+        if (breadcrumb) breadcrumb.textContent = "设置 · 图像调节（" + wall.name + "）";
+        var wallTitle = document.querySelector(".wall-settings-title");
+        if (wallTitle) wallTitle.textContent = wall.name;
+        var note = document.querySelector(".adj-form .note-line");
+        if (note) note.textContent = "拼墙级参数：一次调整作用于本墙全部已绑定输出盒（当前 " + (wall.boundCount || 0) + "/" + (wall.totalCells || 0) + "）；各项取值范围以设备能力为准（示意值）。保存后立即下发、即时生效，不需重新开窗。";
+        loadSaved();
+      })();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <link rel="stylesheet" href="../../vendor/tdesign.min.css" />
+    <link rel="stylesheet" href="../../vendor/iconfont.css" />
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>拼墙列表 · 示意</title>
+    <link rel="icon" href="../../_shared/favicon.svg" />
+    <link rel="stylesheet" href="../../_shared/theme.css" />
+    <link rel="stylesheet" href="../../_shared/ids-admin.css" />
+    <style>
+      .proto-filter .proto-input { width: 200px; }
+      .grid-editor { border: 1px solid var(--proto-border); border-radius: var(--proto-radius-sm); padding: 12px; margin-top: 12px; background: var(--proto-surface-subtle); }
+      .grid-editor h5 { margin: 0 0 8px; font-size: 13px; font-weight: 600; }
+      .grid-row { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; flex-wrap: wrap; }
+      .grid-row .proto-input { width: 90px; height: var(--proto-control-height-sm); }
+      .grid-cell-err { border-color: var(--proto-danger) !important; }
+      .total-bar { margin-top: 4px; font-size: 13px; color: var(--proto-text-secondary); }
+      .total-bar b { color: var(--proto-primary); }
+      .tag-bind { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; }
+      .tag-bind.full { background: var(--proto-primary-10); color: var(--proto-primary); }
+      .tag-bind.part { background: rgba(249, 115, 22, 0.12); color: #ea580c; }
+      .tag-bind.none { background: var(--proto-surface-subtle); color: var(--proto-text-tertiary); }
+    </style>
+    <link rel="stylesheet" href="../../_shared/itc-adapter.css" />
+    <script src="../../_shared/itc-adapter.js" defer></script>
+  </head>
+  <body data-proto-page="wall-list" data-proto-l1="schedule">
+    <div class="proto-shell">
+      <aside class="proto-side">
+        <div class="proto-side-logo"><div class="proto-side-logo-mark">D</div></div>
+        <nav class="proto-side-menu">
+          <a class="proto-side-item" data-page="hub" href="hub.html"><span class="proto-side-icon"></span>目录</a>
+          <a class="proto-side-item" data-page="schedule" href="#"><span class="proto-side-icon"></span>信号调度</a>
+        </nav>
+      </aside>
+      <div class="proto-body">
+        <header class="proto-header">
+          <div class="proto-header-left">
+            <a class="proto-header-brand proto-brand-link" href="hub.html" title="返回原型目录">
+              <span class="proto-brand-logo" aria-hidden="true"></span>
+              <span class="proto-brand-name">分布式视频管理</span>
+            </a>
+            <button type="button" class="proto-fold-sub" id="proto-fold-sub" title="收起二级菜单">☰</button>
+            <nav class="proto-breadcrumb">
+              <a href="hub.html">原型目录</a><span>/</span><a href="group-list.html">分组管理</a><span>/</span><span class="current" id="group-crumb">拼墙列表（展厅 A 区）</span>
+            </nav>
+          </div>
+          <div class="proto-header-right">
+            <span class="proto-header-meta">示意 · REQ-2026-0002 · PAGE-DVS-002 · 2026-10-19 · 非需求正文</span>
+            <span class="proto-header-user" id="header-user">管理员</span>
+          </div>
+        </header>
+        <main class="proto-main">
+          <aside class="proto-side-sub">
+            <div class="proto-side-sub-group is-open">
+              <button type="button" class="proto-side-sub-parent">
+                <span class="proto-menu-ico"></span><span class="proto-menu-label">信号调度</span><span class="proto-menu-caret">▾</span>
+              </button>
+              <div class="proto-side-sub-children">
+                <a data-page="list" href="group-list.html">分组管理</a>
+                <a class="is-active" data-page="wall-list" href="#">拼墙管理</a>
+                <a data-page="screen-schedule" href="screen-schedule.html">画面调度</a>
+              </div>
+            </div>
+            <div class="proto-side-sub-group">
+              <button type="button" class="proto-side-sub-parent">
+                <span class="proto-menu-ico"></span><span class="proto-menu-label">设备管理</span><span class="proto-menu-caret">▾</span>
+              </button>
+              <div class="proto-side-sub-children">
+                <a data-page="device-list" href="device-list.html">设备列表</a>
+              </div>
+            </div>
+          </aside>
+          <div class="proto-content">
+            <section class="proto-card">
+              <div class="proto-filter">
+                <a class="proto-back-icon" href="group-list.html" aria-label="返回分组管理" title="返回分组管理"><i class="t-icon t-icon-chevron-left" aria-hidden="true"></i></a>
+                <div class="proto-field">
+                  <label for="kw">拼墙名称</label>
+                  <input id="kw" class="proto-input" type="text" maxlength="20" placeholder="请输入拼墙名称" />
+                </div>
+                <button type="button" class="proto-btn" id="btn-reset">重置</button>
+              </div>
+              <div class="proto-toolbar">
+                <div class="proto-toolbar-left">
+                  <button type="button" class="proto-btn proto-btn-primary" id="btn-new"><i class="t-icon t-icon-add-circle" aria-hidden="true"></i>新建拼墙</button>
+                </div>
+              </div>
+              <div class="proto-table-wrap">
+                <table class="proto-table" id="wall-table">
+                  <thead>
+                    <tr>
+                      <th class="num col-idx">序号</th>
+                      <th class="col-name">拼墙名称</th>
+                      <th class="col-status">模式</th>
+                      <th class="num col-num">行列</th>
+                      <th class="col-text">分辨率</th>
+                      <th class="col-person">所属分组</th>
+                      <th class="col-status">绑定状态</th>
+                      <th class="ops col-ops is-ops-3">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="wall-tbody"></tbody>
+                </table>
+                <div class="proto-empty" id="wall-empty" style="display: none"></div>
+              </div>
+              <div class="proto-pagination">
+                <span id="pager-total">共 0 项数据</span>
+                <div class="proto-pagination-controls">
+                  <select class="proto-select proto-page-size" id="pager-size" aria-label="每页条数">
+                    <option>8 条/页</option>
+                  </select>
+                  <button type="button" class="proto-page proto-page-arrow" id="pager-prev" aria-label="上一页"><i class="t-icon t-icon-chevron-left" aria-hidden="true"></i></button>
+                  <button type="button" class="proto-page is-active" id="pager-num">1</button>
+                  <button type="button" class="proto-page proto-page-arrow" id="pager-next" aria-label="下一页"><i class="t-icon t-icon-chevron-right" aria-hidden="true"></i></button>
+                </div>
+              </div>
+            </section>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <div class="proto-drawer-mask" id="drawer-new" hidden>
+      <aside class="proto-drawer" role="dialog" aria-modal="true">
+        <div class="proto-drawer-header">
+          <span>新建拼墙</span>
+          <button type="button" class="proto-drawer-close" data-drawer-close aria-label="关闭">×</button>
+        </div>
+        <div class="proto-drawer-body">
+          <div class="proto-field" id="field-name" style="margin-bottom: 16px">
+            <label for="input-name">拼墙名称<span class="req">*</span></label>
+            <input id="input-name" class="proto-input" type="text" maxlength="20" placeholder="请输入拼墙名称（20 字以内）" />
+            <div class="err" id="name-err" style="display: none"></div>
+            <div class="hint">20 字以内；同一分组内不可重名</div>
+          </div>
+          <div class="proto-form-grid">
+            <div class="proto-field" style="margin-bottom: 16px">
+              <label for="sel-mode">模式<span class="req">*</span></label>
+              <select id="sel-mode" class="proto-select">
+                <option value="LCD">LCD</option>
+                <option value="LED">LED</option>
+              </select>
+              <div class="hint">LCD / LED，不提供 KVM</div>
+            </div>
+            <div class="proto-field" id="field-type" style="margin-bottom: 16px">
+              <label for="sel-type">类型</label>
+              <select id="sel-type" class="proto-select">
+                <option value="标准">标准</option>
+                <option value="非标准">非标准</option>
+              </select>
+            </div>
+            <div class="proto-field" id="field-rows" style="margin-bottom: 16px">
+              <label for="input-rows">行数<span class="req">*</span></label>
+              <input id="input-rows" class="proto-input" type="number" min="1" max="6" value="2" />
+              <div class="hint">1~6</div>
+            </div>
+            <div class="proto-field" id="field-cols" style="margin-bottom: 16px">
+              <label for="input-cols">列数<span class="req">*</span></label>
+              <input id="input-cols" class="proto-input" type="number" min="1" max="15" value="3" />
+              <div class="hint">1~15</div>
+            </div>
+          </div>
+          <div class="proto-field" id="field-firstres" style="margin-bottom: 16px">
+            <label for="sel-firstres">首格分辨率<span class="req">*</span></label>
+            <select id="sel-firstres" class="proto-select">
+              <option value="1920×1080">1920×1080</option>
+              <option value="3840×2160">3840×2160</option>
+            </select>
+            <div class="hint">整墙分辨率 = 行 × 列 × 首格分辨率</div>
+          </div>
+          <div id="grid-editor-wrap" style="display: none">
+            <div class="grid-editor">
+              <h5>行列分辨率编辑器（逐行逐列，单格 64~7680）</h5>
+              <div class="grid-row" id="row-inputs"></div>
+              <div class="grid-row" id="col-inputs"></div>
+              <div class="total-bar">整墙总宽 × 总高：<b id="txt-total">—</b></div>
+            </div>
+          </div>
+        </div>
+        <div class="proto-drawer-footer">
+          <button type="button" class="proto-btn" data-drawer-close>取消</button>
+          <button type="button" class="proto-btn proto-btn-primary" id="btn-save">保存</button>
+        </div>
+      </aside>
+    </div>
+
+    <script src="../../_shared/proto-shell.js"></script>
+    <script src="../../_shared/platform-store.js"></script>
+    <script>
+      (function () {
+        var store = DvsPlatformStore;
+        var groupFromUrl = new URLSearchParams(window.location.search).get("groupId");
+        if (groupFromUrl && store.getGroup(groupFromUrl)) store.setCurrentGroup(groupFromUrl);
+        var isAdmin = true;
+        var keyword = "";
+        var page = 1;
+        var PAGE_SIZE = 8;
+
+        function $(id) { return document.getElementById(id); }
+        function setHeaderUser(name) {
+          var user = $("header-user"), label = user.querySelector("span");
+          if (label) label.textContent = name;
+          else user.textContent = name;
+        }
+        function pad(n) { return n < 10 ? "0" + n : String(n); }
+        function esc(s) {
+          return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+        }
+        function showConfirm(options) {
+          protoConfirm(options);
+          var ok = $("proto-confirm-ok"), cancel = $("proto-confirm-cancel");
+          ok.textContent = options.okText || "确认";
+          cancel.style.display = options.informational ? "none" : "";
+        }
+
+        function bindTag(w) {
+          var parts = w.bind.split("/");
+          if (parts[0] === "0") return '<span class="tag-bind none">未绑定</span>';
+          if (parts[0] === parts[1]) return '<span class="tag-bind full">已绑定</span>';
+          return '<span class="tag-bind part">' + w.bind + "</span>";
+        }
+
+        function filtered() {
+          var k = keyword.trim();
+          var walls = store.listWalls(store.currentGroupId());
+          if (!k) return walls;
+          return walls.filter(function (w) { return w.name.indexOf(k) >= 0; });
+        }
+
+        function render() {
+          var all = filtered();
+          var group = store.getCurrentGroup();
+          $("group-crumb").textContent = "拼墙列表（" + (group ? group.name : "未选择分组") + "）";
+          var maxPage = Math.max(1, Math.ceil(all.length / PAGE_SIZE));
+          page = Math.min(page, maxPage);
+          var start = (page - 1) * PAGE_SIZE;
+          var shown = all.slice(start, start + PAGE_SIZE);
+          $("btn-new").style.display = isAdmin ? "" : "none";
+          setHeaderUser("管理员");
+          $("pager-total").textContent = "共 " + all.length + " 项数据";
+          $("pager-num").textContent = String(page);
+          $("pager-prev").disabled = page === 1;
+          $("pager-next").disabled = page === maxPage;
+          var tbody = $("wall-tbody"), empty = $("wall-empty"), table = $("wall-table");
+          if (!shown.length) {
+            tbody.innerHTML = "";
+            table.style.display = "none";
+            empty.style.display = "block";
+            empty.textContent = store.listWalls(store.currentGroupId()).length ? "未找到与「" + keyword.trim() + "」匹配的拼墙" : "该分组下暂无拼墙，点击「新建拼墙」创建";
+            return;
+          }
+          table.style.display = "table";
+          empty.style.display = "none";
+          tbody.innerHTML = shown.map(function (w, i) {
+            var ops = '<a class="link btn-open-wall" data-id="' + esc(w.id) + '" href="screen-schedule.html?wallId=' + encodeURIComponent(w.id) + '">进入画面</a><a class="link btn-open-wall" data-id="' + esc(w.id) + '" href="wall-basic.html?wallId=' + encodeURIComponent(w.id) + '">设置</a>';
+            if (isAdmin) ops += '<button type="button" class="link btn-del" data-id="' + esc(w.id) + '">删除</button>';
+            return (
+              "<tr><td class=\"num col-idx\">" + pad(start + i + 1) +
+              "</td><td class=\"col-name\">" + esc(w.name) +
+              "</td><td class=\"col-status\">" + w.mode +
+              '</td><td class="num col-num">' + w.rows + "×" + w.cols +
+              "</td><td class=\"col-text\">" + esc(w.res) +
+              "</td><td class=\"col-person\">" + esc(w.groupName) +
+              '</td><td class="col-status">' + bindTag(w) +
+              '</td><td class="ops col-ops">' + ops + "</td></tr>"
+            );
+          }).join("");
+        }
+
+        /* ---- 新建拼墙 ---- */
+        function showErr(fieldId, errId, msg) {
+          $(fieldId).classList.add("is-error");
+          $(errId).style.display = "block";
+          $(errId).textContent = msg;
+        }
+        function clearNameErr() {
+          $("field-name").classList.remove("is-error");
+          $("name-err").style.display = "none";
+        }
+
+        function editorVisible() {
+          return $("sel-mode").value === "LED" || ($("sel-mode").value === "LCD" && $("sel-type").value === "非标准");
+        }
+
+        function renderEditor() {
+          var rows = Math.min(6, Math.max(1, Number($("input-rows").value) || 1));
+          var cols = Math.min(15, Math.max(1, Number($("input-cols").value) || 1));
+          var showType = $("sel-mode").value === "LCD";
+          $("field-type").style.display = showType ? "" : "none";
+          $("field-firstres").style.display = showType && $("sel-type").value === "标准" ? "" : "none";
+          var showEditor = editorVisible();
+          $("grid-editor-wrap").style.display = showEditor ? "" : "none";
+          if (!showEditor) { updateTotal(); return; }
+          $("row-inputs").innerHTML = Array.from({ length: rows }, function (_, i) {
+            return '<input class="proto-input grid-px" data-kind="row" data-i="' + i + '" type="number" min="64" max="7680" value="1080" />';
+          }).join("");
+          $("col-inputs").innerHTML = Array.from({ length: cols }, function (_, i) {
+            return '<input class="proto-input grid-px" data-kind="col" data-i="' + i + '" type="number" min="64" max="7680" value="1920" />';
+          }).join("");
+          bindEditorEvents();
+          updateTotal();
+        }
+
+        function bindEditorEvents() {
+          document.querySelectorAll(".grid-px").forEach(function (inp) {
+            inp.oninput = function () {
+              var v = Number(inp.value);
+              inp.classList.toggle("grid-cell-err", !(v >= 64 && v <= 7680));
+              updateTotal();
+            };
+          });
+        }
+
+        function updateTotal() {
+          if (!editorVisible()) {
+            var r = Number($("input-rows").value) || 0, c = Number($("input-cols").value) || 0;
+            var fr = $("sel-firstres").value.split("×");
+            $("txt-total").textContent = (c * Number(fr[0])) + " × " + (r * Number(fr[1]));
+            return;
+          }
+          var w = 0, h = 0, bad = false;
+          document.querySelectorAll('.grid-px[data-kind="col"]').forEach(function (i) {
+            var v = Number(i.value);
+            if (!(v >= 64 && v <= 7680)) bad = true; else w += v;
+          });
+          document.querySelectorAll('.grid-px[data-kind="row"]').forEach(function (i) {
+            var v = Number(i.value);
+            if (!(v >= 64 && v <= 7680)) bad = true; else h += v;
+          });
+          $("txt-total").textContent = bad ? "存在无效单格值" : w + " × " + h;
+        }
+
+        function save() {
+          var t = $("input-name").value.trim();
+          if (!t) { showErr("field-name", "name-err", "请输入拼墙名称"); return; }
+          if (t.length > 20) { showErr("field-name", "name-err", "名称不能超过 20 个字符"); return; }
+          if (store.listWalls(store.currentGroupId()).some(function (w) { return w.name.trim().toLocaleLowerCase() === t.toLocaleLowerCase(); })) {
+            showErr("field-name", "name-err", "该分组下已存在同名拼墙"); return;
+          }
+          var rows = Number($("input-rows").value), cols = Number($("input-cols").value);
+          if (!(rows >= 1 && rows <= 6)) { protoToast("行数取值 1~6"); return; }
+          if (!(cols >= 1 && cols <= 15)) { protoToast("列数取值 1~15"); return; }
+          var rowPixels = [], colPixels = [];
+          if (editorVisible()) {
+            var bad = null;
+            document.querySelectorAll(".grid-px").forEach(function (i) {
+              if (!(Number(i.value) >= 64 && Number(i.value) <= 7680) && !bad) bad = i;
+            });
+            if (bad) { bad.focus(); protoToast("单格像素取值 64~7680，已定位到无效格"); return; }
+            document.querySelectorAll('.grid-px[data-kind="col"]').forEach(function (i) { colPixels.push(Number(i.value)); });
+            document.querySelectorAll('.grid-px[data-kind="row"]').forEach(function (i) { rowPixels.push(Number(i.value)); });
+          }
+          var btn = $("btn-save");
+          btn.disabled = true;
+          setTimeout(function () {
+            btn.disabled = false;
+            try {
+              store.createWall({
+                groupId: store.currentGroupId(), name: t,
+                mode: $("sel-mode").value, type: $("sel-type").value,
+                rows: rows, cols: cols, firstRes: $("sel-firstres").value,
+                rowPixels: rowPixels, colPixels: colPixels
+              });
+            } catch (error) { showErr("field-name", "name-err", error.message); return; }
+            protoCloseDrawer("drawer-new");
+            protoToast("保存成功，已生成默认场景");
+            render();
+          }, 300);
+        }
+
+        $("kw").addEventListener("keydown", function (e) {
+          if (e.key === "Enter") { keyword = $("kw").value || ""; page = 1; render(); }
+        });
+        $("btn-reset").onclick = function () { $("kw").value = ""; keyword = ""; page = 1; render(); };
+        $("btn-new").onclick = function () {
+          $("input-name").value = "";
+          clearNameErr();
+          $("sel-mode").value = "LCD"; $("sel-type").value = "标准";
+          $("input-rows").value = 2; $("input-cols").value = 3;
+          renderEditor();
+          protoOpenDrawer("drawer-new");
+        };
+        $("btn-save").onclick = save;
+        ["sel-mode", "sel-type", "input-rows", "input-cols", "sel-firstres"].forEach(function (id) {
+          $(id).addEventListener("change", renderEditor);
+        });
+        $("pager-prev").onclick = function () { if (page > 1) { page--; render(); } };
+        $("pager-next").onclick = function () { if (page < Math.ceil(filtered().length / PAGE_SIZE)) { page++; render(); } };
+
+        $("wall-tbody").addEventListener("click", function (e) {
+          var open = e.target.closest(".btn-open-wall");
+          if (open) { store.setCurrentWall(open.getAttribute("data-id")); return; }
+          var del = e.target.closest(".btn-del");
+          if (!del) return;
+          var w = store.getWall(del.getAttribute("data-id"));
+          if (!w) return;
+          if (w.boundCount || w.windowCount || w.operations) {
+            showConfirm({
+              title: "暂时无法删除",
+              content: "拼墙「" + w.name + "」仍有 " + w.windowCount + " 个播放窗口、" + w.boundCount + " 个输出绑定、" + w.operations + " 个进行中操作。请先清屏、解绑并等待操作结束。",
+              okText: "知道了", informational: true
+            });
+            return;
+          }
+          showConfirm({
+            title: "删除确认",
+            content: "确认删除拼墙「" + w.name + "」及其 " + w.sceneCount + " 个场景？将进入 7 天恢复期；恢复拼墙时不会自动恢复原输出绑定。",
+            onOk: function () {
+              try { store.deleteWall(w.id); }
+              catch (error) { protoToast(error.message); return; }
+              protoToast("已移入回收状态，可在 7 天内恢复");
+              render();
+            }
+          });
+        });
+
+        renderEditor();
+        store.subscribe(render);
+        render();
+      })();
+    </script>
+  </body>
+</html>

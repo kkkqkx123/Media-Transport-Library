@@ -1,0 +1,1008 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <link rel="stylesheet" href="../../vendor/tdesign.min.css" />
+    <link rel="stylesheet" href="../../vendor/iconfont.css" />
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>开窗与信号源调度 · 示意</title>
+    <link rel="icon" href="../../_shared/favicon.svg" />
+    <link rel="stylesheet" href="../../_shared/theme.css" />
+    <link rel="stylesheet" href="../../_shared/ids-admin.css" />
+    <style>
+      .sched-top { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border: 1px solid var(--proto-border); border-radius: var(--proto-radius-sm); background: var(--proto-surface); margin-bottom: 12px; font-size: 14px; }
+      .sched-top .crumb { color: var(--proto-text-secondary); }
+      .sched-top b { color: var(--proto-primary); }
+      .sched-top .flash { animation: flashhl 1.2s ease; }
+      @keyframes flashhl { 0% { background: var(--proto-primary-14); padding: 2px 6px; border-radius: 4px; } 100% { background: transparent; } }
+      .dirty-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #f59e0b; margin-left: 6px; vertical-align: middle; }
+      .sched-layout { display: flex; gap: 12px; align-items: stretch; }
+      .sched-left, .sched-right { width: 250px; flex-shrink: 0; border: 1px solid var(--proto-border); border-radius: var(--proto-radius-sm); background: var(--proto-surface); padding: 12px; }
+      .sched-center { flex: 1; border: 1px solid var(--proto-border); border-radius: var(--proto-radius-sm); background: var(--proto-surface); padding: 12px; display: flex; flex-direction: column; }
+      .panel-title { font-size: 13px; font-weight: 600; margin: 0 0 10px; }
+      .sig-item { border: 1px solid var(--proto-border); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; font-size: 13px; cursor: grab; background: var(--proto-surface); }
+      .sig-item.is-disabled { color: var(--proto-text-disabled); cursor: not-allowed; background: var(--proto-surface-subtle); }
+      .sig-item .meta { font-size: 12px; color: var(--proto-text-secondary); margin-top: 2px; }
+      .sched-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+      .mode-seg { display: inline-flex; border: 1px solid var(--proto-border); border-radius: 6px; overflow: hidden; }
+      .mode-seg button { border: none; background: var(--proto-surface); padding: 5px 14px; font-size: 13px; cursor: pointer; }
+      .mode-seg button.is-active { background: var(--proto-primary); color: #fff; }
+      .vol-wrap { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-left: auto; }
+      .canvas-outer { overflow: auto; display: flex; height: calc(100vh - 292px); min-height: 460px; border: 1px solid #2b323b; border-radius: 6px; background: #0d1117; }
+      .canvas-stage { margin: auto; position: relative; flex-shrink: 0; }
+      .canvas-wrap { position: absolute; top: 0; left: 0; transform-origin: 0 0; background: #0d1117;
+        background-image: linear-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 1px), linear-gradient(90deg, rgba(255, 255, 255, 0.07) 1px, transparent 1px);
+        background-size: 130px 90px; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06); }
+      .backdrop-layer { position: absolute; inset: 0; z-index: 0; background-position: center; background-repeat: no-repeat; background-size: 100% 100%; opacity: .72; }
+      .cell-layer, .win-layer { position: absolute; top: 0; left: 0; }
+      .cell-layer { z-index: 1; }
+      .win-layer { z-index: 2; }
+      .cell { position: absolute; background: transparent; }
+      .cell.is-bound { background: rgba(255, 255, 255, 0.06); } /* 显示区域稍亮，与黑色底区分 */
+      .cell:not(.is-bound) { background: repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.035) 0 6px, transparent 6px 12px); }
+      .cell.is-offline::after { content: "离线"; position: absolute; right: 4px; bottom: 2px; font-size: 10px; color: #fb923c; }
+      .cell.is-flash { outline: 2px solid var(--proto-danger); outline-offset: -2px; }
+      .cell .unbound-tag { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #5b6673; font-size: 12px; }
+      .canvas-empty { position: absolute; inset: 0; z-index: 3; display: flex; align-items: center; justify-content: center; color: #6b7686; font-size: 13px; pointer-events: none; }
+      .win { position: absolute; border: 1.5px solid #4096ff; border-radius: 3px; background: rgba(64, 150, 255, 0.1); overflow: hidden; font-size: 12px; display: flex; flex-direction: column; }
+      .win.is-selected { box-shadow: 0 0 0 2px rgba(64, 150, 255, 0.35); }
+      .win-bar { display: flex; align-items: center; gap: 6px; background: rgba(64, 150, 255, 0.9); color: #fff; padding: 2px 6px; cursor: move; flex-shrink: 0; }
+      .win-bar .nm { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .win-bar button { border: none; background: none; color: #fff; cursor: pointer; font-size: 12px; padding: 0 2px; }
+      .win-body { flex: 1; display: flex; align-items: center; justify-content: center; color: #93a1b3; min-height: 0; }
+      .win-size { position: absolute; right: 4px; bottom: 4px; font-size: 11px; color: #cdd9ea; background: rgba(13, 17, 23, 0.75); border: 1px solid rgba(64, 150, 255, 0.45); border-radius: 3px; padding: 1px 6px; pointer-events: none; }
+      .win .rz { position: absolute; right: 0; bottom: 0; width: 12px; height: 12px; cursor: nwse-resize; background: linear-gradient(135deg, transparent 50%, #4096ff 50%); }
+      .zoom-wrap { display: flex; align-items: center; gap: 4px; font-size: 12px; margin-left: 8px; }
+      .zoom-wrap .proto-btn { padding: 3px 9px; font-size: 13px; line-height: 1; }
+      #zoom-val { min-width: 40px; text-align: center; color: var(--proto-text-secondary); }
+      .scene-list { margin-top: 10px; }
+      .scene-item { position: relative; display: flex; align-items: center; gap: 8px; border: 1px solid var(--proto-border); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; font-size: 13px; }
+      .scene-item.is-current { border-color: var(--proto-primary); background: var(--proto-primary-05); }
+      .scene-item.is-default { overflow: hidden; }
+      .scene-item.is-default .nm { min-width: 0; white-space: nowrap; }
+      .scene-item .nm { flex: 1; }
+      .scene-item .tag { font-size: 11px; padding: 1px 6px; border-radius: 8px; background: var(--proto-surface-subtle); color: var(--proto-text-secondary); }
+      .scene-item .tag.cur { background: var(--proto-primary-10); color: var(--proto-primary); }
+      .scene-default-ribbon { position: absolute; top: 0; right: 0; width: 24px; height: 24px; overflow: hidden; pointer-events: none; border-top-right-radius: 5px; }
+      .scene-default-ribbon::before { content: ""; position: absolute; top: 0; right: 0; border-top: 24px solid var(--proto-primary); border-left: 24px solid transparent; }
+      .scene-default-ribbon span { position: absolute; top: 3px; right: 0; width: 18px; color: #fff; font-size: 7px; line-height: 10px; text-align: center; transform: rotate(45deg); }
+      .scene-item .ops button { border: none; background: none; color: var(--proto-primary); cursor: pointer; font-size: 12px; padding: 0 2px; }
+      .hint-line { font-size: 12px; color: var(--proto-text-tertiary); margin-top: 8px; line-height: 1.6; }
+      .task-board { margin-top: 12px; border: 1px solid var(--proto-border); border-radius: var(--proto-radius-sm); background: var(--proto-surface); padding: 12px; }
+      .task-board-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+      .task-board-title { font-size: 13px; font-weight: 600; }
+      .task-current-mini { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 6px; background: var(--proto-surface-subtle); font-size: 12px; }
+      .task-current-mini .task-current-name { flex: 1; }
+      .task-status-mini { padding: 2px 8px; border-radius: 10px; background: #ecfdf5; color: #047857; }
+      .task-board-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+      .task-board-item { border: 1px solid var(--proto-border); border-radius: 6px; padding: 8px 10px; min-width: 0; }
+      .task-board-item .nm { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .task-board-item .meta { margin-top: 3px; color: var(--proto-text-secondary); font-size: 11px; }
+      .task-board-item button { margin-top: 6px; padding: 2px 8px; font-size: 11px; }
+      @media (max-width: 1100px) { .task-board-list { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    </style>
+      <link rel="stylesheet" href="../../_shared/itc-adapter.css" />
+    <script src="../../_shared/itc-adapter.js" defer></script>
+  </head>
+  <body data-proto-page="screen-schedule" data-proto-l1="schedule">
+    <div class="proto-shell">
+      <aside class="proto-side">
+        <div class="proto-side-logo"><div class="proto-side-logo-mark">D</div></div>
+        <nav class="proto-side-menu">
+          <a class="proto-side-item" data-page="hub" href="hub.html"><span class="proto-side-icon"></span>目录</a>
+          <a class="proto-side-item" data-page="schedule" href="#"><span class="proto-side-icon"></span>信号调度</a>
+        </nav>
+      </aside>
+      <div class="proto-body">
+        <header class="proto-header">
+          <div class="proto-header-left">
+            <a class="proto-header-brand proto-brand-link" href="hub.html" title="返回原型目录">
+              <span class="proto-brand-logo" aria-hidden="true"></span>
+              <span class="proto-brand-name">分布式视频管理</span>
+            </a>
+            <button type="button" class="proto-fold-sub" id="proto-fold-sub" title="收起二级菜单">☰</button>
+            <nav class="proto-breadcrumb">
+              <a href="hub.html">原型目录</a><span>/</span><a href="group-list.html">分组管理</a><span>/</span><a href="wall-list.html">拼墙列表</a><span>/</span><span class="current">画面调度（展厅主屏）</span>
+            </nav>
+          </div>
+          <div class="proto-header-right">
+            <span class="proto-header-meta">示意 · REQ-2026-0005 / 0006 / 0007 · PAGE-DVS-008 / 009 · 2026-10-19 · 非需求正文</span>
+            <span class="proto-header-user" id="header-user">管理员</span>
+          </div>
+        </header>
+        <main class="proto-main">
+          <aside class="proto-side-sub">
+            <div class="proto-side-sub-group is-open">
+              <button type="button" class="proto-side-sub-parent">
+                <span class="proto-menu-ico"></span><span class="proto-menu-label">信号调度</span><span class="proto-menu-caret">▾</span>
+              </button>
+              <div class="proto-side-sub-children">
+                <a data-page="list" href="group-list.html">分组管理</a>
+                <a data-page="wall-list" href="wall-list.html">拼墙管理</a>
+                <a class="is-active" data-page="screen-schedule" href="#">画面调度</a>
+              </div>
+            </div>
+            <div class="proto-side-sub-group">
+              <button type="button" class="proto-side-sub-parent">
+                <span class="proto-menu-ico"></span><span class="proto-menu-label">设备管理</span><span class="proto-menu-caret">▾</span>
+              </button>
+              <div class="proto-side-sub-children">
+                <a data-page="device-list" href="device-list.html">设备列表</a>
+              </div>
+            </div>
+          </aside>
+          <div class="proto-content">
+            <div class="sched-top">
+              <a class="proto-back-icon" id="sched-back" href="wall-list.html" aria-label="返回拼墙列表" title="返回拼墙列表"><i class="t-icon t-icon-chevron-left" aria-hidden="true"></i></a>
+              <span class="crumb">当前拼墙：<b>展厅主屏</b>（2×4 · 已绑定 6/8）</span>
+              <span class="crumb">当前场景：<b id="cur-scene">默认场景</b><span class="dirty-dot" id="dirty-dot" hidden title="存在未保存改动"></span></span>
+            </div>
+            <div class="sched-layout">
+              <div class="sched-left">
+                <p class="panel-title">信号源（按采集口平铺）</p>
+                <input id="sig-kw" class="proto-input" type="text" placeholder="搜索信号源" style="width: 100%; margin-bottom: 10px" />
+                <div id="sig-list"></div>
+                <p class="hint-line">白名单内的信号可选；未加入白名单置灰。新墙白名单默认为空，需先在传输配置添加输入盒。</p>
+              </div>
+              <div class="sched-center">
+                <div class="sched-toolbar">
+                  <div class="mode-seg" id="mode-seg">
+                    <button type="button" data-mode="free" class="is-active">自由模式</button>
+                    <button type="button" data-mode="fixed">固定模式</button>
+                  </div>
+                  <button type="button" class="proto-btn" id="btn-preset">常用样式布局</button>
+                  <button type="button" class="proto-btn" id="btn-clear" style="color: var(--proto-danger)">一键清屏</button>
+                  <div class="zoom-wrap">
+                    <button type="button" class="proto-btn" id="zoom-out" title="缩小画布"><i class="t-icon t-icon-zoom-out" aria-hidden="true"></i></button>
+                    <span id="zoom-val">100%</span>
+                    <button type="button" class="proto-btn" id="zoom-in" title="放大画布"><i class="t-icon t-icon-zoom-in" aria-hidden="true"></i></button>
+                    <button type="button" class="proto-btn" id="zoom-fit" title="复位缩放">复位</button>
+                  </div>
+                  <div class="vol-wrap">
+                    <span>场景音量</span>
+                    <input type="range" id="vol" min="0" max="100" value="80" style="width: 90px" />
+                    <span id="vol-val">80</span>
+                  </div>
+                </div>
+                <div class="canvas-outer" id="canvas-outer">
+                  <div class="canvas-stage" id="canvas-stage">
+                    <div class="canvas-wrap" id="canvas-wrap">
+                      <div class="backdrop-layer" id="backdrop-layer" hidden></div>
+                      <div class="cell-layer" id="cell-layer"></div>
+                      <div class="win-layer" id="win-layer"></div>
+                      <div class="canvas-empty" id="canvas-empty" hidden>已清屏 — 已保存的场景不受影响，切回场景即恢复</div>
+                    </div>
+                  </div>
+                </div>
+                <p class="hint-line">画布按固定比例自适应；窗口可拖动与缩放。涉及多节点的开窗、清屏和场景切换先检查在线、时间同步与准备状态；任一节点不可用即阻止，设备保持原画面。</p>
+              </div>
+              <div class="sched-right">
+                <p class="panel-title">场景（快照）</p>
+                <select id="dd-scene" class="proto-select" style="width: 100%"></select>
+                <button type="button" class="proto-btn proto-btn-primary" id="btn-save-scene" style="width: 100%; margin-top: 10px">保存场景</button>
+                <div class="scene-list" id="scene-list"></div>
+                <p class="hint-line">切换前执行准备检查，通过后统一同帧生效；失败时当前场景不变。当前生效场景不可删除。</p>
+              </div>
+            </div>
+            <div class="task-board" id="task-board">
+              <div class="task-board-head"><span class="task-board-title">播放任务</span><span class="hint-line" style="margin: 0">当前播放与记录引用同一任务</span><button type="button" class="proto-btn proto-btn-primary" id="btn-create-task"><i class="t-icon t-icon-add-circle" aria-hidden="true"></i>创建播放任务</button></div>
+              <div class="task-current-mini" id="schedule-current-task" data-task-id=""><span class="task-current-name" id="schedule-current-detail">当前节点暂无播放</span><span class="task-status-mini" id="schedule-current-status">暂无播放</span></div>
+              <div class="task-board-list" id="schedule-task-list"></div>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <div class="proto-drawer-mask" id="drawer-task" hidden>
+      <aside class="proto-drawer" role="dialog" aria-modal="true">
+        <div class="proto-drawer-header">
+          <span>创建播放任务</span>
+          <button type="button" class="proto-drawer-close" data-task-drawer-close aria-label="关闭">×</button>
+        </div>
+        <div class="proto-drawer-body">
+          <div class="proto-field">
+            <label for="input-task-name">任务名称<span class="req">*</span></label>
+            <input id="input-task-name" class="proto-input" type="text" maxlength="30" placeholder="请输入任务名称" />
+          </div>
+          <div class="proto-field">
+            <label for="select-task-scene">场景<span class="req">*</span></label>
+            <select id="select-task-scene" class="proto-select">
+              <option value="1">默认场景</option>
+              <option value="2">会议模式</option>
+              <option value="3">宣讲模式</option>
+            </select>
+          </div>
+          <div class="proto-field">
+            <label>发布设备</label>
+            <div class="hint-line" id="task-target-label" style="margin-top: 0">目标输出盒随当前拼墙绑定自动确定</div>
+          </div>
+          <div class="proto-field">
+            <label>执行方式</label>
+            <div class="hint-line" style="margin-top: 0">立即执行 · 创建后先检查，检查通过后才能开始播放</div>
+          </div>
+        </div>
+        <div class="proto-drawer-footer">
+          <button type="button" class="proto-btn" data-task-drawer-close>取消</button>
+          <button type="button" class="proto-btn proto-btn-primary" id="btn-task-create-submit"><i class="t-icon t-icon-add-circle" aria-hidden="true"></i>创建任务</button>
+        </div>
+      </aside>
+    </div>
+
+    <div class="proto-drawer-mask" id="drawer-scene" hidden>
+      <aside class="proto-drawer" role="dialog" aria-modal="true">
+        <div class="proto-drawer-header">
+          <span id="scene-drawer-title">保存场景</span>
+          <button type="button" class="proto-drawer-close" data-drawer-close aria-label="关闭">×</button>
+        </div>
+        <div class="proto-drawer-body">
+          <div class="proto-field" id="field-scene">
+            <label for="input-scene">场景名称<span class="req">*</span></label>
+            <input id="input-scene" class="proto-input" type="text" maxlength="20" placeholder="请输入场景名称（20 字以内）" />
+            <div class="err" id="scene-err" style="display: none"></div>
+            <div class="hint">20 字以内；同一拼墙内不可重名；快照含窗口布局、信号、静音与音量</div>
+          </div>
+        </div>
+        <div class="proto-drawer-footer">
+          <button type="button" class="proto-btn" data-drawer-close>取消</button>
+          <button type="button" class="proto-btn proto-btn-primary" id="btn-scene-save">保存</button>
+        </div>
+      </aside>
+    </div>
+
+    <div class="proto-mask" id="unsaved-modal" hidden>
+      <div class="proto-modal" role="dialog" style="max-width: 380px">
+        <div class="proto-modal-header"><span>未保存改动</span></div>
+        <div class="proto-modal-body">当前画面与场景快照不一致（开窗 / 移动 / 缩放 / 关窗 / 音量改动均计入）。不提供覆盖保存。</div>
+        <div class="proto-modal-footer">
+          <button type="button" class="proto-btn" id="unsaved-cancel">取消</button>
+          <button type="button" class="proto-btn" id="unsaved-drop">放弃改动</button>
+          <button type="button" class="proto-btn proto-btn-primary" id="unsaved-save">保存为新场景</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="../../_shared/proto-shell.js"></script>
+    <script src="../../_shared/node-state.js"></script>
+    <script src="../../_shared/playback-tasks.js"></script>
+    <script src="../../_shared/mock-api.js"></script>
+    <script src="../../_shared/platform-store.js"></script>
+    <script>
+      (function () {
+        var requestedWallId = new URLSearchParams(location.search).get("wallId");
+        var wall = requestedWallId ? DvsPlatformStore.getWall(requestedWallId) : DvsPlatformStore.getCurrentWall();
+        if (!wall) {
+          window.DvsScheduleUnavailable = true;
+          var content = document.querySelector(".proto-content");
+          content.innerHTML = '<section class="proto-card" style="padding:24px 48px 48px"><h2 id="no-wall-title" style="margin:0 0 12px">暂无可调度的拼墙</h2><p id="no-wall-detail" style="margin:0;color:var(--proto-text-secondary)"></p></section>';
+          document.getElementById("no-wall-detail").textContent = requestedWallId ? "该拼墙不存在或已删除，请从拼墙列表重新选择。" : "当前分组下暂无拼墙，请先新建拼墙。";
+          return;
+        }
+        if (requestedWallId) DvsPlatformStore.setCurrentWall(wall.id);
+        window.DvsScheduleWallId = wall.id;
+        document.getElementById("sched-back").href = "wall-list.html?groupId=" + encodeURIComponent(wall.groupId);
+        var CELL_W = 130, CELL_H = 90, GAP = 0, ROWS = wall.rows, COLS = wall.cols; /* 连续墙面 */
+        var legacySignalIds = { s1: "e1", s2: "e2", s3: "m1", s4: "t3", s5: "p1" };
+        var bound = wall.bindings.map(function (row) { return row.map(Boolean); });
+        var offline = wall.bindings.map(function (row) {
+          return row.map(function (cell) {
+            var node = cell && DvsNodeState.get(String(cell.node).toLowerCase());
+            return !!(node && !node.online);
+          });
+        });
+        var allowedSignals = new Set((wall.whitelist || []).map(function (item) { return String(item.id); }));
+        var signals = DvsNodeState.list().filter(function (node) { return node.type === "input" && node.lifecycle === "active"; }).map(function (node) {
+          var enabled = allowedSignals.has(node.id) && node.online !== false;
+          return { id: node.id, name: node.name, port: node.input && node.input.port || "HDMI1", ok: enabled,
+            note: !allowedSignals.has(node.id) ? "未加入白名单" : "设备离线" };
+        });
+        var scenes = wall.scenes || [];
+        var current = scenes.find(function (item) { return String(item.id) === String(wall.currentSceneId); }) || scenes[0];
+        var windows = [];
+        var zTop = 1;
+        var dirty = false;
+        var layoutMode = "free";
+        var isAdmin = true;
+        var winSeq = 1;
+        var sceneDrawerMode = "save";
+        var renameTarget = null;
+        var pendingAction = null;
+        var sceneDrawerFromGuard = false;
+        var writingStore = false;
+        var refreshingFromStore = false;
+        var lastSeenWall = JSON.stringify(DvsPlatformStore.getWall(wall.id));
+        var zoom = 1; /* 相对自适应的缩放系数：1 = 整墙按比例铺满画布区域 */
+        var wallW = 0, wallH = 0;
+
+        function $(id) { return document.getElementById(id); }
+        function esc(value) { return String(value == null ? "" : value).replace(/[&<>"']/g, function (ch) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]; }); }
+        function nodeSignature() {
+          return JSON.stringify(DvsNodeState.list().map(function (node) {
+            return [node.id, node.name, node.online, node.lifecycle, node.input && node.input.port];
+          }));
+        }
+        var lastNodeSignature = nodeSignature();
+        function loadBackdrop() {
+          var layer = $("backdrop-layer");
+          if (!layer || !wall.backdrop) return;
+          var direct = wall.backdrop.dataUrl || wall.backdrop.src;
+          if (direct) { layer.style.backgroundImage = 'url("' + direct.replace(/"/g, "%22") + '")'; layer.hidden = false; return; }
+          if (!wall.backdrop.storageKey || !window.indexedDB) return;
+          var request = indexedDB.open("dvs.platform.images.v1", 1);
+          request.onupgradeneeded = function () { if (!request.result.objectStoreNames.contains("backdrops")) request.result.createObjectStore("backdrops"); };
+          request.onsuccess = function () {
+            var db = request.result;
+            var tx = db.transaction("backdrops", "readonly");
+            var get = tx.objectStore("backdrops").get(wall.id);
+            get.onsuccess = function () {
+              if (get.result) { layer.style.backgroundImage = 'url("' + URL.createObjectURL(get.result) + '")'; layer.hidden = false; }
+            };
+            tx.oncomplete = function () { db.close(); };
+          };
+        }
+        function updateWall(patch) {
+          writingStore = true;
+          try {
+            DvsPlatformStore.updateWall(wall.id, patch);
+            lastSeenWall = JSON.stringify(DvsPlatformStore.getWall(wall.id));
+          } finally { writingStore = false; }
+        }
+        function persistRuntime() {
+          updateWall({
+            windows: windows.map(function (win) {
+              return { id: win.id, sig: win.sigId, x: win.x, y: win.y, w: win.w, h: win.h, z: win.z, muted: win.muted };
+            }),
+            currentSceneId: current.id, volume: Number($("vol").value), layoutMode: layoutMode
+          });
+        }
+        function persistScenes() {
+          updateWall({ scenes: scenes, currentSceneId: current.id });
+        }
+        DvsPlatformStore.subscribe(function () {
+          if (writingStore || refreshingFromStore) return;
+          var latest = JSON.stringify(DvsPlatformStore.getWall(wall.id));
+          if (latest === lastSeenWall) return;
+          refreshingFromStore = true;
+          window.location.reload();
+        });
+        DvsNodeState.subscribe(function () {
+          var latest = nodeSignature();
+          if (latest !== lastNodeSignature) window.location.reload();
+        });
+        var wallLabel = document.querySelector(".sched-top .crumb");
+        if (wallLabel) {
+          wallLabel.textContent = "当前拼墙：";
+          var wallName = document.createElement("b");
+          wallName.textContent = wall.name;
+          wallLabel.appendChild(wallName);
+          wallLabel.appendChild(document.createTextNode("（" + wall.rows + "×" + wall.cols + " · 已绑定 " + wall.boundCount + "/" + wall.totalCells + "）"));
+        }
+        function sizeTag(w) { return Math.max(1, Math.round(w.w / CELL_W)) + "×" + Math.max(1, Math.round(w.h / CELL_H)) + " 格"; }
+        function fitScale() {
+          var outer = $("canvas-outer");
+          var pad = 36;
+          if (!wallW || !wallH) return 1;
+          return Math.min((outer.clientWidth - pad) / wallW, (outer.clientHeight - pad) / wallH);
+        }
+        function effScale() { return fitScale() * zoom; }
+        function setZoom(z) {
+          zoom = Math.max(0.5, Math.min(2, z));
+          var eff = effScale();
+          var stage = $("canvas-stage");
+          stage.style.width = Math.ceil(wallW * eff) + "px";
+          stage.style.height = Math.ceil(wallH * eff) + "px";
+          $("canvas-wrap").style.transform = "scale(" + eff + ")";
+          $("zoom-val").textContent = Math.round(eff * 100) + "%";
+        }
+        $("zoom-out").onclick = function () { setZoom(zoom - 0.25); };
+        $("zoom-in").onclick = function () { setZoom(zoom + 0.25); };
+        $("zoom-fit").onclick = function () { setZoom(1); };
+        window.addEventListener("resize", function () { setZoom(zoom); });
+        function sigById(id) {
+          var normalized = legacySignalIds[id] || id;
+          return signals.find(function (s) { return s.id === normalized; }) || { id: normalized, name: "未知信号", port: "—", ok: false };
+        }
+        function cw(cs) { return cs * (CELL_W + GAP) - GAP; }
+        function ch(rs) { return rs * (CELL_H + GAP) - GAP; }
+        function cx(c) { return c * (CELL_W + GAP) + GAP; }
+        function cy(r) { return r * (CELL_H + GAP) + GAP; }
+
+        /* ---------- 画布 ---------- */
+        function buildCells() {
+          var layer = $("cell-layer");
+          layer.innerHTML = "";
+          for (var r = 0; r < ROWS; r++) for (var c = 0; c < COLS; c++) {
+            var d = document.createElement("div");
+            d.className = "cell" + (bound[r][c] ? " is-bound" : "") + (offline[r][c] ? " is-offline" : "");
+            d.style.left = cx(c) + "px";
+            d.style.top = cy(r) + "px";
+            d.style.width = cw(1) + "px";
+            d.style.height = ch(1) + "px";
+            d.setAttribute("data-cell", r + "-" + c);
+            if (!bound[r][c]) d.innerHTML = '<span class="unbound-tag">未绑定</span>';
+            layer.appendChild(d);
+          }
+          wallW = cx(COLS - 1) + cw(1) + GAP;
+          wallH = cy(ROWS - 1) + ch(1) + GAP;
+          $("canvas-wrap").style.width = wallW + "px";
+          $("canvas-wrap").style.height = wallH + "px";
+          $("win-layer").style.width = "100%";
+          $("win-layer").style.height = "100%";
+        }
+
+        function flashCell(r, c) {
+          var el = document.querySelector('.cell[data-cell="' + r + "-" + c + '"]');
+          if (!el) return;
+          el.classList.add("is-flash");
+          setTimeout(function () { el.classList.remove("is-flash"); }, 1000);
+        }
+
+        function markDirty() {
+          dirty = true;
+          $("dirty-dot").hidden = false;
+        }
+        function clearDirty() {
+          dirty = false;
+          $("dirty-dot").hidden = true;
+        }
+
+        function overlapCount(w) {
+          return windows.filter(function (o) {
+            return o.id !== w.id && !(o.x >= w.x + w.w || o.x + o.w <= w.x || o.y >= w.y + w.h || o.y + o.h <= w.y);
+          }).length;
+        }
+
+        function renderWindows() {
+          var layer = $("win-layer");
+          layer.innerHTML = "";
+          windows.slice().sort(function (a, b) { return a.z - b.z; }).forEach(function (w) {
+            var d = document.createElement("div");
+            d.className = "win";
+            d.style.left = w.x + "px";
+            d.style.top = w.y + "px";
+            d.style.width = w.w + "px";
+            d.style.height = w.h + "px";
+            d.style.zIndex = w.z;
+            d.setAttribute("data-id", w.id);
+            d.innerHTML =
+              '<div class="win-bar"><span class="nm">' + esc(w.sigName) + "</span>" +
+              '<button type="button" data-act="mute" title="静音开关"><i class="t-icon t-icon-' + (w.muted ? "sound-mute" : "sound") + '" aria-hidden="true"></i></button>' +
+              '<button type="button" data-act="top" title="置顶">置顶</button>' +
+              '<button type="button" data-act="close" title="关闭窗口">×</button></div>' +
+              '<div class="win-body">信号画面（实时）</div>' +
+              '<div class="win-size">' + sizeTag(w) + '</div>' +
+              '<div class="rz" title="拖动缩放：默认等比，Shift 自由拉伸"></div>';
+            layer.appendChild(d);
+          });
+          $("canvas-empty").hidden = windows.length > 0;
+          bindWinEvents();
+          persistRuntime();
+        }
+
+        function addWindow(sigId, x, y) {
+          if (offlineCount()) {
+            protoToast("存在 " + offlineCount() + " 个离线格位，开窗未下发；设备画面保持不变");
+            return;
+          }
+          var c = Math.max(0, Math.min(COLS - 1, Math.floor((x - GAP) / (CELL_W + GAP))));
+          var r = Math.max(0, Math.min(ROWS - 1, Math.floor((y - GAP) / (CELL_H + GAP))));
+          if (!bound[r][c]) {
+            protoToast("该格位未绑定输出端口");
+            flashCell(r, c);
+            return;
+          }
+          var sig = sigById(sigId);
+          if (!sig.ok) { protoToast("该信号不可用，请先在传输配置加入白名单并确认设备在线"); return; }
+          var w = { id: winSeq++, sigId: sig.id, sigName: sig.name + " · " + sig.port, x: cx(c), y: cy(r), w: cw(1), h: ch(1), z: ++zTop, muted: false };
+          windows.forEach(function (o) { o.muted = true; });
+          windows.push(w);
+          var n = overlapCount(w);
+          if (n >= 2) protoToast("该位置已叠加 " + (n + 1) + " 层窗口");
+          else protoToast("开窗成功，已上屏（未保存改动不写入场景）");
+          markDirty();
+          renderWindows();
+        }
+
+        function bindWinEvents() {
+          document.querySelectorAll(".win").forEach(function (el) {
+            var w = windows.find(function (x) { return x.id === Number(el.getAttribute("data-id")); });
+            if (!w) return;
+            el.addEventListener("mousedown", function (e) {
+              if (e.target.closest("button")) return;
+              w.z = ++zTop;
+              renderWindows();
+              var mode = e.target.closest(".rz") ? "resize" : "move";
+              startDrag(e, w, el, mode);
+            });
+            el.querySelectorAll("button").forEach(function (btn) {
+              btn.addEventListener("click", function (e) {
+                e.stopPropagation();
+                var act = btn.getAttribute("data-act");
+                if (act === "close") {
+                  windows = windows.filter(function (o) { return o.id !== w.id; });
+                  protoToast("窗口已关闭（计入未保存改动）");
+                  markDirty();
+                  renderWindows();
+                } else if (act === "top") {
+                  w.z = ++zTop;
+                  renderWindows();
+                } else if (act === "mute") {
+                  w.muted = !w.muted;
+                  renderWindows();
+                }
+              });
+            });
+          });
+        }
+
+        function startDrag(e, w, el, mode) {
+          e.preventDefault();
+          var sx = e.clientX, sy = e.clientY, ox = w.x, oy = w.y, ow = w.w, oh = w.h;
+          var ratio = ow / oh;
+          var moved = false;
+          function onMove(ev) {
+            var eff = effScale();
+            var dx = (ev.clientX - sx) / eff, dy = (ev.clientY - sy) / eff;
+            if (Math.abs(dx) + Math.abs(dy) > 2) moved = true;
+            if (mode === "move") {
+              w.x = Math.max(0, ox + dx);
+              w.y = Math.max(0, oy + dy);
+            } else {
+              var free = ev.shiftKey;
+              if (free) {
+                w.w = Math.max(CELL_W / 4, ow + dx);
+                w.h = Math.max(CELL_H / 4, oh + dy);
+              } else {
+                w.w = Math.max(CELL_W / 4, ow + dx);
+                w.h = Math.max(CELL_H / 4, w.w / ratio);
+              }
+              if (w.w <= CELL_W / 4 + 1 || w.h <= CELL_H / 4 + 1) protoToast("已达最小尺寸（单格 1/16）");
+            }
+            el.style.left = w.x + "px";
+            el.style.top = w.y + "px";
+            el.style.width = w.w + "px";
+            el.style.height = w.h + "px";
+            var tag = el.querySelector(".win-size");
+            if (tag) tag.textContent = sizeTag(w);
+          }
+          function onUp() {
+            document.removeEventListener("mousemove", onMove);
+            document.removeEventListener("mouseup", onUp);
+            if (!moved) return;
+            if (mode === "move" && layoutMode === "fixed") snapWindow(w);
+            if (mode === "resize" && layoutMode === "fixed") snapWindow(w);
+            markDirty();
+            renderWindows();
+          }
+          document.addEventListener("mousemove", onMove);
+          document.addEventListener("mouseup", onUp);
+        }
+
+        function snapWindow(w) {
+          var c = Math.round((w.x - GAP) / (CELL_W + GAP));
+          var r = Math.round((w.y - GAP) / (CELL_H + GAP));
+          var cs = Math.max(1, Math.round((w.w + GAP) / (CELL_W + GAP)));
+          var rs = Math.max(1, Math.round((w.h + GAP) / (CELL_H + GAP)));
+          c = Math.max(0, Math.min(COLS - cs, c));
+          r = Math.max(0, Math.min(ROWS - rs, r));
+          w.x = cx(c); w.y = cy(r); w.w = cw(cs); w.h = ch(rs);
+        }
+        function isAligned(w) {
+          return Math.abs((w.x - GAP) % (CELL_W + GAP)) < 3 && Math.abs((w.y - GAP) % (CELL_H + GAP)) < 3 &&
+            Math.abs((w.w + GAP) % (CELL_W + GAP)) < 3 && Math.abs((w.h + GAP) % (CELL_H + GAP)) < 3;
+        }
+
+        /* ---------- 信号源 ---------- */
+        function renderSignals() {
+          var kw = ($("sig-kw").value || "").trim();
+          var list = signals.filter(function (s) { return !kw || (s.name + s.port).indexOf(kw) >= 0; });
+          $("sig-list").innerHTML = list.length
+            ? list.map(function (s) {
+                return '<div class="sig-item' + (s.ok ? "" : " is-disabled") + '" draggable="' + (s.ok ? "true" : "false") + '" data-sig="' + (s.ok ? s.id : "") + '">' +
+                  "<div>" + esc(s.name) + " · " + esc(s.port) + "</div>" +
+                  '<div class="meta">' + esc(s.ok ? "可拖到画布开窗" : s.note) + "</div></div>";
+              }).join("")
+            : '<div class="proto-empty">未找到匹配的信号源</div>';
+          document.querySelectorAll(".sig-item[data-sig]:not(.is-disabled)").forEach(function (el) {
+            el.addEventListener("dragstart", function (e) { e.dataTransfer.setData("text/plain", el.getAttribute("data-sig")); });
+            el.addEventListener("click", function () {
+              var rect = $("win-layer").getBoundingClientRect();
+              var eff = effScale();
+              addWindow(el.getAttribute("data-sig"), rect.width / (2 * eff), rect.height / (2 * eff));
+            });
+          });
+          document.querySelectorAll(".sig-item.is-disabled").forEach(function (el) {
+            el.addEventListener("click", function () { protoToast("该信号所属输入盒未加入本墙白名单"); });
+          });
+        }
+
+        /* ---------- 场景 ---------- */
+        function applyScene(s) {
+          current = s;
+          windows = s.layout.map(function (l) {
+            var signal = sigById(l.sig);
+            if (!signal.ok) return null;
+            return { id: winSeq++, sigId: signal.id, sigName: signal.name + " · " + signal.port, x: cx(l.c), y: cy(l.r), w: cw(l.cs), h: ch(l.rs), z: ++zTop, muted: true };
+          }).filter(Boolean);
+          if (windows.length) windows[windows.length - 1].muted = false;
+          $("vol").value = s.volume;
+          $("vol-val").textContent = s.volume;
+          clearDirty();
+          renderWindows();
+          renderScenes();
+          var el = $("cur-scene");
+          el.textContent = s.name;
+          el.classList.remove("flash");
+          void el.offsetWidth;
+          el.classList.add("flash");
+        }
+        function offlineCount() {
+          var n = 0;
+          for (var r = 0; r < ROWS; r++) for (var c = 0; c < COLS; c++) if (offline[r][c]) n++;
+          return n;
+        }
+
+        function renderScenes() {
+          $("dd-scene").innerHTML = scenes.map(function (s) {
+            return '<option value="' + esc(s.id) + '"' + (s.id === current.id ? " selected" : "") + ">" + esc(s.name) + "</option>";
+          }).join("");
+          $("scene-list").innerHTML = scenes.map(function (s) {
+            return '<div class="scene-item' + (s.id === current.id ? " is-current" : "") + (s.isDefault ? " is-default" : "") + '">' +
+              '<span class="nm">' + esc(s.name) + "</span>" +
+              '<span class="ops">' +
+              '<button type="button" data-act="rename" data-id="' + esc(s.id) + '">重命名</button>' +
+              (isAdmin ? '<button type="button" data-act="del" data-id="' + esc(s.id) + '">删除</button>' : "") +
+              "</span>" +
+              (s.isDefault ? '<span class="scene-default-ribbon" aria-label="默认场景"><span>默认</span></span>' : "") +
+              "</div>";
+          }).join("");
+          document.querySelectorAll("#scene-list button").forEach(function (btn) {
+            btn.addEventListener("click", function () {
+              var s = scenes.find(function (x) { return String(x.id) === btn.getAttribute("data-id"); });
+              if (btn.getAttribute("data-act") === "rename") {
+                pendingAction = null;
+                sceneDrawerFromGuard = false;
+                sceneDrawerMode = "rename";
+                renameTarget = s;
+                $("scene-drawer-title").textContent = "重命名场景";
+                $("input-scene").value = s.name;
+                clearSceneErr();
+                protoOpenDrawer("drawer-scene");
+              } else {
+                if (s.id === current.id) { protoToast("当前生效场景不可删除，请先切换至其它场景"); return; }
+                protoConfirm({
+                  title: "删除场景",
+                  content: "确认删除场景「" + s.name + "」？删除后不可恢复。",
+                  onOk: function () {
+                    scenes = scenes.filter(function (x) { return x.id !== s.id; });
+                    persistScenes();
+                    protoToast("删除成功");
+                    renderScenes();
+                  }
+                });
+              }
+            });
+          });
+        }
+
+        function clearSceneErr() {
+          $("field-scene").classList.remove("is-error");
+          $("scene-err").style.display = "none";
+        }
+        function showSceneErr(msg) {
+          $("field-scene").classList.add("is-error");
+          $("scene-err").style.display = "block";
+          $("scene-err").textContent = msg;
+        }
+
+        function snapshotLayout() {
+          return windows.map(function (w) {
+            return { sig: w.sigId, c: Math.round((w.x - GAP) / (CELL_W + GAP)), r: Math.round((w.y - GAP) / (CELL_H + GAP)), cs: Math.max(1, Math.round((w.w + GAP) / (CELL_W + GAP))), rs: Math.max(1, Math.round((w.h + GAP) / (CELL_H + GAP))) };
+          });
+        }
+        function sigIdByName(nm) {
+          var s = signals.find(function (x) { return nm.indexOf(x.name) === 0; });
+          return s ? s.id : "s1";
+        }
+
+        function saveSceneFromDrawer() {
+          var t = $("input-scene").value.trim();
+          if (!t) { showSceneErr("请输入场景名称"); return; }
+          if (t.length > 20) { showSceneErr("场景名称不能超过 20 个字符"); return; }
+          var dup = scenes.some(function (s) { return s.id !== (renameTarget && renameTarget.id) && s.name.trim().toLowerCase() === t.toLowerCase(); });
+          if (dup) { showSceneErr("已存在同名场景"); return; }
+          var btn = $("btn-scene-save");
+          btn.disabled = true;
+          setTimeout(function () {
+            btn.disabled = false;
+            if (sceneDrawerMode === "rename" && renameTarget) {
+              renameTarget.name = t;
+              if (renameTarget.id === current.id) $("cur-scene").textContent = t;
+              protoToast("重命名成功（默认场景同样可重命名）");
+            } else {
+              var ns = { id: Date.now(), name: t, isDefault: false, volume: Number($("vol").value), layout: snapshotLayout() };
+              scenes.push(ns);
+              current = ns;
+              $("cur-scene").textContent = t;
+              clearDirty();
+              protoToast("已保存为新场景（含布局 / 信号 / 静音 / 音量）");
+            }
+            persistScenes();
+            persistRuntime();
+            protoCloseDrawer("drawer-scene");
+            renderScenes();
+            var act = sceneDrawerFromGuard ? pendingAction : null;
+            pendingAction = null;
+            sceneDrawerFromGuard = false;
+            if (act) setTimeout(act, 200);
+          }, 300);
+        }
+
+        /* ---------- 未保存确认 ---------- */
+        function guardUnsaved(action) {
+          if (!dirty) { action(); return; }
+          pendingAction = action;
+          $("unsaved-modal").hidden = false;
+          $("unsaved-modal").classList.add("is-open");
+        }
+        function closeUnsaved() {
+          $("unsaved-modal").classList.remove("is-open");
+          $("unsaved-modal").hidden = true;
+          pendingAction = null;
+        }
+        $("unsaved-cancel").onclick = closeUnsaved;
+        $("unsaved-drop").onclick = function () {
+          var act = pendingAction; pendingAction = null;
+          closeUnsaved();
+          applyScene(current);
+          if (act) act();
+        };
+        $("unsaved-save").onclick = function () {
+          var afterSave = pendingAction;
+          closeUnsaved();
+          pendingAction = afterSave;
+          sceneDrawerFromGuard = true;
+          sceneDrawerMode = "save";
+          renameTarget = null;
+          $("scene-drawer-title").textContent = "保存场景";
+          $("input-scene").value = "";
+          clearSceneErr();
+          protoOpenDrawer("drawer-scene");
+        };
+
+        /* ---------- 事件 ---------- */
+        $("win-layer").addEventListener("dragover", function (e) { e.preventDefault(); });
+        $("win-layer").addEventListener("drop", function (e) {
+          e.preventDefault();
+          var rect = this.getBoundingClientRect();
+          var eff = effScale();
+          addWindow(e.dataTransfer.getData("text/plain"), (e.clientX - rect.left) / eff, (e.clientY - rect.top) / eff);
+        });
+        $("sig-kw").addEventListener("input", renderSignals);
+        $("dd-scene").addEventListener("change", function () {
+          var targetId = this.value;
+          var target = scenes.find(function (s) { return String(s.id) === targetId; });
+          if (!target || target.id === current.id) return;
+          guardUnsaved(function () {
+            if (offlineCount()) {
+              $("dd-scene").value = current.id;
+              protoToast("存在 " + offlineCount() + " 个离线格位，已阻止切换；当前场景保持不变");
+              return;
+            }
+            protoToast("节点准备完成，正在按统一时间同帧切换…");
+            setTimeout(function () {
+              applyScene(target);
+              protoToast("场景已同帧生效，全部节点回执成功");
+            }, 350);
+          });
+        });
+        $("btn-save-scene").onclick = function () {
+          pendingAction = null;
+          sceneDrawerFromGuard = false;
+          sceneDrawerMode = "save";
+          renameTarget = null;
+          $("scene-drawer-title").textContent = "保存场景";
+          $("input-scene").value = "";
+          clearSceneErr();
+          protoOpenDrawer("drawer-scene");
+        };
+        $("btn-scene-save").onclick = saveSceneFromDrawer;
+        $("drawer-scene").querySelectorAll("[data-drawer-close]").forEach(function (btn) {
+          btn.addEventListener("click", function () {
+            pendingAction = null;
+            sceneDrawerFromGuard = false;
+          });
+        });
+        $("drawer-scene").addEventListener("click", function (event) {
+          if (event.target !== this) return;
+          pendingAction = null;
+          sceneDrawerFromGuard = false;
+        });
+        $("vol").addEventListener("input", function () {
+          $("vol-val").textContent = this.value;
+          markDirty();
+          persistRuntime();
+        });
+        $("mode-seg").querySelectorAll("button").forEach(function (btn) {
+          btn.addEventListener("click", function () {
+            var mode = btn.getAttribute("data-mode");
+            if (mode === layoutMode) return;
+            if (mode === "fixed") {
+              var unaligned = windows.filter(function (w) { return !isAligned(w); });
+              if (unaligned.length) {
+                protoConfirm({
+                  title: "切换到固定模式",
+                  content: "将按格位重排 " + unaligned.length + " 个未对齐窗口（拼墙级属性，保存后其它入口同步）。",
+                  onOk: function () { setMode("fixed"); windows.forEach(snapWindow); renderWindows(); },
+                  onCancel: function () { protoToast("已取消，保持自由模式"); }
+                });
+                return;
+              }
+              setMode("fixed");
+            } else {
+              setMode("free");
+            }
+          });
+        });
+        function setMode(m) {
+          layoutMode = m;
+          $("mode-seg").querySelectorAll("button").forEach(function (b) {
+            b.classList.toggle("is-active", b.getAttribute("data-mode") === m);
+          });
+          protoToast(m === "fixed" ? "已切换固定模式：窗口自动吸附格位、一格一窗" : "已切换自由模式：允许重叠，后开在上");
+          persistRuntime();
+        }
+        $("btn-preset").onclick = function () {
+          var available = signals.filter(function (signal) { return signal.ok; });
+          if (!available.length || !bound[0].some(Boolean)) { protoToast("请先绑定输出盒并在传输配置添加输入盒"); return; }
+          protoConfirm({
+            title: "常用样式布局",
+            content: "将按「4 分格」重排当前窗口，超出容量的窗口将被关闭。确认应用？",
+            onOk: function () {
+              var preset = Array.from({ length: Math.min(4, COLS) }, function (_, c) { return c; }).filter(function (c) { return bound[0][c]; }).map(function (c, index) {
+                var signal = available[index % available.length];
+                return { id: winSeq++, sigId: signal.id, sigName: signal.name + " · " + signal.port, x: cx(c), y: cy(0), w: cw(1), h: ch(1), z: ++zTop, muted: true };
+              });
+              windows = preset;
+              windows[windows.length - 1].muted = false;
+              markDirty();
+              renderWindows();
+              protoToast("已应用 4 分格布局（计入未保存改动）");
+            }
+          });
+        };
+        $("btn-clear").onclick = function () {
+          if (!windows.length) { protoToast("当前无窗口"); return; }
+          if (offlineCount()) { protoToast("存在 " + offlineCount() + " 个离线格位，已阻止清屏；当前画面保持不变"); return; }
+          var btn = $("btn-clear");
+          btn.disabled = true;
+          protoConfirm({
+            title: "一键清屏",
+            content: "将关闭当前 " + windows.length + " 个窗口（已保存的场景不受影响）。确认清屏？",
+            onOk: function () {
+              setTimeout(function () {
+                btn.disabled = false;
+                windows = [];
+                clearDirty();
+                renderWindows();
+                protoToast("已清屏：不改变绑定与设置，不产生未保存改动，场景名保留");
+              }, 200);
+            },
+            onCancel: function () { btn.disabled = false; }
+          });
+        };
+        buildCells();
+        loadBackdrop();
+        setZoom(1);
+        renderSignals();
+        $("vol").value = wall.volume == null ? current.volume : wall.volume;
+        $("vol-val").textContent = $("vol").value;
+        layoutMode = wall.layoutMode || "free";
+        $("mode-seg").querySelectorAll("button").forEach(function (button) { button.classList.toggle("is-active", button.getAttribute("data-mode") === layoutMode); });
+        windows = (wall.windows || []).map(function (saved) {
+          var signal = sigById(saved.sig);
+          return { id: winSeq++, sigId: signal.id, sigName: signal.name + " · " + signal.port, x: saved.x, y: saved.y,
+            w: saved.w, h: saved.h, z: saved.z || ++zTop, muted: !!saved.muted };
+        });
+        $("cur-scene").textContent = current.name;
+        renderWindows();
+        renderScenes();
+        clearDirty();
+      })();
+    </script>
+    <script>
+      (function () {
+        if (window.DvsScheduleUnavailable) return;
+        var wall = DvsPlatformStore.getWall(window.DvsScheduleWallId);
+        if (!wall) return;
+        function $(id) { return document.getElementById(id); }
+        function esc(value) { return String(value == null ? "" : value).replace(/[&<>"']/g, function (ch) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]; }); }
+        function taskTargets(currentWall) {
+          var boundIds = Array.from(new Set((currentWall.bindings || []).flat().filter(Boolean).map(function (binding) {
+            return String(binding.node).toLowerCase();
+          })));
+          return {
+            boundCount: boundIds.length,
+            ready: boundIds.filter(function (id) {
+              var node = DvsNodeState.get(id);
+              return node && node.type === "output" && node.lifecycle === "active" && node.registerState === "registered" && node.online !== false;
+            })
+          };
+        }
+        function taskAction(task) {
+          var action = task.status === "pending_check" ? "check" : task.status === "pending_execution" ? "start" : task.status === "playing" ? "finish" : "";
+          if (!action) return;
+          var result = DvsMockApi.request("POST", "/api/v1/playback-tasks/" + encodeURIComponent(task.id) + "/" + action, {}, { idempotencyKey: task.id + ":" + action });
+          if (!result.ok) { protoToast(result.msg || "任务操作未完成"); return; }
+          protoToast(task.status === "pending_check" ? "检查通过，任务进入待执行" : task.status === "pending_execution" ? "任务已开始执行" : "任务已完成");
+          render();
+        }
+        function openTaskDrawer() {
+          var currentWall = DvsPlatformStore.getWall(wall.id);
+          if (!currentWall) { protoToast("当前拼墙不存在，请返回拼墙管理"); return; }
+          var targets = taskTargets(currentWall);
+          if (!targets.ready.length) {
+            protoToast(targets.boundCount ? "当前拼墙没有在线且已注册的输出盒" : "请先在端口绑定中配置输出盒");
+            return;
+          }
+          $("input-task-name").value = "";
+          var sceneSelect = $("select-task-scene");
+          sceneSelect.innerHTML = "";
+          (currentWall.scenes || []).forEach(function (scene) {
+            var option = document.createElement("option");
+            option.value = scene.id;
+            option.textContent = scene.name;
+            sceneSelect.appendChild(option);
+          });
+          $("task-target-label").textContent = currentWall.name + " · " + targets.ready.map(function (id) { return DvsNodeState.get(id).name; }).join("、") +
+            "（仅在线且已注册的输出盒，已排除 " + (targets.boundCount - targets.ready.length) + " 个不可用节点）";
+          protoOpenDrawer("drawer-task");
+          $("input-task-name").focus();
+        }
+        function closeTaskDrawer() { protoCloseDrawer("drawer-task"); }
+        $("btn-create-task").onclick = openTaskDrawer;
+        document.querySelectorAll("[data-task-drawer-close]").forEach(function (btn) { btn.onclick = closeTaskDrawer; });
+        $("btn-task-create-submit").onclick = function () {
+          var currentWall = DvsPlatformStore.getWall(wall.id);
+          if (!currentWall) { protoToast("当前拼墙不存在，请返回拼墙管理"); return; }
+          var targets = taskTargets(currentWall);
+          if (!targets.ready.length) { protoToast("当前拼墙没有在线且已注册的输出盒"); return; }
+          var sceneSelect = $("select-task-scene");
+          var sceneOption = sceneSelect.options[sceneSelect.selectedIndex] || null;
+          var name = $("input-task-name").value.trim();
+          var result = DvsMockApi.request("POST", "/api/v1/playback-tasks", {
+            name: name,
+            sceneId: sceneSelect.value,
+            sceneName: sceneOption ? sceneOption.textContent : "",
+            wallId: wall.id,
+            wallName: currentWall.name,
+            targetNodeIds: targets.ready
+          }, { idempotencyKey: "create-task-" + Date.now() });
+          if (!result.ok) { protoToast(result.msg); return; }
+          closeTaskDrawer();
+          protoToast("播放任务已创建，等待检查");
+          render();
+        };
+        function render() {
+          var wallTasks = DvsPlaybackTasks.list().filter(function (task) { return task.wallId === wall.id; });
+          var current = wallTasks.find(function (task) { return task.status === "playing"; }) || null;
+          $("schedule-current-task").setAttribute("data-task-id", current ? current.id : "");
+          $("schedule-current-detail").textContent = current ? current.name + " · " + current.id + " · " + (current.startedAt || "—") : "当前节点暂无播放";
+          $("schedule-current-status").textContent = current ? "播放中" : "暂无播放";
+          var tasks = wallTasks.filter(function (task) { return !DvsPlaybackTasks.terminal[task.status]; });
+          $("schedule-task-list").innerHTML = tasks.map(function (task) {
+            var action = task.status === "pending_check" ? "检查" : task.status === "pending_execution" ? "开始执行" : task.status === "playing" ? "结束播放" : "";
+            var actionHtml = action ? '<button type="button" class="proto-btn" data-task-id="' + esc(task.id) + '">' + esc(action) + '</button>' : '';
+            return '<div class="task-board-item"><div class="nm">' + esc(task.name) + '</div><div class="meta">' + esc(task.id) + ' · ' + esc(DvsPlaybackTasks.statuses[task.status]) + '</div>' + actionHtml + '</div>';
+          }).join("");
+          $("schedule-task-list").querySelectorAll("button[data-task-id]").forEach(function (btn) {
+            btn.onclick = function () { var task = DvsPlaybackTasks.get(btn.getAttribute("data-task-id")); if (task) taskAction(task); };
+          });
+        }
+        DvsPlaybackTasks.subscribe(render);
+        DvsNodeState.subscribe(render);
+        render();
+      })();
+    </script>
+  </body>
+</html>

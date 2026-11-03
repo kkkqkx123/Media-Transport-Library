@@ -170,3 +170,152 @@ body[data-proto-page="node-admin"] #zone-net > .node-config-block .proto-form-ac
   body[data-proto-page="node-admin"] .proto-side-item { font-size: 10px; }
   body[data-proto-page="node-admin"] .zone .proto-form-grid { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* --- extracted from node-admin.html --- */
+      /* 节点后台：配置入口采用“主导航 + 功能分组 + 单区详情”的轻量结构。业务事实见 PAGE-DVS-010。 */
+      [hidden] { display: none !important; }
+      .proto-content .zone { display: none; }
+      .proto-content .zone.is-active { display: block; }
+      body[data-proto-page="node-admin"] .proto-side-sub-parent { display: flex; align-items: center; gap: 8px; height: 36px; padding: 7px 16px; color: rgba(0,0,0,.6); }
+      body[data-proto-page="node-admin"] .proto-side-sub-parent .proto-menu-ico { width: 20px; height: 20px; flex: 0 0 20px; font-size: 20px; line-height: 20px; color: currentColor; }
+      body[data-proto-page="node-admin"] .proto-side-sub-parent .proto-menu-caret { margin-left: auto; }
+      body[data-proto-page="node-admin"] .proto-side-sub-group.is-active > .proto-side-sub-parent { color: rgba(0,0,0,.9); background: transparent; }
+      .proto-side-sub-children a.is-muted { color: var(--proto-text-disabled); cursor: not-allowed; }
+      .nav-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #f59e0b; margin-left: 6px; vertical-align: middle; }
+      .zone .opt { font-weight: 400; margin-right: 16px; }
+      .tag-pending { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 10px; background: rgba(245, 158, 11, 0.14); color: #b45309; }
+      .tag-ok { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 10px; background: var(--proto-primary-10); color: var(--proto-primary); }
+      .na-note { border: 1px dashed var(--proto-border); border-radius: 6px; background: var(--proto-surface-subtle); color: var(--proto-text-secondary); font-size: 13px; padding: 10px 12px; margin-bottom: 16px; line-height: 1.7; }
+.info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 40px; font-size: 13px; }
+      .info-grid .k { color: var(--proto-text-secondary); }
+      .info-grid .v { color: var(--proto-text); word-break: break-all; }
+      .ops-btns { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+      .last-ops { margin-top: 16px; padding-top: 12px; border-top: 1px dashed var(--proto-border); font-size: 12px; color: var(--proto-text-secondary); }
+      .task-current { border: 1px solid var(--proto-border); border-radius: 8px; padding: 16px; background: var(--proto-surface-subtle); margin-bottom: 20px; }
+      .task-current-head, .task-row { display: flex; align-items: center; gap: 12px; }
+      .task-current-head strong, .task-row .task-main { flex: 1; }
+      .task-id, .task-meta { color: var(--proto-text-secondary); font-size: 12px; }
+      .task-status { display: inline-block; padding: 3px 9px; border-radius: 12px; font-size: 12px; background: var(--proto-surface-subtle); color: var(--proto-text-secondary); white-space: nowrap; }
+      .task-status.is-playing, .task-status.is-success { color: #047857; background: #ecfdf5; }
+      .task-status.is-pending, .task-status.is-executing { color: #b45309; background: #fffbeb; }
+      .task-status.is-failed, .task-status.is-cancelled, .task-status.is-expired { color: #b91c1c; background: #fef2f2; }
+      .task-table { border: 1px solid var(--proto-border); border-radius: 8px; overflow: hidden; }
+      .task-row { min-height: 58px; padding: 10px 12px; border-bottom: 1px solid var(--proto-border); }
+      .task-row:last-child { border-bottom: 0; }
+      .task-row .task-main { min-width: 0; }
+      .task-row .task-name { font-weight: 600; }
+      .task-row .task-meta { margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .task-row .task-actions { display: flex; gap: 6px; flex-shrink: 0; }
+      .task-records { margin-top: 20px; }
+      .task-records .task-row { min-height: 46px; }
+      .task-empty { color: var(--proto-text-secondary); padding: 18px 12px; text-align: center; }
+      .prog { height: 8px; border-radius: 4px; background: var(--proto-surface-subtle); overflow: hidden; margin-top: 10px; max-width: 420px; }
+      .prog > div { height: 100%; background: var(--proto-primary); width: 0; transition: width 0.2s; }
+      .proto-header-right .proto-btn { padding: 3px 10px; font-size: 12px; }
+      .login-mask { position: fixed; inset: 0; background: var(--proto-main-bg); display: flex; align-items: center; justify-content: center; z-index: 60; }
+      .login-card { width: 380px; background: var(--proto-surface); border: 1px solid var(--proto-border); border-radius: var(--proto-radius-card); box-shadow: var(--proto-shadow-popover); padding: 28px; }
+      .login-card h3 { margin: 0 0 4px; font-size: 18px; }
+      .login-card .sub { font-size: 12px; color: var(--proto-text-tertiary); margin-bottom: 18px; }
+      .pwd-hint { font-size: 12px; color: var(--proto-text-tertiary); margin-top: 12px; line-height: 1.7; }
+      .keep-reset { display: flex; gap: 12px; font-size: 13px; }
+      .keep-reset > div { flex: 1; border: 1px solid var(--proto-border); border-radius: 6px; padding: 10px; }
+      .keep-reset ul { margin: 6px 0 0; padding-left: 18px; line-height: 1.8; }
+      .keep-reset .keep b { color: var(--proto-success); }
+      .keep-reset .reset b { color: var(--proto-danger); }
+      .role-effects { text-align: left; font-size: 13px; line-height: 1.9; }
+      .role-effects ul { margin: 6px 0; padding-left: 18px; }
+
+      /* 节点后台局部设计规范：减少空白、强化层级、统一状态与操作位置。 */
+      body[data-proto-page="node-admin"] .proto-side { width: 72px; }
+      body[data-proto-page="node-admin"] .proto-side-menu { padding: 10px 8px; }
+      body[data-proto-page="node-admin"] .proto-side-item { min-height: 54px; }
+      body[data-proto-page="node-admin"] .proto-side-item.is-active { background: var(--proto-primary); }
+      body[data-proto-page="node-admin"] .proto-side-item .proto-side-icon::after { content: "设"; font-size: 12px; font-weight: 600; }
+      body[data-proto-page="node-admin"] .proto-side-item[data-page="node"] .proto-side-icon::after { content: "配"; }
+      body[data-proto-page="node-admin"] .proto-side-item[data-page="hub"] { display: none; }
+      body[data-proto-page="node-admin"] .proto-content { padding: 24px 32px 40px; }
+      body[data-proto-page="node-admin"] .proto-card { min-height: auto; width: 100%; max-width: none; margin: 0 0 20px; }
+      body[data-proto-page="node-admin"] .proto-card.zone { box-shadow: 0 1px 2px rgba(15, 23, 42, .04); }
+      .node-menu-divider { margin: 12px 16px 6px 34px; color: var(--proto-text-tertiary); font-size: 11px; font-weight: 600; letter-spacing: .04em; }
+      .node-zone-title { margin-bottom: 5px; font-size: 18px; font-weight: 600; line-height: 26px; }
+      .node-zone-help { margin: 0 0 22px; color: var(--proto-text-secondary); font-size: 13px; line-height: 20px; }
+      .node-section-title { margin: 24px 0 12px; padding-top: 18px; border-top: 1px solid var(--proto-border); font-size: 15px; font-weight: 600; }
+      .node-section-title:first-of-type { margin-top: 0; padding-top: 0; border-top: none; }
+      body[data-proto-page="node-admin"] .node-config-block { padding: 16px; border: 1px solid var(--proto-border); border-radius: 6px; margin-top: 16px; }
+      body[data-proto-page="node-admin"] .node-config-block:first-of-type { margin-top: 0; }
+      body[data-proto-page="node-admin"] .node-config-block > .node-zone-title,
+      body[data-proto-page="node-admin"] .node-config-block > .node-section-title { margin: 0 0 12px; padding: 0; border: 0; font-size: 16px; font-weight: 600; line-height: 24px; }
+      body[data-proto-page="node-admin"] .node-config-block > .node-zone-help { margin: -4px 0 16px; }
+body[data-proto-page="node-admin"] #zone-net .node-config-block {
+  padding: 24px;
+}
+body[data-proto-page="node-admin"] #zone-net .node-config-block > .node-zone-help {
+  margin: -4px 0 20px;
+}
+body[data-proto-page="node-admin"] #zone-net .proto-form-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 32px;
+  max-width: none !important;
+}
+body[data-proto-page="node-admin"] #zone-net .proto-form-grid .proto-input,
+body[data-proto-page="node-admin"] #zone-net .node-config-block > .proto-field .proto-input {
+  width: 100%;
+  max-width: 400px;
+}
+body[data-proto-page="node-admin"] #static-fields > .hint {
+  color: rgba(0, 0, 0, .4);
+  font-size: 12px;
+  line-height: 20px;
+  margin-top: 8px;
+}
+body[data-proto-page="node-admin"] #zone-net .node-config-block > .proto-field {
+  max-width: 400px !important;
+}
+body[data-proto-page="node-admin"] #zone-info {
+  padding: 28px 32px;
+}
+body[data-proto-page="node-admin"] #zone-info .node-zone-help {
+  margin-bottom: 20px;
+}
+body[data-proto-page="node-admin"] #zone-info .info-grid {
+  grid-template-columns: 120px minmax(0, 1fr) 120px minmax(0, 1fr);
+  column-gap: 32px;
+  row-gap: 16px;
+  max-width: none;
+  font-size: 14px;
+  line-height: 22px;
+}
+body[data-proto-page="node-admin"] #zone-info .info-grid .v {
+  min-width: 0;
+}
+@media (max-width: 1100px) {
+  body[data-proto-page="node-admin"] #zone-net .proto-form-grid {
+    grid-template-columns: minmax(0, 400px);
+    max-width: 400px !important;
+  }
+  body[data-proto-page="node-admin"] #zone-info .info-grid {
+    grid-template-columns: 120px minmax(0, 1fr);
+  }
+}
+      .node-status-line { display: flex; align-items: center; gap: 8px; margin-top: 10px; color: var(--proto-text-secondary); font-size: 13px; }
+      .tag-info { display: inline-block; padding: 2px 8px; border-radius: 10px; background: var(--proto-surface-subtle); color: var(--proto-text-secondary); font-size: 11px; }
+      .config-state-line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 14px; color: var(--proto-text-secondary); font-size: 12px; }
+      .config-state-label { color: var(--proto-text-secondary); }
+      .tag-state { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+      .tag-state.state-idle { background: var(--proto-surface-subtle); color: var(--proto-text-secondary); }
+      .tag-state.state-pending { background: rgba(245, 158, 11, .14); color: #b45309; }
+      .tag-state.state-applying { background: rgba(59, 130, 246, .12); color: var(--proto-primary); }
+      .tag-state.state-applied { background: rgba(16, 185, 129, .12); color: #047857; }
+      .tag-state.state-failed { background: rgba(239, 68, 68, .12); color: #b91c1c; }
+      .tag-state.state-online { background: rgba(16, 185, 129, .12); color: #047857; }
+      .tag-state.state-danger { background: rgba(239, 68, 68, .12); color: #b91c1c; }
+      .tag-state.state-working { background: rgba(245, 158, 11, .14); color: #b45309; }
+      .config-state-detail { color: var(--proto-text-tertiary); }
+      .danger-note { border: 1px solid rgba(239, 68, 68, .22); border-radius: 6px; background: #fff7f7; color: #991b1b; padding: 9px 12px; margin: 12px 0 16px; font-size: 12px; line-height: 1.7; }
+      .ops-state { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; border: 1px solid var(--proto-border); border-radius: 6px; background: var(--proto-surface-subtle); padding: 10px 12px; margin: 0 0 16px; font-size: 12px; }
+      .ops-state-label { color: var(--proto-text-secondary); }
+      .ops-state-detail { color: var(--proto-text-tertiary); }
+      @media (max-width: 900px) {
+        body[data-proto-page="node-admin"] .proto-side { width: 60px; }
+        body[data-proto-page="node-admin"] .proto-side-item { font-size: 11px; }
+      }

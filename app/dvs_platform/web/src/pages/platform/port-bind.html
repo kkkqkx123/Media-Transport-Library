@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <link rel="stylesheet" href="../../vendor/tdesign.min.css" />
+    <link rel="stylesheet" href="../../vendor/iconfont.css" />
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>拼墙设置 · 端口绑定 · 示意</title>
+    <link rel="icon" href="../../_shared/favicon.svg" />
+    <link rel="stylesheet" href="../../_shared/theme.css" />
+    <link rel="stylesheet" href="../../_shared/ids-admin.css" />
+    <style>
+      .bind-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--proto-border); margin-bottom: 16px; }
+      .bind-tabs a { padding: 8px 16px; font-size: 14px; color: var(--proto-text-secondary); text-decoration: none; border-bottom: 2px solid transparent; cursor: pointer; }
+      .bind-tabs a.is-active { color: var(--proto-primary); border-bottom-color: var(--proto-primary); font-weight: 600; }
+      .bind-tabs a.is-disabled { color: var(--proto-text-disabled); cursor: not-allowed; }
+      .bind-layout { display: flex; gap: 32px; align-items: stretch; }
+      .bind-left { position: relative; width: 260px; flex-shrink: 0; }
+      .bind-left::after { content: ""; position: absolute; top: 0; bottom: 0; right: -16px; width: 1px; background: #e7e7e7; }
+      .bind-left h4, .bind-right h4 { margin: 0 0 10px; font-size: 14px; }
+      .node-item { border: 1px solid var(--proto-border); border-radius: var(--proto-radius-sm); padding: 10px 12px; margin-bottom: 10px; cursor: grab; background: var(--proto-surface); user-select: none; }
+      .node-item.is-selected { border-color: var(--proto-primary); box-shadow: var(--proto-focus-ring); }
+      .node-item .nm { font-weight: 600; font-size: 13px; }
+      .node-item .meta { font-size: 12px; color: var(--proto-text-secondary); margin-top: 2px; }
+      .node-item .off { color: #ea580c; }
+      .cell-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+      .bind-cell { border: 1px solid var(--proto-border); border-radius: var(--proto-radius-sm); min-height: 84px; padding: 8px; background: var(--proto-surface); position: relative; font-size: 12px; }
+      .bind-cell.is-unbound { background: var(--proto-surface-subtle); border-style: dashed; color: var(--proto-text-tertiary); display: flex; align-items: center; justify-content: center; }
+      .bind-cell.is-target { border-color: var(--proto-primary); box-shadow: var(--proto-focus-ring); }
+      .bind-cell.is-offline { border-color: rgba(234, 88, 12, 0.5); }
+      .bind-cell .nm { font-weight: 600; color: var(--proto-text); }
+      .bind-cell .prt { color: var(--proto-text-secondary); margin-top: 2px; }
+      .bind-cell .unbind { position: absolute; top: 6px; right: 8px; color: var(--proto-text-secondary); cursor: pointer; border: none; background: none; font-size: 14px; }
+      .bind-cell .unbind:hover { color: var(--proto-danger); }
+      .bind-note { margin: 0 0 10px; font-size: 12px; line-height: 1.7; color: var(--proto-text-secondary); }
+      .bind-footer { display: flex; align-items: center; justify-content: flex-start; gap: 8px; width: 100%; margin-top: 32px; padding-top: 16px; border-top: 1px solid #e7e7e7; }
+      .bind-status { font-size: 13px; color: var(--proto-text-secondary); margin-bottom: 10px; }
+      .port-opt { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--proto-border); border-radius: 6px; margin-bottom: 8px; cursor: pointer; }
+      .port-opt.is-disabled { color: var(--proto-text-disabled); cursor: not-allowed; background: var(--proto-surface-subtle); }
+    </style>
+      <link rel="stylesheet" href="../../_shared/itc-adapter.css" />
+    <script src="../../_shared/itc-adapter.js" defer></script>
+  </head>
+  <body data-proto-page="port-bind" data-proto-l1="schedule">
+    <div class="proto-shell">
+      <aside class="proto-side">
+        <div class="proto-side-logo"><div class="proto-side-logo-mark">D</div></div>
+        <nav class="proto-side-menu">
+          <a class="proto-side-item" data-page="hub" href="hub.html"><span class="proto-side-icon"></span>目录</a>
+          <a class="proto-side-item" data-page="schedule" href="#"><span class="proto-side-icon"></span>信号调度</a>
+        </nav>
+      </aside>
+      <div class="proto-body">
+        <header class="proto-header">
+          <div class="proto-header-left">
+            <a class="proto-header-brand proto-brand-link" href="hub.html" title="返回原型目录">
+              <span class="proto-brand-logo" aria-hidden="true"></span>
+              <span class="proto-brand-name">分布式视频管理</span>
+            </a>
+            <button type="button" class="proto-fold-sub" id="proto-fold-sub" title="收起二级菜单">☰</button>
+            <nav class="proto-breadcrumb">
+              <a href="hub.html">原型目录</a><span>/</span><a href="group-list.html">分组管理</a><span>/</span><a href="wall-list.html">拼墙列表</a><span>/</span><span class="current">设置 · 端口绑定（展厅主屏）</span>
+            </nav>
+          </div>
+          <div class="proto-header-right">
+            <span class="proto-header-meta">示意 · REQ-2026-0004 · PAGE-DVS-004 · 2026-10-19 · 非需求正文</span>
+            <span class="proto-header-user">管理员</span>
+          </div>
+        </header>
+        <main class="proto-main">
+          <aside class="proto-side-sub">
+            <div class="proto-side-sub-group is-open">
+              <button type="button" class="proto-side-sub-parent">
+                <span class="proto-menu-ico"></span><span class="proto-menu-label">信号调度</span><span class="proto-menu-caret">▾</span>
+              </button>
+              <div class="proto-side-sub-children">
+                <a data-page="list" href="group-list.html">分组管理</a>
+                <a data-page="wall-list" href="wall-list.html">拼墙管理</a>
+                <a data-page="screen-schedule" href="screen-schedule.html">画面调度</a>
+              </div>
+            </div>
+            <div class="proto-side-sub-group">
+              <button type="button" class="proto-side-sub-parent">
+                <span class="proto-menu-ico"></span><span class="proto-menu-label">设备管理</span><span class="proto-menu-caret">▾</span>
+              </button>
+              <div class="proto-side-sub-children">
+                <a data-page="device-list" href="device-list.html">设备列表</a>
+              </div>
+            </div>
+          </aside>
+          <div class="proto-content">
+            <section class="proto-card">
+              <div class="wall-settings-heading">
+                <a class="proto-back-icon wall-settings-back" data-nav href="wall-list.html" aria-label="返回拼墙管理" title="返回拼墙管理"><i class="t-icon t-icon-chevron-left" aria-hidden="true"></i></a>
+                <h1 class="wall-settings-title"></h1>
+              </div>
+              <div class="bind-tabs">
+                <a data-nav href="wall-basic.html">基本设置</a>
+                <a class="is-active">端口绑定</a>
+                <a data-nav href="wall-image.html">图像调节</a>
+                <a data-nav href="wall-transfer.html">传输配置</a>
+                <a data-nav href="wall-backdrop.html">高清底图</a>
+              </div>
+              <div class="bind-layout">
+                <div class="bind-left">
+                  <h4>可用输出盒（拖到右侧格位，或点选后点格位）</h4>
+                  <p class="bind-note">离线节点只保存为待生效的最新配置，回线重新校验后才执行；解绑为整节点操作，不支持单口解绑。</p>
+                  <div id="node-list"></div>
+                </div>
+                <div class="bind-right" style="flex: 1">
+                  <h4>格位矩阵 · 展厅主屏（2 行 × 4 列）</h4>
+                  <div class="bind-status" id="bind-status"></div>
+                  <div class="cell-grid" id="cell-grid"></div>
+                </div>
+              </div>
+              <div class="bind-footer">
+                <button type="button" class="proto-btn" id="btn-cancel">取消</button>
+                <button type="button" class="proto-btn proto-btn-primary" id="btn-save">保存</button>
+              </div>
+            </section>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <div class="proto-mask" id="port-modal" hidden>
+      <div class="proto-modal" role="dialog" style="max-width: 360px">
+        <div class="proto-modal-header"><span id="port-title">选择输出口</span></div>
+        <div class="proto-modal-body" id="port-body"></div>
+        <div class="proto-modal-footer">
+          <button type="button" class="proto-btn" id="port-cancel">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="proto-mask" id="unsaved-modal" hidden>
+      <div class="proto-modal" role="dialog" style="max-width: 380px">
+        <div class="proto-modal-header"><span>未保存的绑定改动</span></div>
+        <div class="proto-modal-body">当前绑定草稿未保存。保存后向在线节点下发；离线节点仅保存最新待生效配置，当前生效绑定不变。</div>
+        <div class="proto-modal-footer">
+          <button type="button" class="proto-btn" id="unsaved-cancel">取消（停留）</button>
+          <button type="button" class="proto-btn" id="unsaved-drop">放弃改动</button>
+          <button type="button" class="proto-btn proto-btn-primary" id="unsaved-save">保存并生效</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="../../_shared/proto-shell.js"></script>
+    <script src="../../_shared/node-state.js"></script>
+    <script src="../../_shared/platform-store.js"></script>
+    <script>
+      (function () {
+        var store = window.DvsPlatformStore;
+        var requestedWallId = new URLSearchParams(window.location.search).get("wallId");
+        if (requestedWallId && store.getWall(requestedWallId)) store.setCurrentWall(requestedWallId);
+        var wall = requestedWallId ? store.getWall(requestedWallId) : store.getCurrentWall();
+        if (!wall) { window.location.href = "wall-list.html"; return; }
+        var ROWS = Number(wall.rows), COLS = Number(wall.cols);
+        var portCapacity = { d1: 4, d2: 2 }; /* 原型的逻辑 HDMI 格位容量；名称/IP/在线状态从注册节点读取 */
+        var nodes = window.DvsNodeState.list().filter(function (node) {
+          return (node.role === "output" || node.type === "output") && node.lifecycle === "active";
+        }).map(function (node) {
+          return {
+            id: node.id.toUpperCase(), name: node.name, ip: node.ip,
+            ports: portCapacity[node.id] || (node.capabilities && node.capabilities.outputPorts || []).length || 1,
+            offline: !node.online
+          };
+        });
+        var cells = Array.from({ length: ROWS }, function (_, r) {
+          return Array.from({ length: COLS }, function (_, c) { return wall.bindings && wall.bindings[r] ? wall.bindings[r][c] || null : null; });
+        });
+        var saved = JSON.parse(JSON.stringify(cells));
+        var selectedNode = null;
+        var pendingCell = null;
+
+        function $(id) { return document.getElementById(id); }
+        function esc(value) { return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+        function nodeById(id) { return nodes.find(function (n) { return n.id === id; }) || { id: id, name: "输出盒-" + id, ip: "—", ports: 1, offline: false }; }
+        function isBoundElsewhere(n) {
+          return store.listWalls().some(function (other) {
+            return other.id !== wall.id && Array.isArray(other.bindings) && other.bindings.some(function (row) {
+              return Array.isArray(row) && row.some(function (cell) { return cell && cell.node === n.id; });
+            });
+          });
+        }
+        function isBoundAnywhere(n) {
+          for (var r = 0; r < ROWS; r++) for (var c = 0; c < COLS; c++) if (cells[r][c] && cells[r][c].node === n.id) return true;
+          return false;
+        }
+        function boundCount() {
+          var k = 0;
+          for (var r = 0; r < ROWS; r++) for (var c = 0; c < COLS; c++) if (cells[r][c]) k++;
+          return k;
+        }
+        function usedPorts(n) {
+          var used = [];
+          for (var r = 0; r < ROWS; r++) for (var c = 0; c < COLS; c++) {
+            var b = cells[r][c];
+            if (b && b.node === n.id) used.push(b.port);
+          }
+          return used;
+        }
+
+        function renderNodes() {
+          var free = nodes.filter(function (n) { return !isBoundElsewhere(n) && usedPorts(n).length < n.ports; });
+          $("node-list").innerHTML = free.length
+            ? free.map(function (n) {
+                return (
+                  '<div class="node-item' + (selectedNode === n.id ? " is-selected" : "") + '" draggable="true" data-node="' + n.id + '">' +
+                  '<div class="nm">' + esc(n.name) + (n.offline ? ' <span class="off">· 离线</span>' : "") + "</div>" +
+                  '<div class="meta">' + n.ip + " · " + n.ports + " 个输出口</div></div>"
+                );
+              }).join("")
+            : '<div class="proto-empty">暂无可用输出口</div>';
+          document.querySelectorAll(".node-item").forEach(function (el) {
+            el.addEventListener("click", function () {
+              selectedNode = selectedNode === el.getAttribute("data-node") ? null : el.getAttribute("data-node");
+              renderNodes();
+              if (selectedNode) protoToast("已选中 " + nodeById(selectedNode).name + "，点击目标格位完成绑定");
+            });
+            el.addEventListener("dragstart", function (e) {
+              e.dataTransfer.setData("text/plain", el.getAttribute("data-node"));
+            });
+          });
+        }
+
+        function renderCells() {
+          $("bind-status").textContent = "已绑定 " + boundCount() + "/" + ROWS * COLS + " 格位（绑定状态按格位计）";
+          $("cell-grid").innerHTML = "";
+          for (var r = 0; r < ROWS; r++) for (var c = 0; c < COLS; c++) {
+            var b = cells[r][c];
+            var div = document.createElement("div");
+            div.className = "bind-cell";
+            if (b) {
+              var n = nodeById(b.node);
+              if (n.offline) div.classList.add("is-offline");
+              div.innerHTML =
+                '<div class="nm">' + esc(n.name) + "</div>" +
+                '<div class="prt">HDMI' + b.port + (n.offline ? " · 离线" : "") + "</div>" +
+                '<button type="button" class="unbind" data-node="' + b.node + '" title="整节点解绑">×</button>';
+            } else {
+              div.classList.add("is-unbound");
+              div.textContent = "未绑定";
+              div.setAttribute("data-cell", r + "-" + c);
+              div.addEventListener("click", function () { onCellClick(this.getAttribute("data-cell")); });
+              div.addEventListener("dragover", function (e) { e.preventDefault(); this.classList.add("is-target"); });
+              div.addEventListener("dragleave", function () { this.classList.remove("is-target"); });
+              div.addEventListener("drop", (function (r, c) {
+                return function (e) {
+                  e.preventDefault();
+                  this.classList.remove("is-target");
+                  tryBind(e.dataTransfer.getData("text/plain"), r, c);
+                };
+              })(r, c));
+            }
+            $("cell-grid").appendChild(div);
+          }
+          document.querySelectorAll(".unbind").forEach(function (btn) {
+            btn.addEventListener("click", function (e) {
+              e.stopPropagation();
+              unbindNode(this.getAttribute("data-node"));
+            });
+          });
+          renderNodes();
+        }
+
+        function onCellClick(rc) {
+          var p = rc.split("-");
+          if (!selectedNode) { protoToast("请先在左侧选择或拖入一个输出盒"); return; }
+          tryBind(selectedNode, Number(p[0]), Number(p[1]));
+        }
+
+        function tryBind(nodeId, r, c) {
+          var n = nodeById(nodeId);
+          if (!n) return;
+          if (cells[r][c]) { protoToast("该格位已绑定，需先解绑原节点"); return; }
+          var used = usedPorts(n);
+          if (n.ports <= 1) {
+            if (used.length >= 1) { protoToast("该节点输出口已全部占用"); return; }
+            cells[r][c] = { node: n.id, port: 1 };
+            selectedNode = null;
+            protoToast("已绑定 " + n.name + " · HDMI1（保存后下发）");
+            renderCells();
+            return;
+          }
+          var free = [];
+          for (var i = 1; i <= n.ports; i++) if (used.indexOf(i) < 0) free.push(i);
+          if (!free.length) { protoToast("该节点输出口已全部占用"); return; }
+          pendingCell = { r: r, c: c };
+          openPortModal(n, free, used);
+        }
+
+        function openPortModal(n, free, used) {
+          $("port-title").textContent = n.name + " · 选择输出口（仅列空闲口）";
+          $("port-body").innerHTML = Array.from({ length: n.ports }, function (_, i) {
+            var p = i + 1;
+            var isUsed = used.indexOf(p) >= 0;
+            return (
+              '<div class="port-opt' + (isUsed ? " is-disabled" : "") + '" data-port="' + p + '">' +
+              "<span>HDMI" + p + "</span>" + (isUsed ? '<span style="margin-left:auto">已被占用</span>' : "<span style=\"margin-left:auto\">空闲</span>") + "</div>"
+            );
+          }).join("");
+          $("port-modal").hidden = false;
+          $("port-modal").classList.add("is-open");
+          document.querySelectorAll('#port-body .port-opt:not(.is-disabled)').forEach(function (opt) {
+            opt.addEventListener("click", function () {
+              cells[pendingCell.r][pendingCell.c] = { node: n.id, port: Number(opt.getAttribute("data-port")) };
+              selectedNode = null;
+              closePortModal();
+              protoToast("已绑定 " + n.name + " · HDMI" + opt.getAttribute("data-port") + "（保存后下发）");
+              renderCells();
+            });
+          });
+        }
+        function closePortModal() {
+          $("port-modal").classList.remove("is-open");
+          $("port-modal").hidden = true;
+        }
+        $("port-cancel").onclick = closePortModal;
+
+        function unbindNode(nodeId) {
+          var n = nodeById(nodeId);
+          var count = 0;
+          for (var r = 0; r < ROWS; r++) for (var c = 0; c < COLS; c++) if (cells[r][c] && cells[r][c].node === nodeId) count++;
+          protoConfirm({
+            title: "整节点解绑",
+            content: "将解除 " + n.name + " 在本墙 " + count + " 个格位的绑定（不支持只解单个输出口）。确认解绑？",
+            onOk: function () {
+              for (var r = 0; r < ROWS; r++) for (var c = 0; c < COLS; c++) if (cells[r][c] && cells[r][c].node === nodeId) cells[r][c] = null;
+              protoToast("已解绑，节点回到未绑定列表（保存后生效）");
+              renderCells();
+            }
+          });
+        }
+
+        function doSave(done) {
+          var btn = $("btn-save");
+          btn.disabled = true;
+          var offline = [];
+          for (var r = 0; r < ROWS; r++) for (var c = 0; c < COLS; c++) {
+            var b = cells[r][c];
+            if (b && nodeById(b.node).offline && offline.indexOf(b.node) < 0) offline.push(b.node);
+          }
+          setTimeout(function () {
+            btn.disabled = false;
+            try {
+              wall = store.updateWall(wall.id, { bindings: cells });
+              saved = JSON.parse(JSON.stringify(cells));
+              protoToast("保存成功，绑定已下发（绑定为本墙所有场景共享）");
+              if (offline.length) {
+                setTimeout(function () {
+                  protoToast(offline.map(function (id) { return nodeById(id).name; }).join("、") + " 离线：已保存最新待生效配置，回线校验后执行");
+                }, 1900);
+              }
+              if (done) done();
+            } catch (error) { protoToast(error.message || "保存失败"); }
+          }, 300);
+        }
+        $("btn-save").onclick = function () { doSave(null); };
+        $("btn-cancel").onclick = function () {
+          cells = JSON.parse(JSON.stringify(saved));
+          selectedNode = null;
+          protoToast("已取消，恢复已保存的绑定");
+          renderCells();
+        };
+        /* 切 Tab 未保存确认（与设置面板同口径：P5–P10 拍板） */
+        var navTarget = null;
+        function isDirty() { return JSON.stringify(cells) !== JSON.stringify(saved); }
+        document.querySelectorAll(".wall-settings-back[data-nav], .bind-tabs a[data-nav]").forEach(function (a) {
+          a.addEventListener("click", function (e) {
+            e.preventDefault();
+            navTarget = a.classList.contains("wall-settings-back")
+              ? "wall-list.html?groupId=" + encodeURIComponent(wall.groupId)
+              : a.getAttribute("href") + "?wallId=" + encodeURIComponent(wall.id);
+            if (!isDirty()) { window.location.href = navTarget; return; }
+            $("unsaved-modal").hidden = false;
+            $("unsaved-modal").classList.add("is-open");
+          });
+        });
+        function closeUnsaved() {
+          $("unsaved-modal").classList.remove("is-open");
+          $("unsaved-modal").hidden = true;
+          navTarget = null;
+        }
+        $("unsaved-cancel").onclick = closeUnsaved;
+        $("unsaved-drop").onclick = function () { var t = navTarget; closeUnsaved(); if (t) window.location.href = t; };
+        $("unsaved-save").onclick = function () {
+          var t = navTarget;
+          closeUnsaved();
+          doSave(function () { if (t) window.location.href = t; });
+        };
+
+        var breadcrumb = document.querySelector(".proto-breadcrumb .current");
+        if (breadcrumb) breadcrumb.textContent = "设置 · 端口绑定（" + wall.name + "）";
+        var wallTitle = document.querySelector(".wall-settings-title");
+        if (wallTitle) wallTitle.textContent = wall.name;
+        var heading = document.querySelector(".bind-right h4");
+        if (heading) heading.textContent = "格位矩阵 · " + wall.name + "（" + ROWS + " 行 × " + COLS + " 列）";
+        renderCells();
+      })();
+    </script>
+  </body>
+</html>

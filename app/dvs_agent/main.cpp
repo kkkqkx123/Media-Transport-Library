@@ -547,6 +547,8 @@ int main(int argc, char** argv) {
                 res.status = 200;
                 res.body = content;
                 res.content_type = guess_ct(full);
+                res.headers["Cache-Control"] = "no-cache";
+                res.headers["X-Content-Type-Options"] = "nosniff";
                 return;
             }
         }

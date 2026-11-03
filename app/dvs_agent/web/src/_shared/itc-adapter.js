@@ -41,7 +41,7 @@
     document.body.dataset.itcPage = key;
 
     var logo = shell.querySelector(".proto-side-logo-mark");
-    if (logo) logo.innerHTML = '<img src="../../assets/brand/ITC Design-logo-write.svg" alt="DVS" />';
+    if (logo) logo.innerHTML = '<svg width="32" height="32" viewBox="0 0 32 32"><rect width="32" height="32" rx="6" fill="#0052D9"/><text x="16" y="21" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">DVS</text></svg>';
     var menu = shell.querySelector(".proto-side-menu");
     if (menu) {
       menu.innerHTML =

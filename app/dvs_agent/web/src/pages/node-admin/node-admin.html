@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <link rel="stylesheet" href="../../vendor/tdesign.min.css" />
+    <link rel="stylesheet" href="../../vendor/iconfont.css" />
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>节点设备后台 | 分布式视频管理</title>
+    <link rel="icon" href="../../_shared/favicon.svg" />
+    <link rel="stylesheet" href="../../_shared/theme.css" />
+    <link rel="stylesheet" href="../../_shared/ids-admin.css" />
+        <link rel="stylesheet" href="../../_shared/itc-adapter.css" />
+    <link rel="stylesheet" href="../../_shared/node-admin.css" />
+  </head>
+  <body class="itc-platform" data-itc-page="node-admin" data-proto-page="node-admin" data-proto-l1="node">
+    <div class="proto-shell">
+      <aside class="proto-side">
+        <div class="proto-side-logo"><div class="proto-side-logo-mark"><svg width="32" height="32" viewBox="0 0 32 32"><rect width="32" height="32" rx="6" fill="#0052D9"/><text x="16" y="21" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">DVS</text></svg></div></div>
+        <nav class="proto-side-menu">
+          <a class="proto-side-item is-active" data-page="node" href="#"><i class="t-icon t-icon-setting-filled" aria-hidden="true"></i><span>配置</span></a>
+        </nav>
+      </aside>
+      <div class="proto-body">
+        <header class="proto-header">
+          <div class="proto-header-left">
+            <a class="proto-header-brand proto-brand-link" href="node-admin.html" title="节点设备后台">
+              <i class="t-icon t-icon-component-radio" aria-hidden="true"></i>
+            <span class="proto-brand-name">节点设备后台</span>
+            </a>
+            <button type="button" class="proto-fold-sub" id="proto-fold-sub" title="收起二级菜单"><i class="t-icon t-icon-view-list" aria-hidden="true"></i></button>
+            <nav class="proto-breadcrumb">
+              <span>节点单机后台</span><span>/</span><span id="node-breadcrumb-zone" class="current">节点角色</span>
+            </nav>
+          </div>
+          <div class="proto-header-right">
+            <button type="button" class="proto-btn" id="btn-changepwd">修改密码</button>
+            <span class="proto-header-user"><i class="t-icon t-icon-user-circle" aria-hidden="true"></i>本机维护人员</span>
+            <button type="button" class="node-header-action" id="btn-logout" aria-label="退出登录" title="退出登录"><i class="t-icon t-icon-logout" aria-hidden="true"></i></button>
+          </div>
+        </header>
+        <main class="proto-main">
+          <aside class="proto-side-sub">
+            <div class="proto-side-sub-group is-open is-active" data-nav-group="config">
+              <button type="button" class="proto-side-sub-parent">
+                <span class="proto-menu-ico"><i class="t-icon t-icon-setting-filled" aria-hidden="true"></i></span><span class="proto-menu-label">设备配置</span><span class="proto-menu-caret"><i class="t-icon t-icon-chevron-down" aria-hidden="true"></i></span>
+              </button>
+              <div class="proto-side-sub-children">
+                <a class="is-active" data-zone="role" href="#">节点角色<span class="nav-dot" id="nav-dot-role" hidden title="存在待重启生效的切换"></span></a>
+                <a data-zone="input" href="#" title="仅输入盒适用">输入口</a>
+                <a data-zone="output" href="#" title="仅输出盒适用">输出设置</a>
+                <a data-zone="net" href="#">网络与注册</a>
+              </div>
+            </div>
+            <div class="proto-side-sub-group is-open" data-nav-group="playback">
+              <button type="button" class="proto-side-sub-parent">
+                <span class="proto-menu-ico"><i class="t-icon t-icon-play-circle-filled" aria-hidden="true"></i></span><span class="proto-menu-label">播放执行</span><span class="proto-menu-caret"><i class="t-icon t-icon-chevron-down" aria-hidden="true"></i></span>
+              </button>
+              <div class="proto-side-sub-children">
+                <a data-zone="playback" href="#" title="仅输出盒适用">播放任务</a>
+              </div>
+            </div>
+            <div class="proto-side-sub-group is-open" data-nav-group="maintenance">
+              <button type="button" class="proto-side-sub-parent">
+                <span class="proto-menu-ico"><i class="t-icon t-icon-tools-filled" aria-hidden="true"></i></span><span class="proto-menu-label">查看与维护</span><span class="proto-menu-caret"><i class="t-icon t-icon-chevron-down" aria-hidden="true"></i></span>
+              </button>
+              <div class="proto-side-sub-children">
+                <a data-zone="info" href="#">本机信息</a>
+                <a data-zone="ops" href="#">维护操作</a>
+              </div>
+            </div>
+          </aside>
+          <div class="proto-content">
+            <section class="proto-card zone is-active" id="zone-role">
+              <div class="node-zone-title">节点角色 <span class="tag-pending" id="tag-pending" hidden>待重启生效</span></div>
+              <p class="node-zone-help">选择这台节点用于接收信号，还是输出画面。切换需要重启，重启前可以撤销。</p>
+              <div class="proto-field">
+                <label>节点角色</label>
+                <div class="proto-pair">
+                  <label class="opt"><input type="radio" name="role" value="output" checked /> 输出盒</label>
+                  <label class="opt"><input type="radio" name="role" value="input" /> 输入盒</label>
+                </div>
+                <div class="hint">切换后，平台会解除当前绑定并关闭受影响画面。</div>
+              </div>
+              <div class="config-state-line"><span class="config-state-label">配置状态</span><span class="tag-state state-applied" id="role-config-state">已生效</span><span class="config-state-detail" id="role-config-state-detail">当前角色：输出盒</span></div>
+              <div class="proto-form-actions">
+                <button type="button" class="proto-btn" id="btn-undo-role" hidden>撤销切换</button>
+              </div>
+            </section>
+
+            <section class="proto-card zone" id="zone-input">
+              <div class="node-zone-title">输入口 <span class="tag-pending" id="tag-input-pending" hidden>待重启生效</span></div>
+              <div class="na-note" id="na-input" hidden>当前节点角色为<b>输出盒</b>，输入口区不适用；节点角色为输入盒时显示。切换角色见左侧「节点角色」。</div>
+              <p class="node-zone-help">选择节点使用的输入接口，并查看当前信号。</p>
+              <div class="proto-field">
+                <label for="sel-inputport">采集口</label>
+                <select id="sel-inputport" class="proto-select"></select>
+                <div class="hint" style="margin-top: 8px">信号状态：<b style="color: var(--proto-success)">有信号 · 1080p60</b></div>
+              </div>
+              <div class="config-state-line"><span class="config-state-label">配置状态</span><span class="tag-state state-applied" id="input-config-state">已生效</span><span class="config-state-detail" id="input-config-state-detail">当前采集口：HDMI1</span></div>
+              <div class="proto-form-actions">
+                <button type="button" class="proto-btn proto-btn-primary btn-save-zone" data-zone="input">保存</button>
+              </div>
+            </section>
+
+            <section class="proto-card zone" id="zone-output">
+              <div class="node-zone-title">输出设置 <span class="tag-pending" id="tag-output-pending" hidden>待重启生效</span></div>
+              <div class="na-note" id="na-output" hidden>当前节点角色为<b>输入盒</b>，输出分辨率与模式区不适用；节点角色为输出盒时显示。切换角色见左侧「节点角色」。</div>
+              <p class="node-zone-help">设置输出分辨率、刷新率和输出方式。</p>
+              <div class="proto-field">
+                <label for="sel-outputport">输出口</label>
+                <select id="sel-outputport" class="proto-select"></select>
+                <div class="hint" id="output-capability-note" style="margin-top: 8px">能力读取中…</div>
+              </div>
+              <div class="proto-field" style="margin-top: 16px">
+                <label for="sel-res">输出分辨率</label>
+                <select id="sel-res" class="proto-select"></select>
+              </div>
+              <div class="proto-form-grid" id="custom-res" style="display: none; max-width: 560px">
+                <div class="proto-field"><label for="res-w">宽（px）</label><input id="res-w" class="proto-input" type="number" placeholder="640~7680" /></div>
+                <div class="proto-field"><label for="res-h">高（px）</label><input id="res-h" class="proto-input" type="number" placeholder="480~4320" /></div>
+                <div class="proto-field"><label for="res-hz">刷新率（Hz）</label><input id="res-hz" class="proto-input" type="number" placeholder="24~60" /></div>
+              </div>
+              <div class="proto-field" style="margin-top: 16px">
+                <label>输出模式</label>
+                <div class="proto-pair">
+                  <label class="opt"><input type="radio" name="outmode" value="force" checked /> 强推</label>
+                  <label class="opt"><input type="radio" name="outmode" value="hotplug" /> 热插拔</label>
+                </div>
+              </div>
+              <div class="config-state-line"><span class="config-state-label">配置状态</span><span class="tag-state state-applied" id="output-config-state">已生效</span><span class="config-state-detail" id="output-config-state-detail">当前输出：1920×1080 · 强推</span></div>
+              <div class="proto-form-actions">
+                <button type="button" class="proto-btn proto-btn-primary btn-save-zone" data-zone="output">保存</button>
+              </div>
+            </section>
+
+            <section class="proto-card zone" id="zone-net">
+              <div class="node-config-block">
+              <div class="node-zone-title">网络与注册</div>
+              <p class="node-zone-help">配置网络、设备注册和可选的 SIP 接入。</p>
+              <div class="danger-note" id="network-risk" hidden>网络参数应用期间节点会短暂断连；请保持当前页面打开，并准备使用新地址重新访问。</div>
+              <div class="proto-field">
+                <label>网络方式</label>
+                <div class="proto-pair">
+                  <label class="opt"><input type="radio" name="netmode" value="dhcp" checked /> DHCP</label>
+                  <label class="opt"><input type="radio" name="netmode" value="static" /> 静态</label>
+                </div>
+              </div>
+              <div id="static-fields" style="display: none">
+                <div class="proto-form-grid" style="max-width: 560px">
+                  <div class="proto-field"><label for="in-ip">IP</label><input id="in-ip" class="proto-input" value="192.168.10.51" /></div>
+                  <div class="proto-field"><label for="in-mask">掩码</label><input id="in-mask" class="proto-input" value="255.255.255.0" /></div>
+                  <div class="proto-field"><label for="in-gw">网关</label><input id="in-gw" class="proto-input" value="192.168.10.1" /></div>
+                  <div class="proto-field"><label for="in-dns">DNS</label><input id="in-dns" class="proto-input" value="192.168.10.1" /></div>
+                </div>
+                <div class="err" id="net-err" style="display: none"></div>
+                <div class="hint">IP 冲突时将自动回滚到原有网络配置。</div>
+              </div>
+              <div class="proto-field" style="max-width: 420px; margin-top: 16px">
+                <label for="in-server">注册服务器地址</label>
+                <input id="in-server" class="proto-input" value="192.168.10.200:8080" />
+                <div class="hint">平台服务地址（端口以平台部署为准）</div>
+              </div>
+              <div class="proto-form-actions">
+                <button type="button" class="proto-btn proto-btn-primary" id="btn-save-net">保存</button>
+              </div>
+              <div class="config-state-line"><span class="config-state-label">网络配置状态</span><span class="tag-state state-applied" id="network-config-state">已生效</span><span class="config-state-detail" id="network-config-state-detail">当前方式：DHCP</span></div>
+              </div>
+
+              <div class="node-config-block">
+              <div class="node-section-title">设备注册</div>
+              <div class="proto-form-grid" style="max-width: 680px">
+                <div class="proto-field">
+                  <label>注册方式</label>
+                  <div class="proto-pair">
+                    <label class="opt"><input type="radio" name="regmode" value="auto" checked /> 自动注册</label>
+                    <label class="opt"><input type="radio" name="regmode" value="manual" /> 手动注册</label>
+                  </div>
+                </div>
+                <div class="proto-field"><label>设备编号</label><input class="proto-input" value="SN202610190001" readonly /></div>
+              </div>
+              <div class="hint" style="margin-top: 8px">注册状态：<span class="tag-ok" id="reg-state">已注册 · 输出盒-D1</span></div>
+              <div class="config-state-line"><span class="config-state-label">注册配置状态</span><span class="tag-state state-applied" id="registration-config-state">已生效</span><span class="config-state-detail" id="registration-config-state-detail">自动注册配置已应用</span></div>
+              <div class="proto-form-actions">
+                <button type="button" class="proto-btn" id="btn-register">立即注册</button>
+                <button type="button" class="proto-btn proto-btn-primary" id="btn-save-registration">保存注册配置</button>
+              </div>
+              </div>
+
+              <div class="node-config-block">
+              <div class="node-section-title">SIP 接入 <span class="tag-info">可选</span></div>
+              <div class="proto-field">
+                <label class="opt"><input type="checkbox" id="sip-enabled" /> 启用 SIP 接入</label>
+              </div>
+              <div id="sip-fields" hidden>
+                <div class="proto-form-grid" style="max-width: 680px">
+                  <div class="proto-field"><label for="sip-server">SIP 服务器地址</label><input id="sip-server" class="proto-input" placeholder="例如 192.168.10.210" /></div>
+                  <div class="proto-field"><label for="sip-port">端口</label><input id="sip-port" class="proto-input" type="number" placeholder="5060" /></div>
+                  <div class="proto-field"><label for="sip-device">设备编号</label><input id="sip-device" class="proto-input" value="SN202610190001" /></div>
+                  <div class="proto-field"><label for="sip-user">账号</label><input id="sip-user" class="proto-input" placeholder="请输入账号" /></div>
+                  <div class="proto-field"><label for="sip-pwd">密码</label><input id="sip-pwd" class="proto-input" type="password" placeholder="请输入密码" /></div>
+                </div>
+              </div>
+              <div class="hint" style="margin-top: 8px">SIP 状态：<span class="tag-pending" id="sip-state">未启用</span></div>
+              <div class="config-state-line"><span class="config-state-label">SIP 配置状态</span><span class="tag-state state-idle" id="sip-config-state">未保存</span><span class="config-state-detail" id="sip-config-state-detail">SIP 当前未启用</span></div>
+              <div class="proto-form-actions">
+                <button type="button" class="proto-btn proto-btn-primary" id="btn-save-sip">保存 SIP 配置</button>
+              </div>
+              </div>
+            </section>
+
+            <section class="proto-card zone" id="zone-playback">
+              <div class="na-note" id="na-playback" hidden>当前节点角色为<b>输入盒</b>，播放任务仅输出盒适用；切换为输出盒并完成注册后可用。</div>
+              <div id="playback-body">
+                <div class="proto-card playback-module">
+                  <div class="node-zone-title">播放任务</div>
+                  <p class="node-zone-help">当前播放、任务列表和播放记录使用同一份任务数据。</p>
+                  <div class="task-current" id="playback-current" data-task-id="">
+                    <div class="task-current-head"><strong>当前播放</strong><span class="task-status" id="playback-current-status">暂无播放</span></div>
+                    <div class="task-meta" id="playback-current-detail" style="margin-top: 10px">当前节点没有正在播放的任务</div>
+                  </div>
+                </div>
+                <div class="proto-card playback-module">
+                  <div class="node-section-title">任务列表</div>
+                  <div class="task-table" id="playback-task-list"></div>
+                </div>
+                <div class="proto-card playback-module">
+                  <div class="node-section-title">播放记录</div>
+                  <div class="task-table" id="playback-record-list"></div>
+                </div>
+              </div>
+            </section>
+
+            <section class="proto-card zone" id="zone-info">
+              <div class="node-zone-title">本机信息</div>
+              <p class="node-zone-help">查看本机硬件、网络和运行状态；此处不提供编辑。</p>
+              <div class="info-grid">
+                <span class="k">型号</span><span class="v" id="info-model">DVS-NODE-R1</span>
+                <span class="k">主板</span><span class="v" id="info-board">RK-3588</span>
+                <span class="k">能力基线</span><span class="v" id="info-capability">RK3588 官方能力基线</span>
+                <span class="k">跨节点同帧</span><span class="v" id="info-sync">需控制服务与统一时钟联调</span>
+                <span class="k">序列号</span><span class="v" id="info-sn">SN202610190001</span>
+                <span class="k">固件版本</span><span class="v" id="fw-ver">V1.0.0-20261019</span>
+                <span class="k">当前角色</span><span class="v" id="info-role">输出盒</span>
+                <span class="k">IP</span><span class="v" id="info-ip">192.168.10.51</span>
+                <span class="k">MAC</span><span class="v" id="info-mac">00:11:22:33:44:55</span>
+                <span class="k">在线时长</span><span class="v" id="info-uptime">3 天 4 小时</span>
+                <span class="k">注册方式</span><span class="v" id="info-regmode">自动注册</span>
+                <span class="k">SIP 状态</span><span class="v" id="info-sipstate">未启用</span>
+                <span class="k">当前播放</span><span class="v" id="info-playback">未播放</span>
+                <span class="k">异常原因</span><span class="v" id="info-exception">—</span>
+                <span class="k">CPU 温度</span><span class="v" id="info-temp">—</span>
+                <span class="k">内存占用</span><span class="v" id="info-mem">—</span>
+              </div>
+            </section>
+
+            <section class="proto-card zone" id="zone-ops">
+              <div class="node-zone-title">维护操作</div>
+              <p class="node-zone-help">重启、恢复出厂或升级系统。执行期间会暂时中断画面。</p>
+              <div class="ops-state" id="ops-state">
+                <span class="ops-state-label">节点状态</span><span class="tag-state state-online" id="ops-state-label">在线</span><span class="ops-state-detail" id="ops-state-detail">运行正常</span>
+              </div>
+              <div class="ops-btns">
+                <button type="button" class="proto-btn" id="btn-reboot">重启</button>
+                <button type="button" class="proto-btn" id="btn-factory">恢复出厂</button>
+                <button type="button" class="proto-btn" id="btn-pick-fw"><i class="t-icon t-icon-upload" aria-hidden="true"></i>上传文件</button>
+                <button type="button" class="proto-btn proto-btn-primary" id="btn-upgrade" disabled>开始升级</button>
+                <input type="file" id="fw-input" hidden />
+              </div>
+              <div class="hint" id="fw-note" style="margin-top: 12px">升级走本地上传：先校验版本匹配与文件完整性，再执行升级；失败后保留旧版本，可重新上传。</div>
+              <div class="prog" id="fw-prog" hidden><div id="fw-prog-bar"></div></div>
+              <div class="hint" id="fw-status" hidden>升级中，请勿关闭页面…</div>
+              <div class="last-ops" id="last-ops">最近动作：—</div>
+            </section>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <!-- 登录区（独立登录页，覆盖整页） -->
+    <div class="login-mask" id="login-mask">
+      <div class="login-card">
+        <h3>节点设备后台</h3>
+        <p class="sub" id="node-login-context">输出盒-D1（192.168.10.51）· 本机登录，不依赖平台在线</p>
+        <div class="proto-field" style="margin-bottom: 14px">
+          <label for="login-user">用户名</label>
+          <input id="login-user" class="proto-input" value="admin" />
+        </div>
+        <div class="proto-field" id="field-pwd" style="margin-bottom: 14px">
+          <label for="login-pwd">密码</label>
+          <input id="login-pwd" class="proto-input" type="password" placeholder="初始密码以交付文档为准" />
+          <div class="err" id="login-err" style="display: none"></div>
+        </div>
+        <button type="button" class="proto-btn proto-btn-primary" id="btn-login" style="width: 100%">登录</button>
+        <p class="pwd-hint">
+          首次登录后建议修改密码（弱口令仅提示不阻止）。<br />
+          忘记密码：长按机身<b>物理复位键</b>恢复默认密码（网络设置不受影响，不失联）。
+        </p>
+      </div>
+    </div>
+
+    <!-- 修改密码 -->
+    <div class="proto-mask" id="pwd-modal" hidden>
+      <div class="proto-modal" role="dialog" style="max-width: 380px">
+        <div class="proto-modal-header"><span>修改密码</span></div>
+        <div class="proto-modal-body">
+          <div class="proto-field" style="margin-bottom: 12px"><label>旧密码</label><input id="pwd-old" class="proto-input" type="password" /></div>
+          <div class="proto-field" style="margin-bottom: 12px"><label>新密码</label><input id="pwd-new" class="proto-input" type="password" placeholder="建议 ≥ 8 位" /></div>
+          <div class="proto-field"><label>确认新密码</label><input id="pwd-new2" class="proto-input" type="password" /></div>
+          <div class="err" id="pwd-err" style="display: none"></div>
+        </div>
+        <div class="proto-modal-footer">
+          <button type="button" class="proto-btn" id="pwd-cancel">取消</button>
+          <button type="button" class="proto-btn proto-btn-primary" id="pwd-ok">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 角色切换确认（三项影响） -->
+    <div class="proto-mask" id="role-modal" hidden>
+      <div class="proto-modal" role="dialog" style="max-width: 420px">
+        <div class="proto-modal-header"><span>切换节点角色</span></div>
+        <div class="proto-modal-body role-effects">
+          切换为「<b id="role-target-name">输入盒</b>」将创建受控任务，并产生以下影响：
+          <ul>
+            <li>平台侧<b>解除该节点的全部格位绑定</b>（节点回到未绑定）</li>
+            <li>若作为输入盒在白名单内，将被<b>移出白名单</b></li>
+            <li>使用其信号的<b>受影响窗口将被关闭</b></li>
+          </ul>
+          <div class="hint">任务按“预检查 → 清理 → 重启 → 校验”执行；平台不可达或预检查失败时不会清理资源与重启。</div>
+        </div>
+        <div class="proto-modal-footer">
+          <button type="button" class="proto-btn" id="role-cancel">取消</button>
+          <button type="button" class="proto-btn proto-btn-primary" id="role-ok">确认切换</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 恢复出厂确认（保留 / 重置 分列） -->
+    <div class="proto-mask" id="factory-modal" hidden>
+      <div class="proto-modal" role="dialog" style="max-width: 460px">
+        <div class="proto-modal-header"><span>恢复出厂</span></div>
+        <div class="proto-modal-body">
+          <div class="keep-reset">
+            <div class="keep"><b>保留项</b>
+              <ul><li>网络设置（IP / 掩码 / 网关 / DNS）</li><li>注册服务器地址</li></ul>
+            </div>
+            <div class="reset"><b>重置项</b>
+              <ul><li>节点角色（回默认：输出盒）</li><li>输入口选择</li><li>输出分辨率与模式</li><li>登录密码（回默认）</li></ul>
+            </div>
+          </div>
+          <div class="hint" style="margin-top: 10px">恢复出厂须重启后完成，期间画面中断约 1 分钟。</div>
+        </div>
+        <div class="proto-modal-footer">
+          <button type="button" class="proto-btn" id="factory-cancel">取消</button>
+          <button type="button" class="proto-btn proto-btn-primary" id="factory-ok">确认恢复出厂</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="../../_shared/proto-shell.js"></script>
+    <script src="../../_shared/hardware-capabilities.js"></script>
+    <!-- Formal: real-api.js is the sole adapter (fetch + session cookie). -->
+    <script src="../../_shared/real-api.js"></script>
+    <script src="node-admin.js"></script>
+  </body>
+</html>

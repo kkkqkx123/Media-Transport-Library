@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <link rel="stylesheet" href="../../vendor/tdesign.min.css" />
+    <link rel="stylesheet" href="../../vendor/iconfont.css" />
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>拼墙设置 · 高清底图 · 示意</title>
+    <link rel="icon" href="../../_shared/favicon.svg" />
+    <link rel="stylesheet" href="../../_shared/theme.css" />
+    <link rel="stylesheet" href="../../_shared/ids-admin.css" />
+    <style>
+      .bind-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--proto-border); margin-bottom: 16px; }
+      .bind-tabs a { padding: 8px 16px; font-size: 14px; color: var(--proto-text-secondary); text-decoration: none; border-bottom: 2px solid transparent; cursor: pointer; }
+      .bind-tabs a.is-active { color: var(--proto-primary); border-bottom-color: var(--proto-primary); font-weight: 600; }
+      .bd-layout { display: flex; flex-direction: column; gap: 24px; }
+      .bd-left, .bd-preview-area { width: 100%; min-width: 0; }
+      .upload-block { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 36px; padding: 0 16px; border: 1px solid var(--proto-border-strong); border-radius: var(--proto-radius-sm); background: #fff; color: var(--proto-text); font: inherit; cursor: pointer; }
+      .upload-block:hover { border-color: var(--proto-primary); color: var(--proto-primary); }
+      .upload-block svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+      .bd-preview { border: 1px solid var(--proto-border); border-radius: var(--proto-radius-sm); overflow: hidden; }
+      .bd-preview img { display: block; width: 100%; }
+      .bd-preview .ph { width: 100%; aspect-ratio: 4 / 2; background: linear-gradient(135deg, #dce9ff 0%, #eef4ff 60%, #f8fafc 100%); display: flex; align-items: center; justify-content: center; color: var(--proto-text-tertiary); font-size: 13px; }
+      .bd-grid-note { position: relative; }
+      .bd-grid-note::after { content: ""; position: absolute; inset: 0; background-image: linear-gradient(to right, rgba(22,119,255,.18) 1px, transparent 1px), linear-gradient(to bottom, rgba(22,119,255,.18) 1px, transparent 1px); background-size: 25% 50%; pointer-events: none; }
+      .upload-notes { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 16px; row-gap: 0; margin-top: 8px; }
+      .upload-notes .note-line { margin: 0; line-height: 22px; }
+      #remove-actions { display: flex; gap: 10px; margin-top: 12px; }
+      #remove-actions[hidden] { display: none; }
+      .bd-preview-area > .panel-title { margin-bottom: 8px !important; }
+      .bd-preview-area > .note-line { margin-top: 16px; line-height: 22px; }
+      .set-footer { display: flex; gap: 8px; justify-content: flex-start; margin-top: 32px; padding-top: 16px; border-top: 1px solid #e7e7e7; }
+    </style>
+      <link rel="stylesheet" href="../../_shared/itc-adapter.css" />
+    <script src="../../_shared/itc-adapter.js" defer></script>
+  </head>
+  <body data-proto-page="wall-backdrop" data-proto-l1="schedule">
+    <div class="proto-shell">
+      <aside class="proto-side">
+        <div class="proto-side-logo"><div class="proto-side-logo-mark">D</div></div>
+        <nav class="proto-side-menu">
+          <a class="proto-side-item" data-page="hub" href="hub.html"><span class="proto-side-icon"></span>目录</a>
+          <a class="proto-side-item" data-page="schedule" href="#"><span class="proto-side-icon"></span>信号调度</a>
+        </nav>
+      </aside>
+      <div class="proto-body">
+        <header class="proto-header">
+          <div class="proto-header-left">
+            <a class="proto-header-brand proto-brand-link" href="hub.html" title="返回原型目录">
+              <span class="proto-brand-logo" aria-hidden="true"></span>
+              <span class="proto-brand-name">分布式视频管理</span>
+            </a>
+            <button type="button" class="proto-fold-sub" id="proto-fold-sub" title="收起二级菜单">☰</button>
+            <nav class="proto-breadcrumb">
+              <a href="hub.html">原型目录</a><span>/</span><a href="group-list.html">分组管理</a><span>/</span><a href="wall-list.html">拼墙列表</a><span>/</span><span class="current">设置 · 高清底图（展厅主屏）</span>
+            </nav>
+          </div>
+          <div class="proto-header-right">
+            <span class="proto-header-meta">示意 · REQ-2026-0003 · PAGE-DVS-007 · 2026-10-19 · 非需求正文</span>
+            <span class="proto-header-user">管理员</span>
+          </div>
+        </header>
+        <main class="proto-main">
+          <aside class="proto-side-sub">
+            <div class="proto-side-sub-group is-open">
+              <button type="button" class="proto-side-sub-parent">
+                <span class="proto-menu-ico"></span><span class="proto-menu-label">信号调度</span><span class="proto-menu-caret">▾</span>
+              </button>
+              <div class="proto-side-sub-children">
+                <a data-page="list" href="group-list.html">分组管理</a>
+                <a data-page="wall-list" href="wall-list.html">拼墙管理</a>
+                <a data-page="screen-schedule" href="screen-schedule.html">画面调度</a>
+              </div>
+            </div>
+            <div class="proto-side-sub-group">
+              <button type="button" class="proto-side-sub-parent">
+                <span class="proto-menu-ico"></span><span class="proto-menu-label">设备管理</span><span class="proto-menu-caret">▾</span>
+              </button>
+              <div class="proto-side-sub-children">
+                <a data-page="device-list" href="device-list.html">设备列表</a>
+              </div>
+            </div>
+          </aside>
+          <div class="proto-content">
+            <section class="proto-card">
+              <div class="wall-settings-heading">
+                <a class="proto-back-icon wall-settings-back" data-nav href="wall-list.html" aria-label="返回拼墙管理" title="返回拼墙管理"><i class="t-icon t-icon-chevron-left" aria-hidden="true"></i></a>
+                <h1 class="wall-settings-title"></h1>
+              </div>
+              <div class="bind-tabs" id="tabs">
+                <a data-nav href="wall-basic.html">基本设置</a>
+                <a data-nav href="port-bind.html">端口绑定</a>
+                <a data-nav href="wall-image.html">图像调节</a>
+                <a data-nav href="wall-transfer.html">传输配置</a>
+                <a class="is-active">高清底图</a>
+              </div>
+              <div class="bd-layout">
+                <div class="bd-left">
+                  <button type="button" class="upload-block" id="upload-block">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V3m0 0L7 8m5-5 5 5M4 16v4h16v-4" /></svg>
+                    <span id="upload-label">上传文件</span>
+                  </button>
+                  <input type="file" id="file-input" accept="image/jpeg,image/png" hidden />
+                  <div class="upload-notes">
+                    <p class="note-line">支持 JPG / PNG，单张图片不超过 10MB</p>
+                    <p class="note-line" id="file-note">当前未配置底图：清屏后画面为空态。</p>
+                  </div>
+                  <div id="remove-actions" hidden>
+                    <button type="button" class="proto-btn" id="btn-remove" style="display: none; color: var(--proto-danger)">移除</button>
+                  </div>
+                </div>
+                <div class="bd-preview-area">
+                  <p class="panel-title" style="font-size: 13px; font-weight: 600; margin: 0 0 10px">底图预览（整墙 2×4 铺满示意）</p>
+                  <div class="bd-preview bd-grid-note" id="preview">
+                    <div class="ph">底图预览（上传后按整墙铺满，跨格拼接）</div>
+                  </div>
+                  <p class="note-line">
+                    底图按整墙铺满（跨格拼接、不做逐格重复），显示在最底层、被窗口覆盖；清屏后重新显示底图；
+                    底图不进场景快照（不属于场景内容）。移除正显示中的底图须二次确认。
+                  </p>
+                </div>
+              </div>
+              <div class="set-footer">
+                <button type="button" class="proto-btn" id="btn-cancel">取消</button>
+                <button type="button" class="proto-btn proto-btn-primary" id="btn-save">保存</button>
+              </div>
+            </section>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <div class="proto-mask" id="unsaved-modal" hidden>
+      <div class="proto-modal" role="dialog" style="max-width: 380px">
+        <div class="proto-modal-header"><span>未保存改动</span></div>
+        <div class="proto-modal-body">底图有未保存的改动。保存后立即下发并即时生效。</div>
+        <div class="proto-modal-footer">
+          <button type="button" class="proto-btn" id="unsaved-cancel">取消（停留）</button>
+          <button type="button" class="proto-btn" id="unsaved-drop">放弃改动</button>
+          <button type="button" class="proto-btn proto-btn-primary" id="unsaved-save">保存并生效</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="../../_shared/proto-shell.js"></script>
+    <script src="../../_shared/platform-store.js"></script>
+    <script>
+      (function () {
+        var store = window.DvsPlatformStore;
+        var requestedWallId = new URLSearchParams(window.location.search).get("wallId");
+        if (requestedWallId && store.getWall(requestedWallId)) store.setCurrentWall(requestedWallId);
+        var wall = requestedWallId ? store.getWall(requestedWallId) : store.getCurrentWall();
+        if (!wall) { window.location.href = "wall-list.html"; return; }
+        var dirty = false;
+        var navTarget = null;
+        var hasImage = false;
+        var pendingFile = null;
+        function $(id) { return document.getElementById(id); }
+        function markDirty() { dirty = true; }
+        function backdropDb() {
+          return new Promise(function (resolve, reject) {
+            var request = indexedDB.open("dvs.platform.images.v1", 1);
+            request.onupgradeneeded = function () { request.result.createObjectStore("backdrops"); };
+            request.onsuccess = function () { resolve(request.result); };
+            request.onerror = function () { reject(request.error || new Error("底图存储不可用")); };
+          });
+        }
+        async function imageRecord(action, value) {
+          var db = await backdropDb();
+          return new Promise(function (resolve, reject) {
+            var tx = db.transaction("backdrops", action === "get" ? "readonly" : "readwrite");
+            var store = tx.objectStore("backdrops");
+            var request = action === "put" ? store.put(value, wall.id) : action === "delete" ? store.delete(wall.id) : store.get(wall.id);
+            var result;
+            request.onsuccess = function () { result = request.result; };
+            tx.oncomplete = function () { db.close(); resolve(result); };
+            tx.onabort = tx.onerror = function () { db.close(); reject(tx.error || request.error || new Error("底图存储失败")); };
+          });
+        }
+
+        function showImage(src) {
+          $("preview").innerHTML = "";
+          if (src) {
+            var img = document.createElement("img");
+            img.src = src;
+            img.alt = "底图预览";
+            $("preview").appendChild(img);
+          } else {
+            var empty = document.createElement("div");
+            empty.className = "ph";
+            empty.textContent = "底图预览（上传后按整墙铺满，跨格拼接）";
+            $("preview").appendChild(empty);
+          }
+        }
+        async function loadSaved() {
+          wall = store.getWall(wall.id);
+          pendingFile = wall.backdrop ? { name: wall.backdrop.name, savedMeta: wall.backdrop, src: wall.backdrop.dataUrl || wall.backdrop.src || null } : null;
+          if (pendingFile && wall.backdrop.storageKey) {
+            try {
+              var blob = await imageRecord("get");
+              pendingFile.src = blob ? URL.createObjectURL(blob) : null;
+            } catch (error) { pendingFile.src = null; protoToast(error.message || "底图读取失败"); }
+          }
+          hasImage = !!(pendingFile && pendingFile.src);
+          showImage(pendingFile && pendingFile.src);
+          syncButtons();
+          dirty = false;
+        }
+
+        $("upload-block").onclick = function () { $("file-input").click(); };
+        $("file-input").addEventListener("change", function () {
+          var f = this.files && this.files[0];
+          this.value = "";
+          if (!f) return;
+          if (!/image\/(jpeg|png)/.test(f.type)) { protoToast("格式不支持：仅 JPG / PNG"); return; }
+          if (f.size > 10 * 1024 * 1024) { protoToast("超出大小限制：≤ 10MB"); return; }
+          var src = URL.createObjectURL(f);
+          var probe = new Image();
+          probe.onload = function () {
+            pendingFile = { name: f.name, blob: f, size: f.size, type: f.type, src: src };
+            showImage(src);
+            hasImage = true;
+            syncButtons();
+            markDirty();
+            protoToast("已读取「" + f.name + "」（保存后生效）");
+          };
+          probe.onerror = function () { URL.revokeObjectURL(src); protoToast("图片内容无法读取，请选择有效的 JPG / PNG 文件"); };
+          probe.src = src;
+        });
+
+        function syncButtons() {
+          $("btn-remove").style.display = hasImage ? "" : "none";
+          $("remove-actions").hidden = !hasImage;
+          $("upload-label").textContent = hasImage ? "更换文件" : "上传文件";
+          $("file-note").textContent = hasImage
+            ? "当前底图：「" + (pendingFile ? pendingFile.name : "展馆主视觉.jpg") + "」；保存后按整墙铺满下发。"
+            : "当前未配置底图：清屏后画面为空态。";
+        }
+
+        $("btn-remove").onclick = function () {
+          protoConfirm({
+            title: "移除底图",
+            content: "该墙当前正在显示底图，移除后画面回到空态。确认移除？",
+            onOk: function () {
+              hasImage = false;
+              pendingFile = null;
+              showImage(null);
+              syncButtons();
+              markDirty();
+              protoToast("已移除（保存后生效）");
+            }
+          });
+        };
+
+        function doSave(done) {
+          var btn = $("btn-save");
+          btn.disabled = true;
+          setTimeout(async function () {
+            try {
+              var backdrop = null;
+              if (hasImage) {
+                if (pendingFile.blob) {
+                  await imageRecord("put", pendingFile.blob);
+                  backdrop = { name: pendingFile.name, storageKey: wall.id, size: pendingFile.size, type: pendingFile.type };
+                } else backdrop = pendingFile.savedMeta;
+              } else await imageRecord("delete");
+              wall = store.updateWall(wall.id, { backdrop: backdrop });
+              if (pendingFile) { pendingFile.savedMeta = backdrop; pendingFile.blob = null; }
+              dirty = false;
+              protoToast("保存成功，底图已按整墙铺满应用（最底层，被窗口覆盖）");
+              if (done) done();
+            } catch (error) { protoToast(error.message || "保存失败"); }
+            finally { btn.disabled = false; }
+          }, 300);
+        }
+        $("btn-save").onclick = function () { doSave(); };
+        $("btn-cancel").onclick = function () {
+          loadSaved();
+          protoToast("已取消，底图保持已保存状态");
+        };
+
+        document.querySelectorAll(".wall-settings-back[data-nav], #tabs a[data-nav]").forEach(function (a) {
+          a.addEventListener("click", function (e) {
+            e.preventDefault();
+            navTarget = a.classList.contains("wall-settings-back")
+              ? "wall-list.html?groupId=" + encodeURIComponent(wall.groupId)
+              : a.getAttribute("href") + "?wallId=" + encodeURIComponent(wall.id);
+            if (!dirty) { window.location.href = navTarget; return; }
+            $("unsaved-modal").hidden = false;
+            $("unsaved-modal").classList.add("is-open");
+          });
+        });
+        function closeModal() {
+          $("unsaved-modal").classList.remove("is-open");
+          $("unsaved-modal").hidden = true;
+          navTarget = null;
+        }
+        $("unsaved-cancel").onclick = closeModal;
+        $("unsaved-drop").onclick = function () { var t = navTarget; dirty = false; closeModal(); if (t) window.location.href = t; };
+        $("unsaved-save").onclick = function () { var t = navTarget; doSave(function () { if (t) window.location.href = t; }); };
+
+        var breadcrumb = document.querySelector(".proto-breadcrumb .current");
+        if (breadcrumb) breadcrumb.textContent = "设置 · 高清底图（" + wall.name + "）";
+        var wallTitle = document.querySelector(".wall-settings-title");
+        if (wallTitle) wallTitle.textContent = wall.name;
+        var previewTitle = document.querySelector(".panel-title");
+        if (previewTitle) previewTitle.textContent = "底图预览（整墙 " + wall.rows + "×" + wall.cols + " 铺满）";
+        loadSaved();
+      })();
+    </script>
+  </body>
+</html>

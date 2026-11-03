@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <link rel="stylesheet" href="../../vendor/tdesign.min.css" />
+    <link rel="stylesheet" href="../../vendor/iconfont.css" />
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>拼墙设置 · 传输配置 · 示意</title>
+    <link rel="icon" href="../../_shared/favicon.svg" />
+    <link rel="stylesheet" href="../../_shared/theme.css" />
+    <link rel="stylesheet" href="../../_shared/ids-admin.css" />
+    <style>
+      .bind-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--proto-border); margin-bottom: 16px; }
+      .bind-tabs a { padding: 8px 16px; font-size: 14px; color: var(--proto-text-secondary); text-decoration: none; border-bottom: 2px solid transparent; cursor: pointer; }
+      .bind-tabs a.is-active { color: var(--proto-primary); border-bottom-color: var(--proto-primary); font-weight: 600; }
+      .proto-filter .proto-input { width: 200px; }
+      .dev-opt { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--proto-border); border-radius: 6px; margin-bottom: 8px; }
+      .dev-opt .nm { flex: 1; font-size: 13px; }
+      .dev-opt .meta { font-size: 12px; color: var(--proto-text-secondary); }
+      .set-footer { display: flex; gap: 8px; justify-content: flex-start; margin-top: 32px; padding-top: 16px; border-top: 1px solid #e7e7e7; }
+    </style>
+      <link rel="stylesheet" href="../../_shared/itc-adapter.css" />
+    <script src="../../_shared/itc-adapter.js" defer></script>
+  </head>
+  <body data-proto-page="wall-transfer" data-proto-l1="schedule">
+    <div class="proto-shell">
+      <aside class="proto-side">
+        <div class="proto-side-logo"><div class="proto-side-logo-mark">D</div></div>
+        <nav class="proto-side-menu">
+          <a class="proto-side-item" data-page="hub" href="hub.html"><span class="proto-side-icon"></span>目录</a>
+          <a class="proto-side-item" data-page="schedule" href="#"><span class="proto-side-icon"></span>信号调度</a>
+        </nav>
+      </aside>
+      <div class="proto-body">
+        <header class="proto-header">
+          <div class="proto-header-left">
+            <a class="proto-header-brand proto-brand-link" href="hub.html" title="返回原型目录">
+              <span class="proto-brand-logo" aria-hidden="true"></span>
+              <span class="proto-brand-name">分布式视频管理</span>
+            </a>
+            <button type="button" class="proto-fold-sub" id="proto-fold-sub" title="收起二级菜单">☰</button>
+            <nav class="proto-breadcrumb">
+              <a href="hub.html">原型目录</a><span>/</span><a href="group-list.html">分组管理</a><span>/</span><a href="wall-list.html">拼墙列表</a><span>/</span><span class="current">设置 · 传输配置（展厅主屏）</span>
+            </nav>
+          </div>
+          <div class="proto-header-right">
+            <span class="proto-header-meta">示意 · REQ-2026-0003 · PAGE-DVS-006 · 2026-10-19 · 非需求正文</span>
+            <span class="proto-header-user">管理员</span>
+          </div>
+        </header>
+        <main class="proto-main">
+          <aside class="proto-side-sub">
+            <div class="proto-side-sub-group is-open">
+              <button type="button" class="proto-side-sub-parent">
+                <span class="proto-menu-ico"></span><span class="proto-menu-label">信号调度</span><span class="proto-menu-caret">▾</span>
+              </button>
+              <div class="proto-side-sub-children">
+                <a data-page="list" href="group-list.html">分组管理</a>
+                <a data-page="wall-list" href="wall-list.html">拼墙管理</a>
+                <a data-page="screen-schedule" href="screen-schedule.html">画面调度</a>
+              </div>
+            </div>
+            <div class="proto-side-sub-group">
+              <button type="button" class="proto-side-sub-parent">
+                <span class="proto-menu-ico"></span><span class="proto-menu-label">设备管理</span><span class="proto-menu-caret">▾</span>
+              </button>
+              <div class="proto-side-sub-children">
+                <a data-page="device-list" href="device-list.html">设备列表</a>
+              </div>
+            </div>
+          </aside>
+          <div class="proto-content">
+            <section class="proto-card">
+              <div class="wall-settings-heading">
+                <a class="proto-back-icon wall-settings-back" data-nav href="wall-list.html" aria-label="返回拼墙管理" title="返回拼墙管理"><i class="t-icon t-icon-chevron-left" aria-hidden="true"></i></a>
+                <h1 class="wall-settings-title"></h1>
+              </div>
+              <div class="bind-tabs" id="tabs">
+                <a data-nav href="wall-basic.html">基本设置</a>
+                <a data-nav href="port-bind.html">端口绑定</a>
+                <a data-nav href="wall-image.html">图像调节</a>
+                <a class="is-active">传输配置</a>
+                <a data-nav href="wall-backdrop.html">高清底图</a>
+              </div>
+              <div class="proto-filter">
+                <div class="proto-field">
+                  <label for="kw">搜索</label>
+                  <input id="kw" class="proto-input" type="text" maxlength="20" placeholder="按别名 / IP 搜索" />
+                </div>
+                <button type="button" class="proto-btn" id="btn-reset">重置</button>
+              </div>
+              <div class="proto-toolbar">
+                <div class="proto-toolbar-left">
+                  <button type="button" class="proto-btn proto-btn-primary" id="btn-add"><i class="t-icon t-icon-add-circle" aria-hidden="true"></i>添加输入盒</button>
+                  <button type="button" class="proto-btn" id="btn-batch-remove">批量移除</button>
+                </div>
+              </div>
+              <div class="proto-table-wrap">
+                <table class="proto-table" id="wl-table">
+                  <thead>
+                    <tr>
+                      <th class="col-check"><input type="checkbox" id="chk-all" /></th>
+                      <th class="col-name">设备别名</th>
+                      <th class="col-text">IP</th>
+                      <th class="col-status">传输方式</th>
+                      <th class="ops col-ops">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="wl-tbody"></tbody>
+                </table>
+                <div class="proto-empty" id="wl-empty" style="display: none">请添加输入盒，否则本墙无可用信号（新建拼墙白名单默认为空）</div>
+              </div>
+              <div class="set-footer">
+                <button type="button" class="proto-btn" id="btn-cancel">取消</button>
+                <button type="button" class="proto-btn proto-btn-primary" id="btn-save">保存</button>
+              </div>
+            </section>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <div class="proto-mask" id="add-modal" hidden>
+      <div class="proto-modal" role="dialog" style="max-width: 420px">
+        <div class="proto-modal-header"><span>添加输入盒（可多选）</span></div>
+        <div class="proto-modal-body" id="add-body"></div>
+        <div class="proto-modal-footer">
+          <button type="button" class="proto-btn" id="add-cancel">取消</button>
+          <button type="button" class="proto-btn proto-btn-primary" id="add-ok"><i class="t-icon t-icon-add-circle" aria-hidden="true"></i>添加</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="proto-mask" id="unsaved-modal" hidden>
+      <div class="proto-modal" role="dialog" style="max-width: 380px">
+        <div class="proto-modal-header"><span>未保存改动</span></div>
+        <div class="proto-modal-body">当前白名单有未保存改动。保存后立即下发并即时生效。</div>
+        <div class="proto-modal-footer">
+          <button type="button" class="proto-btn" id="unsaved-cancel">取消（停留）</button>
+          <button type="button" class="proto-btn" id="unsaved-drop">放弃改动</button>
+          <button type="button" class="proto-btn proto-btn-primary" id="unsaved-save">保存并生效</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="../../_shared/proto-shell.js"></script>
+    <script src="../../_shared/node-state.js"></script>
+    <script src="../../_shared/platform-store.js"></script>
+    <script>
+      (function () {
+        var store = window.DvsPlatformStore;
+        var requestedWallId = new URLSearchParams(window.location.search).get("wallId");
+        if (requestedWallId && store.getWall(requestedWallId)) store.setCurrentWall(requestedWallId);
+        var wall = requestedWallId ? store.getWall(requestedWallId) : store.getCurrentWall();
+        if (!wall) { window.location.href = "wall-list.html"; return; }
+        var dirty = false;
+        var navTarget = null;
+        var keyword = "";
+        var signalByDevice = { e1: "s1", e2: "s2", m1: "s3", t3: "s4", p1: "s5" };
+        var catalog = window.DvsNodeState.list().filter(function (node) {
+          return (node.role === "input" || node.type === "input") && node.lifecycle === "active";
+        }).map(function (node) { return { id: node.id, name: node.name, ip: node.ip }; });
+        var activeIds = catalog.map(function (node) { return node.id; });
+        var whitelist = JSON.parse(JSON.stringify(wall.whitelist || []));
+        whitelist.forEach(function (device) {
+          var registered = catalog.find(function (known) { return known.id === device.id; });
+          if (registered) { device.name = registered.name; device.ip = registered.ip; }
+          else catalog.push({ id: device.id, name: device.name, ip: device.ip });
+        });
+        function useCount(device) {
+          var signal = signalByDevice[device.id] || device.id;
+          return ((store.getWall(wall.id) || wall).windows || []).filter(function (win) {
+            return win.sig === signal || win.sig === device.id || win.sourceId === device.id;
+          }).length;
+        }
+        whitelist.forEach(function (device) { device.inUse = useCount(device); });
+        var savedWhitelist = JSON.parse(JSON.stringify(whitelist));
+
+        function $(id) { return document.getElementById(id); }
+        function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+        function markDirty() { dirty = true; }
+
+        function filtered() {
+          var k = keyword.trim();
+          if (!k) return whitelist.slice();
+          return whitelist.filter(function (d) { return d.name.indexOf(k) >= 0 || d.ip.indexOf(k) >= 0; });
+        }
+
+        function render() {
+          whitelist.forEach(function (device) { device.inUse = useCount(device); });
+          var list = filtered();
+          $("wl-empty").style.display = list.length ? "none" : "block";
+          $("wl-table").style.display = list.length ? "table" : "none";
+          $("wl-tbody").innerHTML = list.map(function (d) {
+            return (
+              "<tr>" +
+              '<td class="col-check"><input type="checkbox" class="chk-row" data-name="' + esc(d.name) + '" /></td>' +
+              '<td class="col-name">' + esc(d.name) + (d.inUse ? ' <span style="font-size:12px;color:var(--td-warning-color)">' + d.inUse + " 窗口在用</span>" : "") + "</td>" +
+              '<td class="col-text">' + d.ip + "</td>" +
+              '<td class="col-status"><select class="proto-select sel-trans" data-name="' + esc(d.name) + '" style="width: 90px; height: 30px">' +
+              '<option' + (d.transMode === "单播" ? " selected" : "") + '>单播</option><option' + (d.transMode === "组播" ? " selected" : "") + ">组播</option></select></td>" +
+              '<td class="ops col-ops"><button type="button" class="link btn-remove" data-name="' + esc(d.name) + '">移除</button></td>' +
+              "</tr>"
+            );
+          }).join("");
+          $("chk-all").checked = false;
+          document.querySelectorAll(".sel-trans").forEach(function (sel) {
+            sel.addEventListener("change", function () {
+              var d = whitelist.find(function (x) { return x.name === sel.getAttribute("data-name"); });
+              if (d) d.transMode = sel.value;
+              markDirty();
+            });
+          });
+          document.querySelectorAll(".btn-remove").forEach(function (btn) {
+            btn.addEventListener("click", function () { removeDevices([btn.getAttribute("data-name")]); });
+          });
+          document.querySelectorAll(".chk-row").forEach(function (c) {
+            c.addEventListener("change", syncBatchBtn);
+          });
+          syncBatchBtn();
+        }
+        function syncBatchBtn() {
+          $("btn-batch-remove").disabled = !document.querySelector(".chk-row:checked");
+        }
+        $("chk-all").addEventListener("change", function () {
+          document.querySelectorAll(".chk-row").forEach(function (c) { c.checked = $("chk-all").checked; });
+          syncBatchBtn();
+        });
+        $("btn-batch-remove").onclick = function () {
+          var names = Array.prototype.map.call(document.querySelectorAll(".chk-row:checked"), function (c) { return c.getAttribute("data-name"); });
+          if (names.length) removeDevices(names);
+        };
+
+        function removeDevices(names) {
+          var affected = 0;
+          names.forEach(function (n) {
+            var d = whitelist.find(function (x) { return x.name === n; });
+            if (d) affected += d.inUse;
+          });
+          var content = affected > 0
+            ? "将移除 " + names.length + " 个输入盒，并关闭 " + affected + " 个正在使用其信号的窗口。确认移除？"
+            : "确认移除 " + names.length + " 个输入盒？移除后其信号在本墙不可选。";
+          protoConfirm({
+            title: "移除确认",
+            content: content,
+            onOk: function () {
+              whitelist = whitelist.filter(function (d) { return names.indexOf(d.name) < 0; });
+              markDirty();
+              protoToast(affected > 0 ? "已移除，保存后受影响窗口将一并关闭" : "已移除（保存后下发）");
+              render();
+            }
+          });
+        }
+
+        /* 添加弹窗 */
+        function openAdd() {
+          var candidates = catalog.filter(function (device) {
+            return activeIds.indexOf(device.id) >= 0 && !whitelist.some(function (included) { return included.id === device.id; });
+          });
+          $("add-body").innerHTML = candidates.map(function (d) {
+            return (
+              '<div class="dev-opt">' +
+              '<input type="checkbox" data-id="' + esc(d.id) + '" />' +
+              '<span class="nm">' + esc(d.name) + '<span class="meta">（' + d.ip + "）</span></span>" +
+              '<select class="proto-select add-trans" data-id="' + esc(d.id) + '" style="width: 90px; height: 30px"><option>单播</option><option>组播</option></select>' +
+              "</div>"
+            );
+          }).join("") || '<div class="proto-empty">平台已注册输入盒均已在本墙白名单内</div>';
+          $("add-modal").hidden = false;
+          $("add-modal").classList.add("is-open");
+        }
+        $("btn-add").onclick = openAdd;
+        $("add-cancel").onclick = function () {
+          $("add-modal").classList.remove("is-open");
+          $("add-modal").hidden = true;
+        };
+        $("add-ok").onclick = function () {
+          var picked = Array.prototype.filter.call(document.querySelectorAll('#add-body input[type="checkbox"]'), function (c) { return c.checked; });
+          if (!picked.length) { protoToast("请先勾选要添加的输入盒"); return; }
+          picked.forEach(function (c) {
+            var id = c.getAttribute("data-id");
+            var cd = catalog.find(function (x) { return x.id === id; });
+            var sel = document.querySelector('.add-trans[data-id="' + id + '"]');
+            whitelist.push({ id: id, name: cd.name, ip: cd.ip, transMode: sel ? sel.value : "单播", inUse: useCount(cd) });
+          });
+          $("add-cancel").click();
+          markDirty();
+          protoToast("已添加（保存后下发；其信号将出现在画面页信号源面板）");
+          render();
+        };
+
+        $("kw").addEventListener("keydown", function (e) {
+          if (e.key === "Enter") { keyword = $("kw").value || ""; render(); }
+        });
+        $("btn-reset").onclick = function () { $("kw").value = ""; keyword = ""; render(); };
+        function doSave(done) {
+          var btn = $("btn-save");
+          btn.disabled = true;
+          setTimeout(function () {
+            btn.disabled = false;
+            try {
+              if (whitelist.some(function (device) {
+                var node = window.DvsNodeState.get(device.id);
+                return !node || node.lifecycle !== "active" || node.type !== "input";
+              })) throw new Error("白名单中的设备已退役或不可用，请刷新后重试");
+              var kept = whitelist.map(function (device) { return device.id; });
+              var removedIds = savedWhitelist.filter(function (device) { return kept.indexOf(device.id) < 0; }).map(function (device) { return device.id; });
+              var removedSignals = removedIds.map(function (id) { return signalByDevice[id] || id; });
+              var latestWall = store.getWall(wall.id);
+              wall = store.updateWall(wall.id, {
+                whitelist: whitelist.map(function (device) {
+                  var registered = window.DvsNodeState.get(device.id);
+                  return { id: device.id, name: registered ? registered.name : device.name, ip: registered ? registered.ip : device.ip, transMode: device.transMode };
+                }),
+                windows: (latestWall.windows || []).filter(function (win) {
+                  return removedSignals.indexOf(win.sig) < 0 && removedIds.indexOf(win.sig) < 0 && removedIds.indexOf(win.sourceId) < 0;
+                }),
+                scenes: (latestWall.scenes || []).map(function (scene) {
+                  return Object.assign({}, scene, { layout: (scene.layout || []).filter(function (item) {
+                    return removedSignals.indexOf(item.sig) < 0 && removedIds.indexOf(item.sig) < 0 && removedIds.indexOf(item.sourceId) < 0;
+                  }) });
+                })
+              });
+              whitelist = JSON.parse(JSON.stringify(wall.whitelist));
+              whitelist.forEach(function (device) { device.inUse = useCount(device); });
+              savedWhitelist = JSON.parse(JSON.stringify(whitelist));
+              dirty = false;
+              render();
+              protoToast("保存成功，白名单已下发");
+              if (done) done();
+            } catch (error) { protoToast(error.message || "保存失败"); }
+          }, 300);
+        }
+        $("btn-save").onclick = function () { doSave(); };
+        $("btn-cancel").onclick = function () {
+          whitelist = JSON.parse(JSON.stringify(savedWhitelist));
+          dirty = false;
+          render();
+          protoToast("已取消，白名单保持已保存值");
+        };
+
+        document.querySelectorAll(".wall-settings-back[data-nav], #tabs a[data-nav]").forEach(function (a) {
+          a.addEventListener("click", function (e) {
+            e.preventDefault();
+            navTarget = a.classList.contains("wall-settings-back")
+              ? "wall-list.html?groupId=" + encodeURIComponent(wall.groupId)
+              : a.getAttribute("href") + "?wallId=" + encodeURIComponent(wall.id);
+            if (!dirty) { window.location.href = navTarget; return; }
+            $("unsaved-modal").hidden = false;
+            $("unsaved-modal").classList.add("is-open");
+          });
+        });
+        function closeModal() {
+          $("unsaved-modal").classList.remove("is-open");
+          $("unsaved-modal").hidden = true;
+          navTarget = null;
+        }
+        $("unsaved-cancel").onclick = closeModal;
+        $("unsaved-drop").onclick = function () { var t = navTarget; dirty = false; closeModal(); if (t) window.location.href = t; };
+        $("unsaved-save").onclick = function () { var t = navTarget; doSave(function () { if (t) window.location.href = t; }); };
+
+        var breadcrumb = document.querySelector(".proto-breadcrumb .current");
+        if (breadcrumb) breadcrumb.textContent = "设置 · 传输配置（" + wall.name + "）";
+        var wallTitle = document.querySelector(".wall-settings-title");
+        if (wallTitle) wallTitle.textContent = wall.name;
+        render();
+      })();
+    </script>
+  </body>
+</html>

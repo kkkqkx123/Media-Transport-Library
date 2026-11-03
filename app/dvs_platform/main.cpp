@@ -8,6 +8,10 @@
 #include <ctime>
 #include <string>
 #include <unistd.h>
+#include <fstream>
+#include <sstream>
+#include <sys/stat.h>
+static std::string g_web_root;
 
 #include "http_client.h"
 #include "http_server.h"
@@ -300,9 +304,30 @@ int main(int argc, char** argv) {
                                "whitelist", "playback-tasks"};
         for (auto k : kinds)
             if (route_docs(k, req, res)) return;
+        // static files
+        if (req.method == "GET") {
+            std::string path = req.path;
+            if (path == "/" || path.empty()) path = "/index.html";
+            std::string full = g_web_root + path;
+            struct stat st;
+            if (stat(full.c_str(), &st) == 0 && S_ISREG(st.st_mode)) {
+                std::ifstream f(full, std::ios::binary);
+                std::ostringstream ss; ss << f.rdbuf();
+                res.status = 200;
+                res.body = ss.str();
+                // guess content type
+                if (full.find(".html") != std::string::npos) res.content_type = "text/html; charset=utf-8";
+                else if (full.find(".css") != std::string::npos) res.content_type = "text/css; charset=utf-8";
+                else if (full.find(".js") != std::string::npos) res.content_type = "text/javascript; charset=utf-8";
+                else if (full.find(".svg") != std::string::npos) res.content_type = "image/svg+xml";
+                else res.content_type = "application/octet-stream";
+                return;
+            }
+        }
         send_json(res, fail_envelope("NOT_FOUND", 404, "unknown api"));
     };
 
+    if (g_web_root.empty()) g_web_root = "/data/kkkqkx/mtl/app/dvs_platform/web/src";
     HttpServer server(port, h);
     server.start();
     printf("dvs-platform listening on 0.0.0.0:%d\n", port);

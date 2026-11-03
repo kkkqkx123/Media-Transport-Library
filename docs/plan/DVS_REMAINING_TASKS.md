@@ -29,7 +29,7 @@
 | T4 | 实现 `session_mgr`/`layout_executor`（两段式 prepare/commit + 影子回滚）/`audio_arbiter`，由 `rx_compositor` 演进 | S1 | P0 | 需 RK3588 |
 | T5 | S0 文档回写：`AGENTS.md` + `docs/app/README.md` 共享代码节 | S0 | P1 | 文档（x86 可审） |
 | T6 | `dvs_agent` 登录态严格化（env 门控）+ 改密接口用户参数化 | S2 | P2 | **x86 可构建+单测** |
-| T7 | S3 平台服务 `platform/` + video-control-platform 接入 | S3 | P3 | x86（Python） |
+| T7 | S3 平台服务 `platform/` + video-control-platform 接入 | S3 | P3 | x86（C++17） |
 | T8 | S4 跨节点 prepare/commit + `apply_at` 帧对齐 + 回滚 + 跨格 | S4 | P3 | 需多 RK3588 |
 | T9 | S5 退役/墓碑/批量升级/压测/三处文档回写 | S5 | P3 | 需多 RK3588 |
 
@@ -107,7 +107,7 @@
 
 ### T7 / T8 / T9 — S3/S4/S5（P3）
 
-按 `DVS_FRONTEND_INTEGRATION_PLAN.md` 既有细化为准，新增 `platform/` 顶层工程（Python FastAPI）、跨节点 operation 框架、`apply_at` 帧对齐、退役/墓碑/批量升级/压测。本阶段仅规划，不在本次执行范围。
+按 `DVS_FRONTEND_INTEGRATION_PLAN.md` 既有细化为准，新增 `platform/` 顶层工程（C++17）、跨节点 operation 框架、`apply_at` 帧对齐、退役/墓碑/批量升级/压测。本阶段仅规划，不在本次执行范围。
 
 ---
 
@@ -121,7 +121,7 @@
 | T4 引擎三模块 | 否 | 是 |
 | T5 文档回写 | 是（评审） | — |
 | T6 agent 登录/改密 | **是（构建+单测）** | — |
-| T7/T8/T9 | S7 部分(x86 Python) | S8/S9 需硬件 |
+| T7/T8/T9 | S7 部分(x86 C++17) | S8/S9 需硬件 |
 
 ---
 

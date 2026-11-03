@@ -117,7 +117,7 @@ mp4_dist 是第二代实现,`shared/` 已是事实上的公共库;以它为底�
 
 ### 4.3 节点代理(dvs-agent)与 node-device-admin 原型落地
 
-- 新建 `app/dvs_agent/`(可 Python/C++,建议 Python 原型验证 + 最终 C/Go)。职责:本地 HTTP(`/api/v1/node/*`,托管 node-admin 前端静态文件)、配置状态机(六 scope,desired/applied revision,`configStates`)、注册/心跳(3s,携能力+媒体统计+PTP)、维护操作(重启/恢复出厂/升级校验)。
+- 新建 `app/dvs_agent/`(C++17)。职责:本地 HTTP(`/api/v1/node/*`,托管 node-admin 前端静态文件)、配置状态机(六 scope,desired/applied revision,`configStates`)、注册/心跳(3s,携能力+媒体统计+PTP)、维护操作(重启/恢复出厂/升级校验)。
 - 原型改造量小:node-admin 页面本身不依赖 mock 之外的框架,把 `mock-api.js` 替换为真实 fetch(或保留 mock 文件名做薄适配层),数据源从 localStorage 的 `DvsNodeState` 换成本地 API。
 - 代理到媒体引擎:仅通过 IPC(configure/prepare/commit/…),不直接碰 MTL。
 
@@ -154,7 +154,7 @@ mp4_dist 是第二代实现,`shared/` 已是事实上的公共库;以它为底�
 | --- | --- | --- |
 | 场景快照坐标 | 格位快照(原型)/整墙像素(req 06) | 存储像素、前端编辑用格位换算 |
 | dvs-media 语言/IPC | C + Unix socket JSON(req 04 建议) | 采纳;后续可换 protobuf |
-| dvs-agent 语言 | Python(快)/Go/C | 原型期 Python,产品化评审再定 |
+| dvs-agent 语言 | C++17 | 与平台服务统一语言,避免第二运行时 |
 | dvs-media 是否并入 MTL 顶层构建 | 独立 meson(现状)/并入 | 维持独立,避免 DPDK 探测复杂化 |
 
 ---

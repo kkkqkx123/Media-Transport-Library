@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <link rel="stylesheet" href="../../vendor/tdesign.min.css" />
+    <link rel="stylesheet" href="../../vendor/iconfont.css" />
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>设备列表 · 示意</title>
+    <link rel="icon" href="../../_shared/favicon.svg" />
+    <link rel="stylesheet" href="../../_shared/theme.css" />
+    <link rel="stylesheet" href="../../_shared/ids-admin.css" />
+    <style>
+      .dev-table th, .dev-table td { font-size: 13px; }
+      .tag-on { color: #16a34a; } .tag-off { color: #ea580c; }
+      .dev-filter { display: flex; align-items: center; gap: 16px; position: relative; }
+      .dev-filter .proto-field { min-width: 0; flex: 0 0 auto; }
+      .dev-filter .proto-field > label { white-space: nowrap; }
+      .itc-platform[data-itc-page="device-list"] .dev-filter .proto-select,
+.itc-platform[data-itc-page="device-list"] .dev-filter .proto-input { width: 200px; max-width: 100%; flex: 0 1 200px; min-width: 0; }
+      .dev-filter-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+      .itc-platform .dev-filter .dev-filter-more { border-color: #0052d9; background: #fff; color: #0052d9; }
+      .itc-platform .dev-filter .dev-filter-more:hover { background: #f2f3ff; }
+      .dev-filter-more .t-icon { margin-left: 8px; font-size: 16px; vertical-align: -2px; }
+      .dev-filter-more[aria-expanded="true"] .t-icon { transform: rotate(180deg); }
+      .dev-filter-more[hidden] { display: none !important; }
+      .dev-extra-filters { flex: 0 0 100%; }
+      .dev-extra-filters[hidden] { display: none; }
+      .dev-filter.is-inline .dev-extra-filters { flex: 0 0 auto; display: flex; }
+      .dev-extra-filters.is-measuring { position: absolute; left: 0; top: 0; width: max-content; flex: none; display: flex; visibility: hidden; pointer-events: none; }
+      .ops-cell { white-space: nowrap; }
+      .ops-cell .link { margin-right: 16px; }
+      .ops-cell .link:last-child { margin-right: 0; }
+      .ops-cell .link-danger { color: var(--proto-danger); }
+      .drawer-sec { font-size: 12px; font-weight: 600; color: var(--proto-text-secondary); margin: 16px 0 6px; padding-top: 14px; border-top: 1px dashed var(--proto-border); }
+      #drawer-edit .proto-drawer { width: 460px; }
+      .ro-grid { display: grid; grid-template-columns: minmax(0, 1fr); row-gap: 24px; font-size: 14px; line-height: 22px; }
+      .ro-grid .k { color: var(--proto-text-secondary); }
+      .fw-bar { height: 8px; border-radius: 4px; background: var(--proto-surface-subtle); overflow: hidden; margin-top: 14px; }
+      .fw-bar i { display: block; height: 100%; width: 0; background: var(--proto-primary); transition: width 0.4s ease; }
+      .fw-pick { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+      .fw-nodes { margin-top: 12px; border-top: 1px solid var(--proto-border); padding-top: 10px; }
+      .fw-node { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 5px 0; }
+      .fw-node.is-disabled { color: var(--proto-text-disabled); }
+      .fw-node .meta { color: var(--proto-text-tertiary); font-size: 12px; }
+    </style>
+      <link rel="stylesheet" href="../../_shared/itc-adapter.css" />
+    <script src="../../_shared/itc-adapter.js" defer></script>
+  </head>
+  <body data-proto-page="device-list" data-proto-l1="device">
+    <div class="proto-shell">
+      <aside class="proto-side">
+        <div class="proto-side-logo"><div class="proto-side-logo-mark">D</div></div>
+        <nav class="proto-side-menu">
+          <a class="proto-side-item" data-page="hub" href="hub.html"><span class="proto-side-icon"></span>目录</a>
+          <a class="proto-side-item" data-page="schedule" href="#"><span class="proto-side-icon"></span>信号调度</a>
+        </nav>
+      </aside>
+      <div class="proto-body">
+        <header class="proto-header">
+          <div class="proto-header-left">
+            <a class="proto-header-brand proto-brand-link" href="hub.html" title="返回原型目录">
+              <span class="proto-brand-logo" aria-hidden="true"></span>
+              <span class="proto-brand-name">分布式视频管理</span>
+            </a>
+            <button type="button" class="proto-fold-sub" id="proto-fold-sub" title="收起二级菜单">☰</button>
+            <nav class="proto-breadcrumb">
+              <a href="hub.html">原型目录</a><span>/</span><span>设备管理</span><span>/</span><span class="current">设备列表</span>
+            </nav>
+          </div>
+          <div class="proto-header-right">
+        <span class="proto-header-meta">示意 · REQ-2026-0010 · PAGE-DVS-011 · 2026-10-20 · 非需求正文</span>
+            <span class="proto-header-user" id="header-user">管理员</span>
+          </div>
+        </header>
+        <main class="proto-main">
+          <aside class="proto-side-sub">
+            <div class="proto-side-sub-group is-open">
+              <button type="button" class="proto-side-sub-parent">
+                <span class="proto-menu-ico"></span><span class="proto-menu-label">信号调度</span><span class="proto-menu-caret">▾</span>
+              </button>
+              <div class="proto-side-sub-children">
+                <a data-page="list" href="group-list.html">分组管理</a>
+                <a data-page="wall-list" href="wall-list.html">拼墙管理</a>
+                <a data-page="screen-schedule" href="screen-schedule.html">画面调度</a>
+              </div>
+            </div>
+            <div class="proto-side-sub-group is-open">
+              <button type="button" class="proto-side-sub-parent">
+                <span class="proto-menu-ico"></span><span class="proto-menu-label">设备管理</span><span class="proto-menu-caret">▾</span>
+              </button>
+              <div class="proto-side-sub-children">
+                <a class="is-active" data-page="device-list" href="#">设备列表</a>
+              </div>
+            </div>
+          </aside>
+          <div class="proto-content">
+            <section class="proto-card">
+              <div class="proto-filter dev-filter">
+                <div class="proto-field">
+                  <label for="f-type">设备类型</label>
+                  <select id="f-type" class="proto-select">
+                    <option value="">全部类型</option><option value="output">输出盒</option><option value="input">输入盒</option>
+                  </select>
+                </div>
+                <div class="proto-field">
+                  <label for="f-online">状态</label>
+                  <select id="f-online" class="proto-select">
+                    <option value="">全部状态</option><option value="on">在线</option><option value="off">离线</option>
+                  </select>
+                </div>
+                <div class="proto-field">
+                  <label for="f-kw">设备别名 / IP</label>
+                  <input id="f-kw" class="proto-input" type="text" placeholder="搜索别名 / IP" />
+                </div>
+                <div class="dev-extra-filters" id="dev-extra-filters" hidden>
+                  <div class="proto-field">
+                    <label for="f-bind">绑定状态</label>
+                    <select id="f-bind" class="proto-select">
+                      <option value="">全部绑定</option><option value="bound">已绑定 / 白名单内</option><option value="free">未绑定 / 未入白名单</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="dev-filter-actions">
+                  <button type="button" class="proto-btn dev-filter-more" id="btn-filter-more" aria-expanded="false" aria-controls="dev-extra-filters">更多 <i class="t-icon t-icon-chevron-down" aria-hidden="true"></i></button>
+                  <button type="button" class="proto-btn" id="btn-reset">重置</button>
+                </div>
+              </div>
+              <div class="proto-toolbar">
+                <div class="proto-toolbar-left">
+          <button type="button" class="proto-btn proto-btn-primary" id="btn-refresh-state">刷新节点状态</button>
+                  <button type="button" class="proto-btn" id="btn-upgrade">平台批量升级</button>
+                </div>
+              </div>
+              <div class="proto-table-wrap">
+                <table class="proto-table dev-table">
+                  <thead>
+                    <tr>
+                      <th>别名</th>
+                      <th>类型</th>
+                      <th>IP</th>
+                      <th>输出能力</th>
+                      <th>在线状态</th>
+                      <th>注册状态</th>
+                      <th>当前播放</th>
+                      <th>绑定 / 白名单</th>
+                      <th>异常原因</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="dev-tbody"></tbody>
+                </table>
+              </div>
+              <div class="proto-pagination">
+                <span id="pg-info">共 0 项数据</span>
+                <div class="proto-pagination-controls">
+                  <select class="proto-select proto-page-size" id="dev-pager-size" aria-label="每页条数">
+                    <option>8 条/页</option>
+                  </select>
+                  <button type="button" class="proto-page proto-page-arrow" id="dev-pager-prev" aria-label="上一页"><i class="t-icon t-icon-chevron-left" aria-hidden="true"></i></button>
+                  <button type="button" class="proto-page is-active" id="dev-pager-num">1</button>
+                  <button type="button" class="proto-page proto-page-arrow" id="dev-pager-next" aria-label="下一页"><i class="t-icon t-icon-chevron-right" aria-hidden="true"></i></button>
+                </div>
+              </div>
+              <p class="hint-line" style="font-size: 12px; color: var(--proto-text-tertiary); margin-top: 8px; line-height: 1.6">
+                设备由节点注册自动建档；“退役”会先处理绑定、窗口与白名单。离线设备进入待执行状态，重连后先完成退役，不会注册成新设备。状态以最新节点回传为准。
+              </p>
+            </section>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <div class="proto-drawer-mask" id="drawer-edit" hidden>
+      <aside class="proto-drawer" role="dialog" aria-modal="true">
+        <div class="proto-drawer-header">
+          <span>编辑设备</span>
+          <button type="button" class="proto-drawer-close" data-drawer-close aria-label="关闭">×</button>
+        </div>
+        <div class="proto-drawer-body">
+          <div class="proto-field" id="field-name">
+            <label for="input-name">别名<span class="req">*</span></label>
+            <input id="input-name" class="proto-input" type="text" maxlength="20" placeholder="请输入别名（20 字以内）" />
+            <div class="err" id="name-err" style="display: none"></div>
+            <div class="hint">20 字以内；用于设备列表与信号源面板显示</div>
+          </div>
+          <div class="drawer-sec">基本信息</div>
+          <div class="ro-grid" id="ro-base"></div>
+          <div class="drawer-sec">节点配置（只读）</div>
+          <div class="ro-grid" id="ro-cfg"></div>
+          <div class="drawer-sec">网络与注册</div>
+          <div class="ro-grid" id="ro-net"></div>
+          <div class="drawer-sec">运行状态</div>
+          <div class="ro-grid" id="ro-run"></div>
+          <p class="hint" style="font-size: 12px; color: var(--proto-text-tertiary); line-height: 1.7; margin-top: 14px">
+            以上配置项由节点回传；平台侧只读同步展示，仅别名可编辑。节点角色、采集口、输出参数、网络与注册在节点本机端维护。
+          </p>
+        </div>
+        <div class="proto-drawer-footer">
+          <button type="button" class="proto-btn" data-drawer-close>取消</button>
+          <button type="button" class="proto-btn proto-btn-primary" id="btn-save">保存</button>
+        </div>
+      </aside>
+    </div>
+
+    <div class="proto-mask" id="fw-modal" hidden>
+      <div class="proto-modal" role="dialog" style="max-width: 460px">
+        <div class="proto-modal-header"><span>平台批量升级</span></div>
+        <div class="proto-modal-body" id="fw-body">
+          <div class="fw-pick">
+              <label class="fw-upload-trigger" for="fw-file"><i class="t-icon t-icon-upload" aria-hidden="true"></i><span>上传文件</span></label>
+              <input class="fw-file-input" type="file" id="fw-file" aria-label="选择升级固件文件" />
+              <span class="fw-file-name" id="fw-file-name">未选择任何文件</span>
+          </div>
+          <div class="hint" style="font-size: 12px; color: var(--proto-text-tertiary); margin-top: 6px; line-height: 1.6">
+            固件包 .bin + 版本与完整性校验；单台节点的本地上传升级见节点单机后台。示意：文件名含「V1.0.1」且扩展名 .bin 可通过校验。
+          </div>
+          <div class="fw-nodes" id="fw-nodes"></div>
+        </div>
+        <div class="proto-modal-footer">
+          <button type="button" class="proto-btn" id="fw-cancel">取消</button>
+          <button type="button" class="proto-btn proto-btn-primary" id="fw-start">开始升级</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="../../_shared/proto-shell.js"></script>
+    <script src="../../_shared/node-state.js"></script>
+    <script src="../../_shared/mock-api.js"></script>
+    <script src="../../_shared/platform-store.js"></script>
+    <script>
+      (function () {
+        /* 节点列表只消费注册 / 心跳状态，不在页面内维护设备示例数据。 */
+        function readDevices() {
+          var response = DvsMockApi.request("GET", "/api/v1/nodes?pageSize=100");
+          var nodes = response.ok ? response.data.items : [];
+          var walls = DvsPlatformStore.listWalls();
+          return nodes.map(function (node) {
+            var references = [];
+            walls.forEach(function (wall) {
+              var count = node.type === "output"
+                ? (wall.bindings || []).flat().filter(function (cell) { return cell && String(cell.node).toLowerCase() === node.id; }).length
+                : (wall.whitelist || []).filter(function (item) { return item.id === node.id; }).length;
+              if (count) references.push(wall.name + (node.type === "output" ? " · " + count + " 格位" : ""));
+            });
+            node.bind = references.length ? (node.type === "input" ? "白名单：" : "") + references.join("、") :
+              (node.type === "input" ? "未入白名单" : "未绑定");
+            return node;
+          });
+        }
+        var devices = readDevices();
+        var editingId = null;
+        var page = 1;
+        var PAGE_SIZE = 8;
+
+        function $(id) { return document.getElementById(id); }
+        function esc(value) { return String(value == null ? "" : value).replace(/[&<>"']/g, function (ch) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]; }); }
+        function devById(id) { return devices.find(function (d) { return d.id === id; }); }
+        function typeName(t) { return t === "output" ? "输出盒" : "输入盒"; }
+        function isBound(d) { return (!d.lifecycle || d.lifecycle === "active") && d.bind !== "未绑定" && d.bind !== "未入白名单"; }
+        function outputText(d) {
+          if (d.type !== "output" || !d.output) return "—";
+          return d.output.width + "×" + d.output.height + " @" + d.output.refreshHz + "Hz";
+        }
+        function registerText(d) {
+          if (d.registerState === "registered") return "已注册";
+          if (d.registerState === "registering") return "注册中";
+          return "连接失败";
+        }
+        function runtimeText(d) {
+          var state = d.runtimeState || (d.online ? "online" : "offline");
+          return (DvsNodeState.runtimeStates && DvsNodeState.runtimeStates[state]) || (d.online ? "在线" : "离线");
+        }
+        function playbackText(d) {
+          return d.currentPlayback && d.currentPlayback.status === "playing" ? d.currentPlayback.name : "未播放";
+        }
+        function exceptionText(d) { return d.exception && d.exception.reason ? d.exception.reason : "—"; }
+        function formatAt(value) {
+          if (!value) return "—";
+          return String(value).replace("T", " ").replace(/\.\d{3}Z$/, "").replace(/Z$/, "");
+        }
+
+        function filtered() {
+          var t = $("f-type").value, on = $("f-online").value, bd = $("f-bind").value, kw = ($("f-kw").value || "").trim().toLowerCase();
+          return devices.filter(function (d) {
+            if (t && d.type !== t) return false;
+            if (on === "on" && !d.online) return false;
+            if (on === "off" && d.online) return false;
+            if (bd === "bound" && !isBound(d)) return false;
+            if (bd === "free" && isBound(d)) return false;
+            if (kw && (d.name + d.ip).toLowerCase().indexOf(kw) < 0) return false;
+            return true;
+          });
+        }
+
+        function render() {
+          var list = filtered();
+          var maxPage = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+          page = Math.min(page, maxPage);
+          var start = (page - 1) * PAGE_SIZE;
+          var shown = list.slice(start, start + PAGE_SIZE);
+          var count = $("dev-count");
+          if (count) count.textContent = devices.length;
+          $("pg-info").textContent = "共 " + list.length + " 项数据";
+          $("dev-pager-num").textContent = String(page);
+          $("dev-pager-prev").disabled = page === 1;
+          $("dev-pager-next").disabled = page === maxPage;
+          $("dev-tbody").innerHTML = shown.length
+            ? shown.map(function (d) {
+                var onlineLabel = d.lifecycle === "retire_pending" ? "退役待执行" : d.lifecycle === "retired" ? "已退役" : runtimeText(d);
+                var onlineClass = d.lifecycle && d.lifecycle !== "active" ? "tag-off" : (d.runtimeState === "online" || (!d.runtimeState && d.online) ? "tag-on" : "tag-off");
+                var playback = playbackText(d), exception = exceptionText(d);
+                return "<tr>" +
+                  "<td>" + esc(d.name) + "</td>" +
+                  "<td>" + typeName(d.type) + "</td>" +
+                  "<td>" + esc(d.ip || "—") + "</td>" +
+                  "<td title=\"" + outputText(d) + "\">" + outputText(d) + "</td>" +
+                  '<td><span class="' + onlineClass + '">' + onlineLabel + "</span></td>" +
+                  "<td>" + registerText(d) + "</td>" +
+                  "<td title=\"" + esc(playback) + "\">" + esc(playback) + "</td>" +
+                  "<td>" + esc(d.bind || "—") + "</td>" +
+                  '<td title="' + esc(exception) + '">' + esc(exception) + "</td>" +
+                  '<td class="ops-cell"><a class="link" data-act="edit" data-id="' + d.id + '">编辑</a>' + (d.lifecycle && d.lifecycle !== "active" ? '<span class="meta">不可操作</span>' : '<a class="link link-danger" data-act="retire" data-id="' + d.id + '">退役</a>') + '</td>' +
+                  "</tr>";
+              }).join("")
+            : '<tr><td colspan="10"><div class="proto-empty">未找到匹配设备</div></td></tr>';
+          document.querySelectorAll("#dev-tbody .link").forEach(function (a) {
+            a.addEventListener("click", function () {
+              var d = devById(a.getAttribute("data-id"));
+              if (a.getAttribute("data-act") === "edit") openEdit(d);
+              else delDev(d);
+            });
+          });
+        }
+
+        function syncDevices() {
+          devices = readDevices();
+          render();
+          /* 抽屉打开时不重置别名输入，避免定时回传打断未保存编辑；关闭后重新打开即读取最新快照。 */
+        }
+
+        /* ---------- 编辑（别名可改；其余只读，真源在节点本机页，字段口径对齐 PAGE-DVS-010）---------- */
+        function openEdit(d) {
+          editingId = d.id;
+          $("input-name").value = d.name;
+          clearErr();
+          $("ro-base").innerHTML =
+            '<div><span class="k">类型：</span>' + typeName(d.type) + "</div>" +
+            '<div><span class="k">型号：</span>' + (d.model || "—") + "</div>" +
+            '<div><span class="k">主板：</span>' + (d.board || "—") + "</div>" +
+            '<div><span class="k">序列号：</span>' + (d.sn || "—") + "</div>" +
+            '<div><span class="k">MAC：</span>' + (d.mac || "—") + "</div>" +
+            '<div><span class="k">固件版本：</span>' + (d.fw || "—") + "</div>" +
+            '<div><span class="k">注册时间：</span>' + formatAt(d.registeredAt) + "</div>";
+          var cfg = '<div><span class="k">节点角色：</span>' + typeName(d.role || d.type) + "</div>";
+          if (d.type === "input") {
+            cfg += '<div><span class="k">采集口：</span>' + (d.input && d.input.port || "—") + "</div>" +
+                   '<div><span class="k">信号状态：</span>' + (d.input && d.input.signal || "—") + "</div>";
+          } else {
+            cfg += '<div><span class="k">输出能力：</span>' + outputText(d) + "</div>" +
+                   '<div><span class="k">输出模式：</span>' + (d.output && d.output.mode === "hotplug" ? "热插拔" : "强推") + "</div>" +
+                   '<div><span class="k">能力上限：</span>' + (d.output && d.output.capability ? d.output.capability.maxWidth + "×" + d.output.capability.maxHeight + " @" + d.output.capability.maxRefreshHz + "Hz" : "—") + "</div>";
+          }
+          $("ro-cfg").innerHTML = cfg;
+          var network = d.network || {};
+          var net =
+            '<div><span class="k">网络方式：</span>' + (network.mode === "static" ? "静态" : "DHCP") + "</div>" +
+            '<div><span class="k">IP：</span>' + (d.ip || "—") + "</div>";
+          if (network.mode === "static") {
+            net += '<div><span class="k">掩码：</span>' + (network.mask || "—") + "</div>" +
+                   '<div><span class="k">网关：</span>' + (network.gateway || "—") + "</div>" +
+                   '<div><span class="k">DNS：</span>' + (network.dns || "—") + "</div>";
+          }
+          net += '<div><span class="k">注册服务器：</span>' + (network.server || "—") + "</div>" +
+                 '<div><span class="k">注册方式：</span>' + (d.registerMode === "manual" ? "手动注册" : "自动注册") + "</div>" +
+                 '<div><span class="k">设备编号：</span>' + (d.registerId || d.sn || "—") + "</div>" +
+                 '<div><span class="k">注册状态：</span>' + registerText(d) + "</div>" +
+                 '<div><span class="k">最后回执：</span>' + formatAt(d.lastRegisterAt) + " · " + (d.registerMessage || "—") + "</div>" +
+                 '<div><span class="k">SIP 状态：</span>' + (d.sip && d.sip.enabled ? (d.sip.state === "connected" ? "已连接" : "连接失败") : "未启用") + (d.sip && d.sip.server ? " · " + d.sip.server + ":" + d.sip.port : "") + "</div>";
+          $("ro-net").innerHTML = net;
+          var playback = d.currentPlayback;
+          $("ro-run").innerHTML =
+            '<div><span class="k">当前播放：</span>' + (playback && playback.status === "playing" ? esc(playback.name) + " · " + esc(playback.taskId) : "未播放") + "</div>" +
+            '<div><span class="k">播放状态：</span>' + (playback ? playback.status : "—") + "</div>" +
+            '<div><span class="k">在线时长：</span>' + (d.uptime || "—") + "</div>" +
+            '<div><span class="k">最后心跳：</span>' + formatAt(d.lastHeartbeat) + "</div>" +
+            '<div><span class="k">CPU：</span>' + (d.metrics && d.metrics.cpu || "—") + "</div>" +
+            '<div><span class="k">内存：</span>' + (d.metrics && d.metrics.memory || "—") + "</div>" +
+            '<div><span class="k">温度：</span>' + (d.metrics && d.metrics.temperature || "—") + "</div>" +
+            '<div><span class="k">节点状态：</span>' + runtimeText(d) + " · " + (d.runtimeMessage || "—") + "</div>" +
+            '<div><span class="k">异常原因：</span>' + exceptionText(d) + "</div>";
+          protoOpenDrawer("drawer-edit");
+        }
+        function clearErr() {
+          $("field-name").classList.remove("is-error");
+          $("name-err").style.display = "none";
+        }
+        function showErr(msg) {
+          $("field-name").classList.add("is-error");
+          $("name-err").style.display = "block";
+          $("name-err").textContent = msg;
+        }
+        $("btn-save").onclick = function () {
+          var d = devById(editingId);
+          var t = $("input-name").value.trim();
+          if (!t) { showErr("请输入别名"); return; }
+          if (t.length > 20) { showErr("别名不能超过 20 个字符"); return; }
+          var dup = devices.some(function (o) { return o.id !== editingId && o.name.trim().toLowerCase() === t.toLowerCase(); });
+          if (dup) { showErr("已存在同名别名"); return; }
+          var btn = $("btn-save");
+          btn.disabled = true;
+          setTimeout(function () {
+            btn.disabled = false;
+            var response = DvsMockApi.request("PUT", "/api/v1/nodes/" + encodeURIComponent(editingId), { name: t }, { idempotencyKey: "rename-node-" + editingId + "-" + t });
+            if (!response.ok) { protoToast(response.msg); btn.disabled = false; return; }
+            devices = readDevices();
+            protoCloseDrawer("drawer-edit");
+            protoToast("别名已更新（列表与信号源面板同步显示）");
+            render();
+          }, 300);
+        };
+        document.querySelectorAll("#drawer-edit [data-drawer-close]").forEach(function (btn) {
+          btn.addEventListener("click", function () { editingId = null; });
+        });
+
+        /* ---------- 退役（在线完成；离线待执行并保留身份墓碑）---------- */
+        function delDev(d) {
+          var content;
+          if (d.type === "output") {
+            content = "退役设备「" + d.name + "」？" + (isBound(d) ? "将解除" + d.bind + "并清理受影响窗口。" : "该设备当前未绑定拼墙。") + (d.online ? "节点在线，可立即执行并回执。" : "节点离线，将进入退役待执行，重连后优先执行。") + "完成后保留 30 天身份记录。";
+          } else {
+            content = "退役设备「" + d.name + "」？将处理受影响窗口和白名单。" + (d.online ? "节点在线，可立即执行并回执。" : "节点离线，将进入退役待执行，重连后优先执行。") + "完成后保留 30 天身份记录。";
+          }
+          protoConfirm({
+            title: "确认退役设备",
+            content: content,
+            onOk: function () {
+              var wasOnline = d.online;
+              var response = DvsMockApi.request("POST", "/api/v1/nodes/" + encodeURIComponent(d.id) + "/retire", {}, { idempotencyKey: "retire-node-" + d.id });
+              if (!response.ok) { protoToast(response.msg); return; }
+              DvsPlatformStore.listWalls().forEach(function (wall) {
+                var patch = {};
+                if (d.type === "output") {
+                  var removed = [];
+                  (wall.bindings || []).forEach(function (row, r) { row.forEach(function (cell, c) {
+                    if (cell && String(cell.node).toLowerCase() === d.id) removed.push({ r: r, c: c });
+                  }); });
+                  function hitsRemoved(x, y, width, height) {
+                    return removed.some(function (cell) {
+                      return x < (cell.c + 1) * 130 && x + width > cell.c * 130 && y < (cell.r + 1) * 90 && y + height > cell.r * 90;
+                    });
+                  }
+                  patch.bindings = wall.bindings.map(function (row) {
+                    return row.map(function (cell) { return cell && String(cell.node).toLowerCase() === d.id ? null : cell; });
+                  });
+                  patch.windows = (wall.windows || []).filter(function (win) { return !hitsRemoved(win.x, win.y, win.w, win.h); });
+                  patch.scenes = (wall.scenes || []).map(function (scene) {
+                    return Object.assign({}, scene, { layout: (scene.layout || []).filter(function (item) {
+                      return !hitsRemoved(item.c * 130, item.r * 90, item.cs * 130, item.rs * 90);
+                    }) });
+                  });
+                } else {
+                  patch.whitelist = (wall.whitelist || []).filter(function (item) { return item.id !== d.id; });
+                  var legacy = { e1: "s1", e2: "s2", m1: "s3", t3: "s4", p1: "s5" };
+                  patch.windows = (wall.windows || []).filter(function (win) { return win.sig !== d.id && win.sig !== legacy[d.id]; });
+                  patch.scenes = (wall.scenes || []).map(function (scene) {
+                    return Object.assign({}, scene, { layout: (scene.layout || []).filter(function (item) { return item.sig !== d.id && item.sig !== legacy[d.id]; }) });
+                  });
+                }
+                DvsPlatformStore.updateWall(wall.id, patch);
+              });
+              devices = readDevices();
+              protoToast(wasOnline ? "退役完成，身份记录保留 30 天" : "已进入退役待执行；节点重连后先执行退役");
+              render();
+            }
+          });
+        }
+
+        /* ---------- 平台批量升级（Q-40：归设备管理）---------- */
+        function renderFwBody() {
+          $("fw-body").innerHTML =
+            '<div class="fw-pick">' +
+            '<label class="fw-upload-trigger" for="fw-file"><i class="t-icon t-icon-upload" aria-hidden="true"></i><span>上传文件</span></label>' +
+            '<input class="fw-file-input" type="file" id="fw-file" aria-label="选择升级固件文件" />' +
+            '<span class="fw-file-name" id="fw-file-name">未选择任何文件</span>' +
+            '</div>' +
+            '<div class="hint" style="font-size: 12px; color: var(--proto-text-tertiary); margin-top: 6px; line-height: 1.6">' +
+            "固件包 .bin + 版本与完整性校验；单台节点的本地上传升级见节点单机后台。示意：文件名含「V1.0.1」且扩展名 .bin 可通过校验。</div>" +
+            '<div class="fw-nodes" id="fw-nodes">' +
+            '<p style="font-size: 13px; margin: 0 0 6px">选择在线节点（离线节点不可升级）</p>' +
+            devices.filter(function (d) { return d.type === "output" && d.lifecycle === "active"; }).map(function (d) {
+              return '<label class="fw-node' + (d.online ? "" : " is-disabled") + '">' +
+                '<input type="checkbox" value="' + d.id + '"' + (d.online && d.id === "d1" ? " checked" : "") + (d.online ? "" : " disabled") + " /> " +
+                esc(d.name) + ' <span class="meta">' + esc(d.ip) + " · 当前 " + esc(d.fw) + (d.online ? "" : " · 离线") + "</span></label>";
+            }).join("") + "</div>";
+          $("fw-file").addEventListener("change", function () {
+            $("fw-file-name").textContent = this.files && this.files[0] ? this.files[0].name : "未选择任何文件";
+          });
+        }
+        $("btn-upgrade").onclick = function () {
+          renderFwBody();
+          $("fw-modal").hidden = false;
+          $("fw-modal").classList.add("is-open");
+        };
+        function closeFw() {
+          $("fw-modal").classList.remove("is-open");
+          $("fw-modal").hidden = true;
+        }
+        $("fw-cancel").onclick = closeFw;
+        $("fw-start").onclick = function () {
+          var f = $("fw-file").files[0];
+          if (!f) { protoToast("请先选择固件包"); return; }
+          if (!/\.bin$/.test(f.name) || f.name.indexOf("V1.0.1") < 0) { protoToast("校验未通过：版本不符或文件损坏"); return; }
+          var picked = Array.prototype.slice.call(document.querySelectorAll("#fw-nodes input:checked")).map(function (i) { return devById(i.value); });
+          if (!picked.length) { protoToast("请至少选择一台在线节点"); return; }
+          var btn = $("fw-start");
+          btn.disabled = true;
+          $("fw-body").innerHTML =
+            '<p style="font-size: 13px">正在向 ' + picked.length + " 台节点下发固件（" + f.name + "）…</p>" +
+            '<div class="fw-bar"><i id="fw-prog"></i></div>' +
+            '<p class="hint" style="font-size: 12px; color: var(--proto-text-tertiary); margin-top: 8px">升级结果以设备在线状态与固件版本回传为准；升级中断的节点保持旧版本可重试。</p>';
+          var w = 0;
+          var timer = setInterval(function () {
+            w += 12;
+            var bar = $("fw-prog");
+            if (bar) bar.style.width = Math.min(100, w) + "%";
+            if (w >= 100) {
+              clearInterval(timer);
+              setTimeout(function () {
+                closeFw();
+                btn.disabled = false;
+                var response = DvsMockApi.request("POST", "/api/v1/nodes/upgrade", { targetNodeIds: picked.map(function (d) { return d.id; }), fwVersion: "V1.0.1" }, { idempotencyKey: "upgrade-nodes-" + picked.map(function (d) { return d.id; }).join(",") });
+                if (!response.ok) { protoToast(response.msg); btn.disabled = false; return; }
+                devices = readDevices();
+                protoToast("已下发 " + picked.length + " 台，升级结果以在线状态与固件版本回传为准");
+                render();
+              }, 500);
+            }
+          }, 220);
+        };
+
+        ["f-type", "f-online", "f-bind"].forEach(function (id) { $(id).addEventListener("change", function () { page = 1; render(); }); });
+        $("f-kw").addEventListener("input", function () { page = 1; render(); });
+        function syncFilterLayout() {
+          var filter = document.querySelector(".dev-filter");
+          var extra = $("dev-extra-filters");
+          var more = $("btn-filter-more");
+          extra.hidden = false;
+          extra.classList.add("is-measuring");
+          var fields = filter.querySelectorAll(":scope > .proto-field");
+          var requiredWidth = extra.querySelector(".proto-field").getBoundingClientRect().width + $("btn-reset").getBoundingClientRect().width;
+          fields.forEach(function (field) { requiredWidth += field.getBoundingClientRect().width; });
+          requiredWidth += (parseFloat(getComputedStyle(filter).columnGap) || 0) * (fields.length + 1);
+          extra.classList.remove("is-measuring");
+          var inline = requiredWidth <= filter.clientWidth + 1;
+          filter.classList.toggle("is-inline", inline);
+          more.hidden = inline;
+          extra.hidden = !inline && more.getAttribute("aria-expanded") !== "true";
+        }
+        $("btn-filter-more").onclick = function () {
+          var extra = $("dev-extra-filters");
+          extra.hidden = !extra.hidden;
+          this.setAttribute("aria-expanded", String(!extra.hidden));
+        };
+        $("btn-reset").onclick = function () {
+          ["f-type", "f-online", "f-bind", "f-kw"].forEach(function (id) { $(id).value = ""; });
+          $("btn-filter-more").setAttribute("aria-expanded", "false");
+          syncFilterLayout();
+          page = 1;
+          render();
+        };
+        window.addEventListener("DOMContentLoaded", function () {
+          var filter = document.querySelector(".dev-filter");
+          var lastWidth = -1;
+          requestAnimationFrame(function () {
+            syncFilterLayout();
+            if (window.ResizeObserver) {
+              new ResizeObserver(function () {
+                if (filter.clientWidth !== lastWidth) {
+                  lastWidth = filter.clientWidth;
+                  syncFilterLayout();
+                }
+              }).observe(filter);
+            } else {
+              window.addEventListener("resize", syncFilterLayout);
+            }
+            if (document.fonts) document.fonts.ready.then(syncFilterLayout);
+          });
+        });
+        $("dev-pager-prev").onclick = function () { if (page > 1) { page--; render(); } };
+        $("dev-pager-next").onclick = function () {
+          var maxPage = Math.max(1, Math.ceil(filtered().length / PAGE_SIZE));
+          if (page < maxPage) { page++; render(); }
+        };
+        $("btn-refresh-state").onclick = function () {
+          syncDevices();
+          protoToast("已读取节点最新注册 / 心跳状态");
+        };
+        DvsNodeState.subscribe(function () { syncDevices(); });
+        DvsPlatformStore.subscribe(syncDevices);
+        window.setInterval(syncDevices, 2000);
+        syncDevices();
+      })();
+    </script>
+  </body>
+</html>

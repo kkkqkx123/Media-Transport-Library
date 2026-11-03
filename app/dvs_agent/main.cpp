@@ -69,6 +69,66 @@ static std::string env_or(const char* k, const char* d) {
     return v ? std::string(v) : std::string(d ? d : "");
 }
 
+/* Node capacity self-report (S5): CPU busy ratio (since boot), memory usage,
+ * load average and uptime, read from /proc. No external deps. */
+static json_object* node_capacity_json() {
+    json_object* o = json_object_new_object();
+
+    /* memory from /proc/meminfo */
+    long long mem_total = 0, mem_avail = 0;
+    {
+        std::ifstream f("/proc/meminfo");
+        std::string line;
+        while (std::getline(f, line)) {
+            char key[64]; long long val = 0;
+            if (sscanf(line.c_str(), "%63[^:]: %lld", key, &val) == 2) {
+                if (strcmp(key, "MemTotal") == 0) mem_total = val;
+                else if (strcmp(key, "MemAvailable") == 0) mem_avail = val;
+            }
+        }
+    }
+
+    /* load average + uptime */
+    double l1 = 0, l5 = 0, l15 = 0, uptime = 0;
+    {
+        std::ifstream f("/proc/loadavg");
+        std::string line;
+        if (std::getline(f, line)) sscanf(line.c_str(), "%lf %lf %lf", &l1, &l5, &l15);
+    }
+    {
+        std::ifstream f("/proc/uptime");
+        double idle = 0;
+        if (f >> uptime >> idle) { /* uptime is the first field */ }
+    }
+
+    /* cumulative CPU busy ratio (since boot) from /proc/stat cpu line */
+    double cpu_pct = 0.0;
+    {
+        std::ifstream f("/proc/stat");
+        std::string line;
+        if (std::getline(f, line) && line.rfind("cpu ", 0) == 0) {
+            long long u=0,n=0,s=0,idle=0,iow=0,irq=0,sirq=0,steal=0;
+            sscanf(line.c_str() + 4, "%lld %lld %lld %lld %lld %lld %lld %lld",
+                   &u, &n, &s, &idle, &iow, &irq, &sirq, &steal);
+            long long idle_all = idle + iow;
+            long long total = u + n + s + idle + iow + irq + sirq + steal;
+            if (total > 0) cpu_pct = 100.0 * (double)(total - idle_all) / (double)total;
+        }
+    }
+
+    json_object_object_add(o, "cpuBusyPercent", json_object_new_double(cpu_pct));
+    json_object_object_add(o, "memTotalKB", json_object_new_int64(mem_total));
+    json_object_object_add(o, "memAvailableKB", json_object_new_int64(mem_avail));
+    int mem_used_pct = mem_total > 0
+        ? (int)(100.0 * (double)(mem_total - mem_avail) / (double)mem_total) : 0;
+    json_object_object_add(o, "memUsedPercent", json_object_new_int(mem_used_pct));
+    json_object_object_add(o, "load1", json_object_new_double(l1));
+    json_object_object_add(o, "load5", json_object_new_double(l5));
+    json_object_object_add(o, "load15", json_object_new_double(l15));
+    json_object_object_add(o, "uptimeSec", json_object_new_int64((long long)uptime));
+    return o;
+}
+
 static json_object* envelope_ok(json_object* data, const char* msg) {
     json_object* o = json_object_new_object();
     json_object_object_add(o, "ok", json_object_new_boolean(1));
@@ -166,10 +226,12 @@ int main(int argc, char** argv) {
         // password change
         if (req.method == "POST" && req.path == "/api/v1/node/password") {
             json_object* body = json_tokener_parse(req.body.c_str());
+            std::string user = get_str(body, "username");
+            if (user.empty()) user = "admin";  // default account
             std::string oldp = get_str(body, "oldPassword");
             std::string newp = get_str(body, "newPassword");
             if (body) json_object_put(body);
-            if (!g_store->verify_password("admin", oldp)) {
+            if (!g_store->verify_password(user, oldp)) {
                 send_json(res, envelope_fail("UNAUTHORIZED", 401, "原密码错误"));
                 return;
             }
@@ -184,11 +246,14 @@ int main(int argc, char** argv) {
 
         // auth check (cookie)
         bool authed = (req.headers.count("Cookie") && req.headers.at("Cookie").find("session=sess-1") != std::string::npos);
-        // allow media/config reads without auth? keep simple: require auth for /api except login
-        if (req.path.rfind("/api/", 0) == 0 && req.path != "/api/v1/node/login" && !authed) {
-            // For prototype, allow anonymous to ease frontend; comment out strictness:
-            // send_json(res, envelope_fail("UNAUTHORIZED", 401, "未登录"));
-            // return;
+        // Strict auth is opt-in via DVS_REQUIRE_AUTH=1 (default off) so the
+        // node-admin prototype keeps working without a login wall. When enabled,
+        // every /api request except login must carry a valid session cookie.
+        static bool g_require_auth = (std::getenv("DVS_REQUIRE_AUTH") != nullptr);
+        if (g_require_auth && req.path.rfind("/api/", 0) == 0 &&
+            req.path != "/api/v1/node/login" && !authed) {
+            send_json(res, envelope_fail("UNAUTHORIZED", 401, "未登录"));
+            return;
         }
 
         if (req.method == "GET" && req.path == "/api/v1/node/info") {
@@ -435,6 +500,10 @@ int main(int argc, char** argv) {
             json_object* cap = nullptr;
             json_object_object_get_ex(n, "capabilities", &cap);
             send_json(res, envelope_ok(cap ? json_object_get(cap) : json_object_new_object(), ""));
+            return;
+        }
+        if (req.method == "GET" && req.path == "/api/v1/node/capacity") {
+            send_json(res, envelope_ok(node_capacity_json(), ""));
             return;
         }
 

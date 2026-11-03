@@ -19,7 +19,12 @@
   库端依赖已安装的 MTL（`mtl` pkg-config）。TX 侧（`mp4_dist_tx`）可在 x86 上编译，
   RX 侧需要 RK3588 + MPP。
 - **Pacing**：ARM 平台无 E810 硬件限速，使用软件 pacing（TSC）。
-- **共享代码**：两个应用各自带一份近似重复的基础模块（MPP 解码器、DRM 渲染、
-  ring buffer、slab pool、timer），当前未抽取公共库，修改时注意两处同步。
+- **共享代码**：`app/rk3588_common/` 已抽取 A/B 档基础模块（ring buffer、slab pool、
+  timer、codec_plugin.h、pipeline_common.h），`end2end` 与 `mp4_dist` 已引用。C/D 档
+  （drm_renderer、mpp_decoder、drm_mode、display_layout、ptp_time 等）与 end2end 增量
+  （dma_allocator、rga_converter、mtl_rx_bridge 等）的合并**尚未完成**。`dvs_media`
+  当前直接经 `meson.build` 复用 `rk3588_mp4_dist/shared/` 与 `rk3588_mp4_dist/rx/` 的
+  副本（即 S0 规划的 fallback 路径），并接受与 `mp4_dist` 的耦合；公共库收敛见
+  `docs/plan/DVS_REMAINING_TASKS.md` T5。修改时注意 `mp4_dist` 侧与 `dvs_media` 侧的同步。
 - 单测位于各自 `tests/` 目录；`mp4_dist` 另有 Python 日志校验脚本与单板/双板
   验证脚本。

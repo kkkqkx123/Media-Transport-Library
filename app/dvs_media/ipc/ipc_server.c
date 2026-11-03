@@ -1,5 +1,6 @@
 #include "ipc_server.h"
 #include "state_machine.h"
+#include "engine/capability.h"
 
 #include <errno.h>
 #include <json-c/json.h>
@@ -31,7 +32,18 @@ static pthread_mutex_t g_wmu_global = PTHREAD_MUTEX_INITIALIZER; /* sequence ids
 static long g_seq = 0;
 static int g_prepare_delay_ms = 50;
 
+static dvs_capability g_cap;
+
+/* Engine hooks (installed by engine/ipc_engine_bridge.c in the real binary;
+ * unset in the no-MTL unit test, leaving the server in pure state-machine
+ * mode). */
+static dvs_ipc_engine_hooks_t g_hooks;
+
 void dvs_ipc_set_prepare_delay_ms(int ms) { g_prepare_delay_ms = ms; }
+
+void dvs_ipc_install_hooks(const dvs_ipc_engine_hooks_t* h) {
+    if (h) g_hooks = *h;
+}
 
 static int write_line_locked(dvs_client_t* c, const char* line) {
   pthread_mutex_lock(&c->wmu);
@@ -168,7 +180,8 @@ static int handle_line(dvs_client_t* c, char* line) {
   }
 
   if (strcmp(type, "configure") == 0) {
-    dvs_state_clear();
+    /* accept a desired layout (streams/layout JSON); stash as pending */
+    if (g_hooks.prepare) g_hooks.prepare(req);
     send_envelope(c, rid, 200, "OK", "configured", NULL);
   } else if (strcmp(type, "prepare") == 0) {
     const char* opid = str_field(req, "operationId");
@@ -216,6 +229,13 @@ static int handle_line(dvs_client_t* c, char* line) {
       goto done;
     }
     snprintf(data, sizeof(data), "{\"revision\":%d}", applied);
+    /* apply the pending layout to the real engine, if hooks installed */
+    if (g_hooks.commit) {
+      if (g_hooks.commit() != 0) {
+        send_envelope(c, rid, 500, "INTERNAL", "layout apply failed", NULL);
+        goto done;
+      }
+    }
     send_envelope(c, rid, 200, "OK", "committed", data);
     char ev[256];
     snprintf(ev, sizeof(ev),
@@ -231,12 +251,15 @@ static int handle_line(dvs_client_t* c, char* line) {
       goto done;
     }
     dvs_state_abort(opid);
+    if (g_hooks.abort) g_hooks.abort();
     send_envelope(c, rid, 200, "OK", "aborted", NULL);
   } else if (strcmp(type, "clear") == 0) {
+    if (g_hooks.clear) g_hooks.clear();
     dvs_state_clear();
     send_envelope(c, rid, 200, "OK", "cleared", NULL);
   } else if (strcmp(type, "set_sources") == 0) {
-    /* whitelist JSON is stashed with the request; engine wiring lands in S1 */
+    /* whitelist/streams JSON stashed as pending layout */
+    if (g_hooks.prepare) g_hooks.prepare(req);
     send_envelope(c, rid, 200, "OK", "sources set", NULL);
   } else if (strcmp(type, "query_state") == 0) {
     dvs_state_t snap;
@@ -247,11 +270,16 @@ static int handle_line(dvs_client_t* c, char* line) {
       case DVS_OP_PREPARED: name = "prepared"; break;
       default: break;
     }
+    int rx_sessions = 0, decoding = 0, layers = 0;
+    if (g_hooks.counts) g_hooks.counts(&rx_sessions, &decoding, &layers);
+    char ptp[128];
+    snprintf(ptp, sizeof(ptp), "{\"state\":\"%s\",\"offsetUs\":%d}",
+             g_cap.ptp_state, g_cap.ptp_offset_us);
     snprintf(data, sizeof(data),
              "{\"state\":\"%s\",\"revision\":%d,\"operationId\":\"%s\",\"opState\":%d,"
-             "\"rxSessions\":0,\"decoding\":0,\"layers\":0,"
-             "\"ptp\":{\"state\":\"unknown\",\"offsetUs\":0}}",
-             name, snap.revision, snap.operation_id, (int)snap.op_state);
+             "\"rxSessions\":%d,\"decoding\":%d,\"layers\":%d,\"ptp\":%s}",
+             name, snap.revision, snap.operation_id, (int)snap.op_state,
+             rx_sessions, decoding, layers, ptp);
     send_envelope(c, rid, 200, "OK", "", data);
   } else if (strcmp(type, "event") == 0) {
     send_envelope(c, rid, 200, "OK", "event", NULL);
@@ -293,6 +321,7 @@ int dvs_ipc_server_run(const char* sock_path) {
   }
 
   dvs_state_init();
+  dvs_capability_probe(&g_cap);
   memset(g_clients, 0, sizeof(g_clients));
 
   for (;;) {

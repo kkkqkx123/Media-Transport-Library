@@ -31,7 +31,7 @@ dvs_agent = executable('dvs_agent',
 # test (build only)
 
 test_exe = executable('dvs_agent_test',
-  files('tests/test_basic.cpp', 'node_store.cpp', sqlite_src),
+  files('tests/test_basic.cpp', 'node_store.cpp', 'media_ipc.cpp', sqlite_src),
   include_directories: inc,
   dependencies: [json_c_dep, threads_dep, dl_dep],
   c_args: ['-DSQLITE_THREADSAFE=1'],

@@ -333,10 +333,24 @@ int main(int argc, char** argv) {
 
         // media endpoints
         if (req.method == "GET" && req.path == "/api/v1/node/media/status") {
+            // pass through the engine response (or structured error envelope)
             std::string r = g_media->query_state();
-            json_object* o = r.empty() ? json_object_new_object() : json_tokener_parse(r.c_str());
+            json_object* o = json_tokener_parse(r.c_str());
             if (!o) o = json_object_new_object();
-            send_json(res, envelope_ok(o, ""));
+            send_json(res, o); // already a full envelope from the media engine
+            return;
+        }
+        if (req.method == "GET" && req.path == "/api/v1/node/media/events") {
+            send_json(res, envelope_ok(g_media->drain_events(), ""));
+            return;
+        }
+        if (req.method == "POST" && req.path == "/api/v1/node/media/prepare") {
+            json_object* body = json_tokener_parse(req.body.c_str());
+            std::string r = g_media->request("prepare", body);
+            if (body) json_object_put(body);
+            json_object* o = json_tokener_parse(r.c_str());
+            if (!o) o = json_object_new_object();
+            send_json(res, o);
             return;
         }
         if (req.method == "GET" && req.path == "/api/v1/node/media/sources") {

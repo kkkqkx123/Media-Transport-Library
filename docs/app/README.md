@@ -9,6 +9,7 @@
 | [`rk3588_mp4_dist.md`](./rk3588_mp4_dist.md) | MP4 文件分发：FFmpeg 解复用 → ST2110-22/30 发送 → MPP 解码 + DRM 显示 + ALSA 播放 |
 | [`hardware_usage.md`](./hardware_usage.md) | 两个应用对 RK3588 各硬件（V4L2/MPP/RGA/DRM/ALSA/DMA-BUF/MTL/PTP）的使用情况、零拷贝路径与软件回退分析 |
 | [`frontend_prototype_integration.md`](./frontend_prototype_integration.md) | `ref/` 两个前端原型（平台后台 / 节点本机后台）与 `docs/req` 需求的对应关系，及其与现有 rk3588 app 层的集成设计方案 |
+| [`dvs_node_analysis.md`](./dvs_node_analysis.md) | `dvs_media` / `dvs_agent` 功能现状与 `docs/req` 需求差距分析；IPC 方式评估与网络通信（平台 WSS 注册心跳）补充建议 |
 
 ## 共同特征
 

@@ -3,6 +3,8 @@
 
 #include <errno.h>
 #include <json-c/json.h>
+#include <poll.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,19 +12,261 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-static void send_response(int fd, const char* json_str) {
-  char buf[4096];
-  snprintf(buf, sizeof(buf), "%s\n", json_str);
-  (void)write(fd, buf, strlen(buf));
+#define DVS_IPC_MAX_CLIENTS 8
+#define DVS_IPC_BUF 8192
+
+/* ------------------------------------------------------------------ */
+/* per-connection state                                                */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+  int fd;
+  int active;
+  pthread_mutex_t wmu; /* guards writes from reader + worker threads */
+} dvs_client_t;
+
+static dvs_client_t g_clients[DVS_IPC_MAX_CLIENTS];
+static pthread_mutex_t g_clients_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_wmu_global = PTHREAD_MUTEX_INITIALIZER; /* sequence ids */
+static long g_seq = 0;
+static int g_prepare_delay_ms = 50;
+
+void dvs_ipc_set_prepare_delay_ms(int ms) { g_prepare_delay_ms = ms; }
+
+static int write_line_locked(dvs_client_t* c, const char* line) {
+  pthread_mutex_lock(&c->wmu);
+  ssize_t n = write(c->fd, line, strlen(line));
+  ssize_t r = (n > 0) ? write(c->fd, "\n", 1) : -1;
+  pthread_mutex_unlock(&c->wmu);
+  return (n > 0 && r > 0) ? 0 : -1;
 }
 
-static const char* type_of(struct json_object* o) {
-  struct json_object* t = NULL;
-  if (json_object_object_get_ex(o, "type", &t)) {
-    return json_object_get_string(t);
-  }
-  return "";
+static int send_envelope(dvs_client_t* c, const char* request_id, int status,
+                         const char* code, const char* msg, const char* data_json) {
+  char buf[1024];
+  snprintf(buf, sizeof(buf),
+           "{\"ok\":%s,\"status\":%d,\"code\":\"%s\",\"msg\":\"%s\",\"data\":%s,\"requestId\":\"%s\"}",
+           (status < 400) ? "true" : "false", status, code, msg,
+           data_json ? data_json : "{}", request_id ? request_id : "ipc");
+  return write_line_locked(c, buf);
 }
+
+static void broadcast_event(const char* type, const char* data_json) {
+  char buf[1024];
+  snprintf(buf, sizeof(buf), "{\"type\":\"%s\",\"data\":%s}", type,
+           data_json ? data_json : "{}");
+  pthread_mutex_lock(&g_clients_mu);
+  for (int i = 0; i < DVS_IPC_MAX_CLIENTS; i++) {
+    if (g_clients[i].active)
+      write_line_locked(&g_clients[i], buf);
+  }
+  pthread_mutex_unlock(&g_clients_mu);
+}
+
+/* ------------------------------------------------------------------ */
+/* helpers                                                             */
+/* ------------------------------------------------------------------ */
+
+static const char* str_field(struct json_object* o, const char* key) {
+  struct json_object* v = NULL;
+  if (o && json_object_object_get_ex(o, key, &v) && v)
+    return json_object_get_string(v);
+  return NULL;
+}
+
+static int int_field(struct json_object* o, const char* key, int def) {
+  struct json_object* v = NULL;
+  if (o && json_object_object_get_ex(o, key, &v) && v)
+    return json_object_get_int(v);
+  return def;
+}
+
+/* ------------------------------------------------------------------ */
+/* async prepare worker                                                */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+  dvs_client_t* client;
+  char request_id[64];
+  char opid[64];
+  int revision;
+} prepare_job_t;
+
+static void* prepare_worker(void* arg) {
+  prepare_job_t* job = arg;
+
+  /* Simulated preparation work (decode-first-frame wait, plane allocation).
+   * Real engine work lands here when engine/session_mgr is wired up. */
+  if (g_prepare_delay_ms > 0) usleep((useconds_t)g_prepare_delay_ms * 1000);
+
+  int rc = dvs_state_finish_prepare(job->opid);
+  if (rc != 0) dvs_state_fail_prepare(job->opid);
+  char ev[600];
+  snprintf(ev, sizeof(ev),
+           "{\"type\":\"media.prepare.result\",\"requestId\":\"%s\","
+           "\"data\":{\"operationId\":\"%s\",\"revision\":%d,\"status\":\"%s\"}}",
+           job->request_id, job->opid, job->revision,
+           (rc == 0) ? "ready" : "blocked");
+  write_line_locked(job->client, ev);
+
+  free(job);
+  return NULL;
+}
+
+static void spawn_prepare(dvs_client_t* c, const char* request_id,
+                          const char* opid, int revision) {
+  prepare_job_t* job = calloc(1, sizeof(*job));
+  if (!job) {
+    dvs_state_fail_prepare(opid);
+    send_envelope(c, request_id, 500, "INTERNAL", "out of memory", NULL);
+    return;
+  }
+  job->client = c;
+  snprintf(job->request_id, sizeof(job->request_id), "%s", request_id);
+  snprintf(job->opid, sizeof(job->opid), "%s", opid);
+  job->revision = revision;
+
+  pthread_t tid;
+  if (pthread_create(&tid, NULL, prepare_worker, job) != 0) {
+    free(job);
+    dvs_state_fail_prepare(opid);
+    send_envelope(c, request_id, 500, "INTERNAL", "cannot start prepare worker", NULL);
+    return;
+  }
+  pthread_detach(tid);
+}
+
+/* ------------------------------------------------------------------ */
+/* request handling                                                    */
+/* ------------------------------------------------------------------ */
+
+static int handle_line(dvs_client_t* c, char* line) {
+  struct json_object* req = json_tokener_parse(line);
+  if (!req) {
+    send_envelope(c, NULL, 400, "INVALID_ARGUMENT", "malformed json", NULL);
+    return 0;
+  }
+  const char* type = str_field(req, "type");
+  const char* msg_id = str_field(req, "messageId");
+
+  char rid[64];
+  if (msg_id && msg_id[0]) {
+    snprintf(rid, sizeof(rid), "%s", msg_id);
+  } else {
+    pthread_mutex_lock(&g_wmu_global);
+    long s = ++g_seq;
+    pthread_mutex_unlock(&g_wmu_global);
+    snprintf(rid, sizeof(rid), "req-%ld", s);
+  }
+
+  char err[128] = {0};
+  char data[512];
+
+  if (!type || !type[0]) {
+    send_envelope(c, rid, 400, "INVALID_ARGUMENT", "missing type", NULL);
+    goto done;
+  }
+
+  if (strcmp(type, "configure") == 0) {
+    dvs_state_clear();
+    send_envelope(c, rid, 200, "OK", "configured", NULL);
+  } else if (strcmp(type, "prepare") == 0) {
+    const char* opid = str_field(req, "operationId");
+    int revision = int_field(req, "revision", -1);
+    if (!opid || !opid[0]) {
+      send_envelope(c, rid, 400, "INVALID_ARGUMENT", "missing operationId", NULL);
+      goto done;
+    }
+    if (revision < 0) {
+      dvs_state_t snap;
+      dvs_state_snapshot(&snap);
+      revision = snap.revision + 1;
+    }
+    int rc = dvs_state_begin_prepare(opid, revision, err, sizeof(err));
+    if (rc != 0) {
+      int status = (rc == DVS_ERR_STALE_REVISION) ? 409 : 400;
+      const char* code =
+          (rc == DVS_ERR_STALE_REVISION) ? "STALE_REVISION" : "INVALID_ARGUMENT";
+      send_envelope(c, rid, status, code, err, NULL);
+      goto done;
+    }
+    spawn_prepare(c, rid, opid, revision);
+    send_envelope(c, rid, 202, "ACCEPTED", "preparing", NULL);
+  } else if (strcmp(type, "commit") == 0) {
+    const char* opid = str_field(req, "operationId");
+    int revision = int_field(req, "revision", -1);
+    if (!opid || !opid[0]) {
+      send_envelope(c, rid, 400, "INVALID_ARGUMENT", "missing operationId", NULL);
+      goto done;
+    }
+    if (revision < 0) {
+      dvs_state_t snap;
+      dvs_state_snapshot(&snap);
+      revision = (snap.op_state == DVS_OP_PREPARED) ? snap.prepared_revision
+                                                    : snap.revision + 1;
+    }
+    int applied = 0;
+    int rc = dvs_state_commit(opid, revision, &applied, err, sizeof(err));
+    if (rc != 0) {
+      int status = 409;
+      const char* code = (rc == DVS_ERR_STALE_REVISION) ? "STALE_REVISION"
+                         : (rc == DVS_ERR_INVALID_STATE) ? "INVALID_STATE"
+                                                         : "INVALID_ARGUMENT";
+      send_envelope(c, rid, status, code, err, NULL);
+      goto done;
+    }
+    snprintf(data, sizeof(data), "{\"revision\":%d}", applied);
+    send_envelope(c, rid, 200, "OK", "committed", data);
+    char ev[256];
+    snprintf(ev, sizeof(ev),
+             "{\"operationId\":\"%s\",\"revision\":%d,\"status\":\"applied\"}", opid,
+             applied);
+    broadcast_event("media.layout_applied", ev);
+  } else if (strcmp(type, "abort") == 0) {
+    const char* opid = str_field(req, "operationId");
+    dvs_state_t snap;
+    dvs_state_snapshot(&snap);
+    if (snap.op_state == DVS_OP_IDLE && (!opid || !opid[0] || !snap.operation_id[0])) {
+      send_envelope(c, rid, 409, "INVALID_STATE", "nothing to abort", NULL);
+      goto done;
+    }
+    dvs_state_abort(opid);
+    send_envelope(c, rid, 200, "OK", "aborted", NULL);
+  } else if (strcmp(type, "clear") == 0) {
+    dvs_state_clear();
+    send_envelope(c, rid, 200, "OK", "cleared", NULL);
+  } else if (strcmp(type, "set_sources") == 0) {
+    /* whitelist JSON is stashed with the request; engine wiring lands in S1 */
+    send_envelope(c, rid, 200, "OK", "sources set", NULL);
+  } else if (strcmp(type, "query_state") == 0) {
+    dvs_state_t snap;
+    dvs_state_snapshot(&snap);
+    const char* name = "idle";
+    switch (snap.op_state) {
+      case DVS_OP_PREPARING: name = "preparing"; break;
+      case DVS_OP_PREPARED: name = "prepared"; break;
+      default: break;
+    }
+    snprintf(data, sizeof(data),
+             "{\"state\":\"%s\",\"revision\":%d,\"operationId\":\"%s\",\"opState\":%d,"
+             "\"rxSessions\":0,\"decoding\":0,\"layers\":0,"
+             "\"ptp\":{\"state\":\"unknown\",\"offsetUs\":0}}",
+             name, snap.revision, snap.operation_id, (int)snap.op_state);
+    send_envelope(c, rid, 200, "OK", "", data);
+  } else if (strcmp(type, "event") == 0) {
+    send_envelope(c, rid, 200, "OK", "event", NULL);
+  } else {
+    send_envelope(c, rid, 400, "INVALID_ARGUMENT", "unknown type", NULL);
+  }
+
+done:
+  json_object_put(req);
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* server loop                                                         */
+/* ------------------------------------------------------------------ */
 
 int dvs_ipc_server_run(const char* sock_path) {
   int listen_fd;
@@ -42,13 +286,14 @@ int dvs_ipc_server_run(const char* sock_path) {
     close(listen_fd);
     return -1;
   }
-  if (listen(listen_fd, 8) < 0) {
+  if (listen(listen_fd, DVS_IPC_MAX_CLIENTS) < 0) {
     perror("listen");
     close(listen_fd);
     return -1;
   }
 
   dvs_state_init();
+  memset(g_clients, 0, sizeof(g_clients));
 
   for (;;) {
     int client = accept(listen_fd, NULL, NULL);
@@ -57,61 +302,70 @@ int dvs_ipc_server_run(const char* sock_path) {
       perror("accept");
       continue;
     }
-    char buf[8192];
-    ssize_t n = read(client, buf, sizeof(buf) - 1);
-    if (n <= 0) {
+
+    dvs_client_t* c = NULL;
+    pthread_mutex_lock(&g_clients_mu);
+    for (int i = 0; i < DVS_IPC_MAX_CLIENTS; i++) {
+      if (!g_clients[i].active) {
+        c = &g_clients[i];
+        break;
+      }
+    }
+    if (c) {
+      c->fd = client;
+      c->active = 1;
+      pthread_mutex_init(&c->wmu, NULL);
+    }
+    pthread_mutex_unlock(&g_clients_mu);
+
+    if (!c) {
+      /* too many clients: reply inline without registering the slot */
+      const char* busy =
+          "{\"ok\":false,\"status\":503,\"code\":\"BUSY\",\"msg\":\"too many "
+          "clients\",\"data\":{},\"requestId\":\"ipc\"}\n";
+      (void)!write(client, busy, strlen(busy));
       close(client);
       continue;
     }
-    buf[n] = '\0';
 
-    /* Handle possibly multiple lines; process first line only. */
-    char* newline = strchr(buf, '\n');
-    if (newline) *newline = '\0';
+    /* long-lived connection: read lines until EOF */
+    char buf[DVS_IPC_BUF];
+    size_t used = 0;
+    for (;;) {
+      struct pollfd pfd = {.fd = client, .events = POLLIN};
+      int pr = poll(&pfd, 1, -1);
+      if (pr < 0) {
+        if (errno == EINTR) continue;
+        break;
+      }
+      if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL)) break;
+      if (!(pfd.revents & POLLIN)) break;
 
-    struct json_object* req = json_tokener_parse(buf);
-    const char* t = req ? type_of(req) : "";
+      ssize_t n = read(client, buf + used, sizeof(buf) - 1 - used);
+      if (n <= 0) break;
+      used += (size_t)n;
+      buf[used] = '\0';
 
-    char resp[1024];
-    if (strcmp(t, "configure") == 0) {
-      dvs_state_set_name("idle");
-      snprintf(resp, sizeof(resp),
-               "{\"ok\":true,\"status\":200,\"code\":\"OK\",\"msg\":\"configured\",\"data\":{},\"requestId\":\"ipc\"}");
-    } else if (strcmp(t, "prepare") == 0) {
-      dvs_state_set_name("prepared");
-      snprintf(resp, sizeof(resp),
-               "{\"ok\":true,\"status\":200,\"code\":\"OK\",\"msg\":\"prepared\",\"data\":{},\"requestId\":\"ipc\"}");
-    } else if (strcmp(t, "commit") == 0) {
-      dvs_state_set_revision(dvs_state_get_revision() + 1);
-      dvs_state_set_name("committed");
-      snprintf(resp, sizeof(resp),
-               "{\"ok\":true,\"status\":200,\"code\":\"OK\",\"msg\":\"committed\",\"data\":{\"revision\":%d},\"requestId\":\"ipc\"}",
-               dvs_state_get_revision());
-    } else if (strcmp(t, "abort") == 0) {
-      dvs_state_set_name("idle");
-      snprintf(resp, sizeof(resp),
-               "{\"ok\":true,\"status\":200,\"code\":\"OK\",\"msg\":\"aborted\",\"data\":{},\"requestId\":\"ipc\"}");
-    } else if (strcmp(t, "clear") == 0) {
-      dvs_state_set_name("idle");
-      snprintf(resp, sizeof(resp),
-               "{\"ok\":true,\"status\":200,\"code\":\"OK\",\"msg\":\"cleared\",\"data\":{},\"requestId\":\"ipc\"}");
-    } else if (strcmp(t, "set_sources") == 0) {
-      snprintf(resp, sizeof(resp),
-               "{\"ok\":true,\"status\":200,\"code\":\"OK\",\"msg\":\"sources set\",\"data\":{},\"requestId\":\"ipc\"}");
-    } else if (strcmp(t, "query_state") == 0) {
-      snprintf(resp, sizeof(resp),
-               "{\"ok\":true,\"status\":200,\"code\":\"OK\",\"msg\":\"\",\"data\":{\"state\":\"%s\",\"revision\":%d,\"rxSessions\":0,\"decoding\":0,\"layers\":0,\"ptp\":{\"state\":\"unknown\",\"offsetUs\":0}},\"requestId\":\"ipc\"}",
-               dvs_state_get_name(), dvs_state_get_revision());
-    } else if (strcmp(t, "event") == 0) {
-      snprintf(resp, sizeof(resp),
-               "{\"ok\":true,\"status\":200,\"code\":\"OK\",\"msg\":\"event\",\"data\":{},\"requestId\":\"ipc\"}");
-    } else {
-      snprintf(resp, sizeof(resp),
-               "{\"ok\":false,\"status\":400,\"code\":\"INVALID_ARGUMENT\",\"msg\":\"unknown type\",\"data\":{},\"requestId\":\"ipc\"}");
+      char* start = buf;
+      char* nl;
+      while ((nl = strchr(start, '\n')) != NULL) {
+        *nl = '\0';
+        if (start[0] != '\0') handle_line(c, start);
+        start = nl + 1;
+      }
+      /* keep the trailing partial line */
+      used -= (size_t)(start - buf);
+      memmove(buf, start, used);
+      if (used == sizeof(buf) - 1) {
+        /* oversized garbage line: drop it */
+        used = 0;
+      }
     }
 
-    if (req) json_object_put(req);
-    send_response(client, resp);
+    pthread_mutex_lock(&g_clients_mu);
+    c->active = 0;
+    pthread_mutex_unlock(&g_clients_mu);
+    pthread_mutex_destroy(&c->wmu);
     close(client);
   }
 

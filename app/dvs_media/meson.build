@@ -113,3 +113,5 @@ dvs_media = executable('dvs_media',
   include_directories: [include_directories('.'), mp4_inc],
 )
 
+subdir('tests')
+

@@ -265,7 +265,7 @@
     <script src="../../_shared/proto-shell.js"></script>
     <script src="../../_shared/node-state.js"></script>
     <script src="../../_shared/playback-tasks.js"></script>
-    <script src="../../_shared/mock-api.js"></script>
+    <script src="../../_shared/api.js"></script>
     <script src="../../_shared/platform-store.js"></script>
     <script>
       (function () {
@@ -932,7 +932,7 @@
         function taskAction(task) {
           var action = task.status === "pending_check" ? "check" : task.status === "pending_execution" ? "start" : task.status === "playing" ? "finish" : "";
           if (!action) return;
-          var result = DvsMockApi.request("POST", "/api/v1/playback-tasks/" + encodeURIComponent(task.id) + "/" + action, {}, { idempotencyKey: task.id + ":" + action });
+          var result = DvsApi.request("POST", "/api/v1/playback-tasks/" + encodeURIComponent(task.id) + "/" + action, {}, { idempotencyKey: task.id + ":" + action });
           if (!result.ok) { protoToast(result.msg || "任务操作未完成"); return; }
           protoToast(task.status === "pending_check" ? "检查通过，任务进入待执行" : task.status === "pending_execution" ? "任务已开始执行" : "任务已完成");
           render();
@@ -970,7 +970,7 @@
           var sceneSelect = $("select-task-scene");
           var sceneOption = sceneSelect.options[sceneSelect.selectedIndex] || null;
           var name = $("input-task-name").value.trim();
-          var result = DvsMockApi.request("POST", "/api/v1/playback-tasks", {
+          var result = DvsApi.request("POST", "/api/v1/playback-tasks", {
             name: name,
             sceneId: sceneSelect.value,
             sceneName: sceneOption ? sceneOption.textContent : "",

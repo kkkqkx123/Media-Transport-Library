@@ -1,13 +1,17 @@
 // dvs_platform main: node gateway + docs CRUD + op barrier + serial upgrade.
 #include <json-c/json.h>
 
+#include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <mutex>
 #include <string>
 #include <unistd.h>
+#include <unordered_map>
 #include <fstream>
 #include <sstream>
 #include <sys/stat.h>
@@ -21,8 +25,25 @@ static std::string g_web_root;
 
 static PlatformStore* g_store = nullptr;
 static OpCoordinator g_ops;
+static std::atomic<uint64_t> g_req_seq{0};
+static std::mutex g_idem_mu;
+static std::map<std::string, std::string> g_idem_cache;
 
 namespace {
+std::string next_request_id() {
+    uint64_t n = ++g_req_seq;
+    char b[32];
+    snprintf(b, sizeof(b), "p-%llu", (unsigned long long)n);
+    return b;
+}
+std::string idempotency_key(const HttpRequest& req) {
+    for (auto& h : req.headers) {
+        std::string k = h.first;
+        for (auto& c : k) c = (char)tolower((unsigned char)c);
+        if (k == "idempotency-key" && !h.second.empty()) return h.second;
+    }
+    return "";
+}
 std::string now_iso() {
     char b[32];
     time_t t = time(nullptr);
@@ -42,7 +63,7 @@ json_object* ok_envelope(json_object* data, const std::string& msg) {
     json_object_object_add(o, "code", json_object_new_string("OK"));
     json_object_object_add(o, "msg", json_object_new_string(msg.c_str()));
     json_object_object_add(o, "data", data ? data : json_object_new_object());
-    json_object_object_add(o, "requestId", json_object_new_string("p-1"));
+    json_object_object_add(o, "requestId", json_object_new_string(next_request_id().c_str()));
     return o;
 }
 json_object* fail_envelope(const char* code, int status, const std::string& msg) {
@@ -52,7 +73,7 @@ json_object* fail_envelope(const char* code, int status, const std::string& msg)
     json_object_object_add(o, "code", json_object_new_string(code));
     json_object_object_add(o, "msg", json_object_new_string(msg.c_str()));
     json_object_object_add(o, "data", json_object_new_object());
-    json_object_object_add(o, "requestId", json_object_new_string("p-1"));
+    json_object_object_add(o, "requestId", json_object_new_string(next_request_id().c_str()));
     return o;
 }
 void send_json(HttpResponse& res, json_object* o) {
@@ -90,6 +111,18 @@ bool route_docs(const std::string& kind, const HttpRequest& req, HttpResponse& r
         return true;
     }
     if (req.method == "POST" || req.method == "PUT") {
+        std::string ikey = idempotency_key(req);
+        std::string cache_key;
+        if (!ikey.empty()) {
+            cache_key = req.method + " " + req.path + "#" + ikey;
+            std::lock_guard<std::mutex> lk(g_idem_mu);
+            auto it = g_idem_cache.find(cache_key);
+            if (it != g_idem_cache.end()) {
+                res.body = it->second;
+                res.content_type = "application/json; charset=utf-8";
+                return true;
+            }
+        }
         json_object* b = json_tokener_parse(req.body.c_str());
         if (!b) b = json_object_new_object();
         if (id.empty()) {
@@ -106,6 +139,10 @@ bool route_docs(const std::string& kind, const HttpRequest& req, HttpResponse& r
         json_object* d = g_store->get_doc(kind, id);
         json_object_put(b);
         send_json(res, ok_envelope(d ? d : json_object_new_object(), ""));
+        if (!cache_key.empty()) {
+            std::lock_guard<std::mutex> lk(g_idem_mu);
+            if (g_idem_cache.size() < 1024) g_idem_cache[cache_key] = res.body;
+        }
         return true;
     }
     if (req.method == "DELETE") {
@@ -120,10 +157,12 @@ bool route_docs(const std::string& kind, const HttpRequest& req, HttpResponse& r
 int main(int argc, char** argv) {
     std::string db = "/tmp/dvs_platform.db";
     int port = 8081;
+    std::string web_root_arg;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if (a == "--db" && i + 1 < argc) db = argv[++i];
         else if (a == "--port" && i + 1 < argc) port = atoi(argv[++i]);
+        else if (a == "--web-root" && i + 1 < argc) web_root_arg = argv[++i];
     }
     g_store = new PlatformStore(db);
 
@@ -185,6 +224,42 @@ int main(int argc, char** argv) {
             if (req.method == "GET" && act.empty()) {
                 json_object* d = g_store->get_doc("node", id);
                 if (!d) { send_json(res, fail_envelope("NOT_FOUND", 404, "not found")); return; }
+                send_json(res, ok_envelope(d, ""));
+                return;
+            }
+            if (req.method == "PUT" && act.empty()) {
+                json_object* cur = g_store->get_doc("node", id);
+                if (!cur) { send_json(res, fail_envelope("NOT_FOUND", 404, "not found")); return; }
+                json_object* b = json_tokener_parse(req.body.c_str());
+                std::string nm = body_str(b, "name");
+                if (b) json_object_put(b);
+                if (nm.empty()) { send_json(res, fail_envelope("INVALID_ARGUMENT", 400, "missing name")); json_object_put(cur); return; }
+                json_object_object_del(cur, "name");
+                json_object_object_add(cur, "name", json_object_new_string(nm.c_str()));
+                g_store->put_doc("node", id, cur);
+                json_object_put(cur);
+                g_store->audit("{\"rename\":\"" + id + "\"}");
+                json_object* d = g_store->get_doc("node", id);
+                send_json(res, ok_envelope(d ? d : json_object_new_object(), ""));
+                return;
+            }
+            if (req.method == "POST" && act == "heartbeat") {
+                json_object* cur = g_store->get_doc("node", id);
+                if (!cur) { send_json(res, fail_envelope("NOT_FOUND", 404, "node unknown")); return; }
+                json_object_object_del(cur, "online");
+                json_object_object_add(cur, "online", json_object_new_boolean(1));
+                json_object_object_del(cur, "lastHeartbeat");
+                json_object_object_add(cur, "lastHeartbeat",
+                                       json_object_new_string(now_iso().c_str()));
+                g_store->put_doc("node", id, cur);
+                json_object_put(cur);
+                json_object* d = g_store->get_doc("node", id);
+                send_json(res, ok_envelope(d ? d : json_object_new_object(), "heartbeat received"));
+                return;
+            }
+            if (req.method == "GET" && act == "current-task") {
+                json_object* d = json_object_new_object();
+                json_object_object_add(d, "task", json_object_new_null());
                 send_json(res, ok_envelope(d, ""));
                 return;
             }
@@ -327,7 +402,12 @@ int main(int argc, char** argv) {
         send_json(res, fail_envelope("NOT_FOUND", 404, "unknown api"));
     };
 
-    if (g_web_root.empty()) g_web_root = "/data/kkkqkx/mtl/app/dvs_platform/web/src";
+    if (!web_root_arg.empty()) g_web_root = web_root_arg;
+    if (g_web_root.empty()) {
+        const char* env = getenv("DVS_WEB_ROOT");
+        if (env && *env) g_web_root = env;
+    }
+    if (g_web_root.empty()) g_web_root = "./web/src";
     HttpServer server(port, h);
     server.start();
     printf("dvs-platform listening on 0.0.0.0:%d\n", port);

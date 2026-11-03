@@ -11,19 +11,24 @@ threads_dep = dependency('threads', required: true)
 dl_dep = cc.find_library('dl', required: false)
 
 agent_src = '../dvs_agent'
-sqlite_src = agent_src + '/third_party/sqlite/sqlite3.c'
+common_src = '../dvs_common'
+sqlite_src = common_src + '/third_party/sqlite/sqlite3.c'
 
-inc = include_directories('.', agent_src, agent_src + '/third_party/sqlite')
+inc = include_directories('.', agent_src, common_src + '/include',
+                          common_src + '/third_party/sqlite')
+
+common_sources = files(
+  common_src + '/src/http_server.cpp',
+  common_src + '/src/http_client.cpp',
+  common_src + '/src/sha256.cpp',
+  sqlite_src,
+)
 
 platform_lib_src = files(
   'platform_store.cpp',
   'layout.cpp',
   'ops.cpp',
-  agent_src + '/http_server.cpp',
-  agent_src + '/http_client.cpp',
-  agent_src + '/sha256.cpp',
-  sqlite_src,
-)
+) + common_sources
 
 dvs_platform = executable('dvs_platform',
   files('main.cpp') + platform_lib_src,

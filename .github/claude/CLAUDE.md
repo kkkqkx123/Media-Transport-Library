@@ -16,6 +16,21 @@ Two standalone apps live on the `feat/rk3588-apps` branch (commit `add rk3568 ap
 
 ---
 
+## Compile guideline
+
+Refer to docs/dev/MTL_SYNC_GUIDE.md. MTL, RK3588 apps and any target that needs
+Rockchip MPP / libdrm / MTL / DPDK must be built on the devs compile server;
+do not build those on the current machine.
+
+Pure C/C++ control-plane packages with no MTL/Rockchip dependency (currently
+`app/dvs_agent` and `app/dvs_platform`) may be built locally for quick
+verification, but their results are not a substitute for a compile-server build
+when changing MTL-facing code.
+
+When need to compile kernel, refer to docs/dev/KERNEL_REPO_SYNC_GUIDE.md and perform all kernel builds on the devs compile server only; never compile kernels on the current machine. Then I'll handle the firmware flashing myself.
+
+---
+
 ## Read first: the repo's agent knowledge base
 
 Prefer these over re-deriving things from source:

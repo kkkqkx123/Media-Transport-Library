@@ -1,8 +1,7 @@
 /*
- * DVS real API adapter (node-side).
+ * DVS real API adapter (platform-side).
  *
- * Implements the same DvsMockApi.request interface as mock-api.js, but forwards
- * calls to the local dvs-agent HTTP service instead of localStorage.
+ * Forwards calls to the DVS platform HTTP service on the same origin.
  */
 (function (global) {
   "use strict";
@@ -36,9 +35,9 @@
     });
   }
 
-  global.DvsRealApi = {
+  global.DvsApi = {
     version: "real-v1",
-    source: "dvs-agent local HTTP",
+    source: "dvs-platform HTTP",
     request: function (method, path, body, options) {
       return normalize(method, path, body, options);
     },
@@ -48,6 +47,4 @@
     reset: function () { return Promise.resolve({ ok: true, status: 200, code: "OK", msg: "", data: { reset: true }, requestId: requestId() }); }
   };
 
-  // Runtime switch: if real backend is reachable, expose as DvsMockApi.
-  global.DvsMockApi = global.DvsRealApi;
 })(window);

@@ -225,13 +225,13 @@
 
     <script src="../../_shared/proto-shell.js"></script>
     <script src="../../_shared/node-state.js"></script>
-    <script src="../../_shared/mock-api.js"></script>
+    <script src="../../_shared/api.js"></script>
     <script src="../../_shared/platform-store.js"></script>
     <script>
       (function () {
         /* 节点列表只消费注册 / 心跳状态，不在页面内维护设备示例数据。 */
         function readDevices() {
-          var response = DvsMockApi.request("GET", "/api/v1/nodes?pageSize=100");
+          var response = DvsApi.request("GET", "/api/v1/nodes?pageSize=100");
           var nodes = response.ok ? response.data.items : [];
           var walls = DvsPlatformStore.listWalls();
           return nodes.map(function (node) {
@@ -410,7 +410,7 @@
           btn.disabled = true;
           setTimeout(function () {
             btn.disabled = false;
-            var response = DvsMockApi.request("PUT", "/api/v1/nodes/" + encodeURIComponent(editingId), { name: t }, { idempotencyKey: "rename-node-" + editingId + "-" + t });
+            var response = DvsApi.request("PUT", "/api/v1/nodes/" + encodeURIComponent(editingId), { name: t }, { idempotencyKey: "rename-node-" + editingId + "-" + t });
             if (!response.ok) { protoToast(response.msg); btn.disabled = false; return; }
             devices = readDevices();
             protoCloseDrawer("drawer-edit");
@@ -435,7 +435,7 @@
             content: content,
             onOk: function () {
               var wasOnline = d.online;
-              var response = DvsMockApi.request("POST", "/api/v1/nodes/" + encodeURIComponent(d.id) + "/retire", {}, { idempotencyKey: "retire-node-" + d.id });
+              var response = DvsApi.request("POST", "/api/v1/nodes/" + encodeURIComponent(d.id) + "/retire", {}, { idempotencyKey: "retire-node-" + d.id });
               if (!response.ok) { protoToast(response.msg); return; }
               DvsPlatformStore.listWalls().forEach(function (wall) {
                 var patch = {};
@@ -528,7 +528,7 @@
               setTimeout(function () {
                 closeFw();
                 btn.disabled = false;
-                var response = DvsMockApi.request("POST", "/api/v1/nodes/upgrade", { targetNodeIds: picked.map(function (d) { return d.id; }), fwVersion: "V1.0.1" }, { idempotencyKey: "upgrade-nodes-" + picked.map(function (d) { return d.id; }).join(",") });
+                var response = DvsApi.request("POST", "/api/v1/nodes/upgrade", { targetNodeIds: picked.map(function (d) { return d.id; }), fwVersion: "V1.0.1" }, { idempotencyKey: "upgrade-nodes-" + picked.map(function (d) { return d.id; }).join(",") });
                 if (!response.ok) { protoToast(response.msg); btn.disabled = false; return; }
                 devices = readDevices();
                 protoToast("已下发 " + picked.length + " 台，升级结果以在线状态与固件版本回传为准");

@@ -5,7 +5,6 @@
         var pendingRole = null;
         var opsRunning = false;
         var fwReady = false;
-        var fwFailure = false;
         var pendingFwFile = null;
         var pendingFwSha = "";
         var registrationBusy = false;
@@ -13,11 +12,8 @@
         var nodeCapabilities = DvsHardwareCapabilities.resolve({});
         var mediaState = {};
 
-        function api(method, path, body, opts) {
-          return DvsMockApi.request(method, path, body || {}, opts || {});
-        }
         function apiAsync(method, path, body, opts) {
-          return DvsMockApi.requestAsync(method, path, body || {}, opts || {});
+          return DvsApi.requestAsync(method, path, body || {}, opts || {});
         }
 
         function loadNodeInfo() {
@@ -38,6 +34,20 @@
           });
         }
 
+        function esc(s) { return String(s == null ? "" : s).replace(/[&<>\"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" }[c]; }); }
+        function renderPlaybackTasks() {
+          var cur = (nodeSnapshot && nodeSnapshot.currentPlayback) || null;
+          var playing = cur && cur.status === "playing";
+          $("playback-current-status").textContent = playing ? "播放中" : "暂无播放";
+          $("playback-current-detail").textContent = playing
+            ? ((cur.name || cur.taskId || "当前任务") + " · " + (cur.taskId || ""))
+            : "当前节点没有正在播放的任务";
+          $("playback-current").setAttribute("data-task-id", (cur && cur.taskId) || "");
+          var hint = '<div class="task-empty">完整任务列表由平台服务管理，节点本机页仅投影当前播放。</div>';
+          $("playback-task-list").innerHTML = hint;
+          $("playback-record-list").innerHTML = hint;
+        }
+        function taskAction() { protoToast("任务操作请前往平台服务端执行"); }
         function $(id) { return document.getElementById(id); }
         function roleText(role) { return role === "input" ? "输入盒" : "输出盒"; }
         function nodeExceptionText(node) {
@@ -336,23 +346,26 @@
         /* ---------- 登录 ---------- */
         $("btn-login").onclick = function () {
           var u = $("login-user").value.trim(), p = $("login-pwd").value;
-          var result = DvsMockApi.request("POST", "/api/v1/node/login", { username: u, password: p }, { idempotencyKey: "login-" + Date.now() });
-          if (!result.ok) {
-            $("field-pwd").classList.add("is-error");
-            $("login-err").style.display = "block";
-            $("login-err").textContent = (result && result.msg) ? result.msg : "账号或密码错误";
-            return;
-          }
-          $("field-pwd").classList.remove("is-error");
-          $("login-err").style.display = "none";
-          $("login-mask").style.display = "none";
-          var req = result.data && result.data.requirement;
-          if (req && req.passwordChangeRequired) {
-            protoToast("首次登录请修改密码");
-            openModal("pwd-modal");
-          } else {
-            protoToast("登录成功");
-          }
+          $("btn-login").disabled = true;
+          apiAsync("POST", "/api/v1/node/login", { username: u, password: p }, { idempotencyKey: "login-" + Date.now() }).then(function (result) {
+            $("btn-login").disabled = false;
+            if (!result || !result.ok) {
+              $("field-pwd").classList.add("is-error");
+              $("login-err").style.display = "block";
+              $("login-err").textContent = (result && result.msg) ? result.msg : "账号或密码错误";
+              return;
+            }
+            $("field-pwd").classList.remove("is-error");
+            $("login-err").style.display = "none";
+            $("login-mask").style.display = "none";
+            var req = result.data && result.data.requirement;
+            if (req && req.passwordChangeRequired) {
+              protoToast("首次登录请修改密码");
+              openModal("pwd-modal");
+            } else {
+              protoToast("登录成功");
+            }
+          });
         };
         $("login-pwd").addEventListener("keydown", function (e) { if (e.key === "Enter") $("btn-login").click(); });
         $("btn-logout").onclick = function () {
@@ -550,7 +563,6 @@
                   pendingText: "配置已保存，等待网络应用",
                   applyingText: "应用中 · 正在切换网络地址",
                   appliedText: "已生效 · 请使用新 IP 访问：" + newIp,
-                  fail: function () { return newIp === "192.168.10.53"; },
                   failedText: "IP 冲突，已回滚原配置",
                   onPending: function () { patchNodeConfig("network", "pending", "配置已保存，等待网络应用"); },
                   onApplying: function () {
@@ -620,27 +632,35 @@
           $("btn-register").disabled = true;
           setRegState("注册中…", false);
           setConfigState("registration-config-state", "applying", "正在提交注册请求");
-          patchNode({ online: true, runtimeState: "registering", runtimeMessage: "正在提交注册请求", registerState: "registering", registerMessage: "正在提交注册请求", configStates: { registration: "applying" }, configMessages: { registration: "正在提交注册请求" } });
-          syncNodeView();
-          setTimeout(function () {
+          loadNodeInfo().then(function (r) {
             registrationBusy = false;
             $("btn-register").disabled = false;
-            if ($("in-server").value.indexOf("offline") >= 0) {
+            if (!r || !r.ok) {
               setRegState("连接失败 · 请检查地址", false);
-              setConfigState("registration-config-state", "failed", "注册失败，可修改地址后重试");
-              patchNode({ online: true, runtimeState: "register_failed", runtimeMessage: "注册失败，可修改地址后重试", registerState: "failed", registerMessage: "连接失败（注册回执失败）", lastRegisterAt: new Date().toISOString(), configStates: { registration: "failed" }, configMessages: { registration: "注册失败，可修改地址后重试" }, exception: { code: "REGISTER_FAILED", reason: "注册失败，可修改地址后重试", at: new Date().toISOString() } });
+              setConfigState("registration-config-state", "failed", "注册状态读取失败，可重试");
               syncNodeView();
-              protoToast("注册失败，本机播放不受影响");
-              setLastOps("设备注册", "失败");
               return;
             }
-            setRegState("已注册 · " + roleText(currentRole), true);
-            setConfigState("registration-config-state", "applied", "已生效 · 设备已注册");
-            patchNode({ online: true, runtimeState: "online", runtimeMessage: "运行正常", registerState: "registered", registerMessage: "已注册", lastRegisterAt: new Date().toISOString(), configStates: { registration: "applied" }, configMessages: { registration: "已生效 · 设备已注册" }, exception: null });
             syncNodeView();
-            protoToast("设备注册成功");
-            setLastOps("设备注册", "已生效");
-          }, 900);
+            renderRole();
+            var st = nodeSnapshot.registerState;
+            if (st === "registered") {
+              setRegState("已注册 · " + roleText(currentRole), true);
+              setConfigState("registration-config-state", "applied", "已生效 · 设备已注册");
+              protoToast("设备注册成功");
+              setLastOps("设备注册", "已生效");
+            } else if (st === "failed") {
+              setRegState("连接失败 · 请检查地址", false);
+              setConfigState("registration-config-state", "failed", "注册失败，可修改地址后重试");
+              protoToast("注册失败，本机播放不受影响");
+              setLastOps("设备注册", "失败");
+            } else {
+              setRegState("注册中…", false);
+              setConfigState("registration-config-state", "applying", "注册请求已提交，等待平台回执");
+              protoToast("注册请求已提交");
+              setLastOps("设备注册", "已提交");
+            }
+          });
         }
         $("btn-save-registration").onclick = function () {
           $("info-regmode").textContent = regMode() === "auto" ? "自动注册" : "手动注册";
@@ -720,7 +740,6 @@
             pendingText: "配置已保存，等待 SIP 应用",
             applyingText: "应用中 · 正在连接 SIP 服务",
             appliedText: "已生效 · SIP 已连接",
-            fail: function () { return server.indexOf("offline") >= 0; },
             failedText: "SIP 连接失败，可修改参数后重试",
             onPending: function () { patchNodeConfig("sip", "pending", "配置已保存，等待 SIP 应用"); },
             onApplying: function () { patchNodeConfig("sip", "applying", "正在连接 SIP 服务"); },
@@ -798,7 +817,6 @@
             return;
           }
           fwReady = true;
-          fwFailure = f.name.toLowerCase().indexOf("fail") >= 0;
           pendingFwFile = f;
           pendingFwSha = "";
           $("btn-upgrade").disabled = false;

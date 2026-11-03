@@ -66,8 +66,8 @@ hardware-bound). The full marker set and its authoring rules live in
 | Category | Backend | Build artifact |
 |---|---|---|
 | `st20p`/`st22p`/`st30p`/`st40`/`st40p`/`dma`/`ptp`/`rss_mode`/`rx_timing`/`udp`/`virtio_user`/`xdp`/`kernel_socket` | RxTxApp | `.local_install/mtl/bin/RxTxApp` |
-| `ffmpeg/` | in-repo FFmpeg + MTL muxer | `ecosystem/ffmpeg_plugin/FFmpeg-release-*/ffmpeg` (system ffmpeg unused) |
-| `gstreamer/` | in-repo GStreamer plugin | `ecosystem/gstreamer_plugin/builddir/libgstmtl_*.so` |
+| `ffmpeg/` | in-repo FFmpeg + MTL muxer | `.local_install/ffmpeg/bin/ffmpeg`, built by `script/build_ffmpeg_plugin.sh` (system ffmpeg unused) |
+| `gstreamer/` | in-repo GStreamer plugin | `.local_install/gstreamer/gstreamer-1.0/libgstmtl_*.so`, built by `script/build_gstreamer_plugin.sh` |
 | `performance/` | RxTxApp capacity sweep | RxTxApp; very long |
 
 ## Logs
@@ -96,7 +96,7 @@ sudo grep -E "EAL|hugepage|VF|RxTxApp|RemoteProcess|Traceback|err:" \
 | `RemoteProcessInvalidState: Process is finished` (ffmpeg) | **(setup)** In-repo ffmpeg/libav not installed. |
 | RxTxApp exit `127` with `error while loading shared libraries: librte_*.so.26` | **(setup)** DPDK is installed but the dynamic linker cache is stale. Re-run setup (it refreshes `ldconfig`) or run `sudo ldconfig`, then confirm `ldd .local_install/mtl/bin/RxTxApp` has no `not found`. |
 | `RuntimeError: Failed to start MtlManager on host` (pytest `mtl_manager` fixture, setup error not a test failure) | **(setup)** `.local_install/mtl/bin/MtlManager` missing — the host only has the system-wide gtest build. Run `acceptance_setup.sh setup --base-only`; the `build_mtl`/`dpdk_build` MCP tools target `build/` + `/usr/local` instead, which pytest doesn't use. |
-| `Media file not present on <host>: /mnt/media/...` (SKIPPED) | **(setup)** NFS empty/unmounted. ASK the user for the NFS source; never skip silently. |
+| `Media file not present on <host>: /mnt/media/...` (ERROR) | **(setup)** NFS empty/unmounted. ASK the user for the NFS source; never skip silently. |
 | `cp: cannot stat /mnt/media/...` | **(setup)** Same — NFS not populated. |
 | `mount: bad option ... mount.<type> helper` | **(setup)** `nfs-common` missing. |
 | `SSHConnection.__init__() missing … 'password'` | **(setup)** Topology needs `password: ''`. |

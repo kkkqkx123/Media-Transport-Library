@@ -17,7 +17,7 @@ test.
 | Group            | Path                                                                                                   | Owns                                                                                                        |
 | ---------------- | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
 | **Harness**      | `conftest.py` (~1.4k lines)                                                                            | Every fixture: topology load, host prep, VF pools, media staging, capture, clocks, logging, cleanup         |
-| **Host control** | `common/nicctl.py`, `common/host_setup.py`                                                             | `Nicctl` (VF create/bind), `InterfaceSetup` (per-test interface allocation), hugepages, PF up, CPU governor |
+| **Host control** | `common/nicctl.py`, `common/host_setup.py`                                                             | `Nicctl` (VF create/bind), `InterfaceSetup` (per-test interface allocation), hugepage check, PF up, CPU governor and turbo check |
 | **Adapters**     | `mtl_engine/application_base.py`, `rxtxapp.py`, `ffmpeg.py`, `gstreamer.py`                            | `Application` ABC + its three concrete subclasses: command building, process lifecycle, result validation   |
 | **Parameters**   | `mtl_engine/config/universal_params.py`, `rxtxapp_config.py`                                           | The single vocabulary of test knobs, and the RxTxApp JSON config template                                   |
 | **Media**        | `mtl_engine/media_files.py`, `media_creator.py`, `ramdisk.py`                                          | Curated asset registry with metadata; synthetic asset generation; tmpfs staging                             |
@@ -256,8 +256,9 @@ heuristic. Prefer explicit in CI; it documents the wiring.
 
 `evaluate()` uploads the pcap to EBU LIST and fails the test when the report
 disagrees with the `CaptureIntent` — ST 2110-21 schedule (narrow or
-narrow_linear unless `allow_wide_compliance`), packing mode, resolution,
-sampling + colour depth, and frame rate. A failed upload or an unparseable
+narrow_linear unless `allow_wide_compliance`), packing mode, resolution and
+frame rate. Sampling and colour depth are not checked: EBU LIST reports
+YCbCr-4:2:2 10-bit for every video stream. A failed upload or an unparseable
 response fails the test; it never silently passes. Capture is disabled for
 8K, which the analyser does not support. A test that requests `pcap_capture`
 but never dispatches it fails in teardown.

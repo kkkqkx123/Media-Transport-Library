@@ -101,10 +101,12 @@ human-runnable script when shell logic is required. The same command must work
 locally and in CI, for example:
 
 ```sh
-task ci:validate-ice
-task ci:build-jpegxs
-task ci:validate-jpegxs
+task ci:validate-cache COMPONENT=ice
+sudo -E "$(command -v task)" ci:activate-ice
+task ci:validate-cache COMPONENT=jpegxs
 ```
+
+`ci:activate-ice` reloads the ICE module and removes the VFs of each PF.
 
 This keeps logs grouped by operation, makes failures reproducible without a
 runner, and avoids maintaining separate local and CI implementations.

@@ -10,11 +10,12 @@ import re
 import shlex
 import shutil
 import time
+import zlib
 from typing import Any, Dict
 
 import pytest
 from common.collect_platform_info import collect_platform_info
-from common.host_setup import ensure_hugepage_access, ensure_pf_up
+from common.host_setup import check_hugepages, ensure_pf_up
 from common.mtl_manager.mtlManager import MtlManager
 from common.nicctl import InterfaceSetup, Nicctl
 from create_pcap_file.netsniff import (
@@ -27,14 +28,10 @@ from mfd_common_libs.log_levels import TEST_FAIL, TEST_INFO, TEST_PASS
 from mfd_connect.exceptions import ConnectionCalledProcessError
 from mtl_engine import ip_pools
 from mtl_engine.const import (
-    DPDK_LIB_PATH,
-    FFMPEG_LIB_PATH,
     FFMPEG_PATH,
     FRAMES_CAPTURE,
-    GSTREAMER_LIB_PATH,
     ISOLATE_SH,
     LOG_FOLDER,
-    MTL_LIB_PATH,
     NIC_FAMILY_BY_DEVICE_ID,
     PERF_LOG_FOLDER,
     RXTXAPP_PATH,
@@ -761,7 +758,7 @@ def nic_port_list(hosts: dict, mtl_path, test_config, host_dma_devices) -> None:
             return DEFAULT_POOL_SIZE
 
     for host in hosts.values():
-        ensure_hugepage_access(host)
+        check_hugepages(host)
 
         # Use per-host MTL path from topology extra_info, fall back to
         # the global mtl_path fixture.
@@ -1044,13 +1041,16 @@ def media_file(media_ramdisk, request, hosts, test_config, output_files):
         # Per-host media_path from topology extra_info, fall back to test_config
         media_path = get_host_media_path(host, default=default_media_path)
         src_media_file_path = os.path.join(media_path, media_file_info["filename"])
-        # Probe source existence first so missing assets become SKIPPED rather
-        # than ERROR — they are environment/data issues, not test logic bugs.
+        # A missing asset fails the case's setup (ERROR), never skips it: a skip
+        # goes unnoticed, and hid 105 nightly cases for weeks.
         probe = host.connection.execute_command(
             f"test -f {src_media_file_path}", expected_return_codes=None
         )
         if probe.return_code != 0:
-            pytest.skip(f"Media file not present on {host}: {src_media_file_path}")
+            pytest.fail(
+                f"Media file not present on {host}: {src_media_file_path}",
+                pytrace=False,
+            )
         cmd = f"sudo cp {src_media_file_path} {ramdisk_media_file_path}"
         try:
             host.connection.execute_command(cmd)
@@ -1081,6 +1081,14 @@ def mtl_manager(hosts):
     yield managers
     for mgr in managers.values():
         mgr.stop()
+
+
+def _shard(value):
+    """Parse ``K/N`` into the 1-based shard ``K`` of ``N``."""
+    index, total = map(int, value.split("/"))
+    if not 0 < index <= total:
+        raise ValueError(value)
+    return index, total
 
 
 def pytest_addoption(parser):
@@ -1119,6 +1127,12 @@ def pytest_addoption(parser):
         type=lambda args: shlex.join(shlex.split(args)),
         help="Extra RxTxApp arguments for the measured app of a performance "
         "sweep. Example: --sut_app_args='--nb_rx_desc 1024 --rx_pool_data_size 1300'",
+    )
+    parser.addoption(
+        "--shard",
+        type=_shard,
+        help="run only shard K of N of the selected tests, e.g. 2/4; the N "
+        "shards together run every test once",
     )
 
 
@@ -1435,12 +1449,28 @@ def ffmpeg_app() -> FFmpeg:
     return FFmpeg(FFMPEG_PATH)
 
 
-def pytest_collection_modifyitems(items):
-    """Add ``base_performance`` marker to 1080p / 59fps combinations."""
+def pytest_collection_modifyitems(config, items):
+    """Add ``base_performance`` marker to 1080p / 59fps combinations.
+
+    With ``--shard``, also deselect the tests of the other shards.
+    """
     mark = pytest.mark.base_performance
     for item in items:
         if "1080p" in item.nodeid and "59fps" in item.nodeid:
             item.add_marker(mark)
+    shard = config.getoption("--shard")
+    if shard:
+        index, total = shard
+        kept, deselected = [], []
+        for item in items:
+            # crc32, not hash(): str hashes differ per process, and the shards
+            # of a run must agree on where each test goes.
+            if zlib.crc32(item.nodeid.encode()) % total == index - 1:
+                kept.append(item)
+            else:
+                deselected.append(item)
+        config.hook.pytest_deselected(items=deselected)
+        items[:] = kept
 
 
 # ---------------------------------------------------------------------------
@@ -1523,64 +1553,6 @@ def _ensure_clean_hw_state(hosts, mtl_path):
     yield
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _register_local_libs(hosts, mtl_path):
-    """Register .local_install libraries via ldconfig so LD_LIBRARY_PATH is unnecessary."""
-    # Some *_LIB_PATH constants are colon-separated (LD_LIBRARY_PATH style).
-    # ld.so.conf requires one directory per line, so split on ':' first.
-    raw_paths = [MTL_LIB_PATH, DPDK_LIB_PATH, FFMPEG_LIB_PATH, GSTREAMER_LIB_PATH]
-    lib_dirs = []
-    for p in raw_paths:
-        for part in p.split(":"):
-            lib_dirs.append(os.path.join(mtl_path, part.removeprefix("./")))
-
-    # Also register the st22 plugin trees, wherever each component's install
-    # layout put its shared objects (lib, lib64, lib/x86_64-linux-gnu). Without
-    # the jpegxs tree, ldconfig -p never lists
-    # libst_plugin_st22_svt_jpeg_xs.so and every JPEG XS test fails the
-    # require_encoder() pre-flight check (mtl_plugin_check_cmd) before it sends
-    # a packet.
-    for component in (".local_install/plugins", ".local_install/jpegxs"):
-        base = os.path.join(mtl_path, component)
-        if not os.path.isdir(base):
-            continue
-        for root, dirs, files in os.walk(base):
-            if any(f.endswith(".so") for f in files):
-                lib_dirs.append(root)
-
-    conf = "\\n".join(lib_dirs)
-    ffmpeg_bin = os.path.join(mtl_path, FFMPEG_PATH.removeprefix("./"))
-    # /usr/local/lib precedes /etc/ld.so.conf.d/* in /etc/ld.so.conf, so any
-    # stale libav*/libsw*/libpostproc* there shadows the .local_install build.
-    # Every write below lands outside the SSH user's home, and that user is not
-    # necessarily root -- a fleet runner logs in as an ordinary account with
-    # passwordless sudo, which is what every other privileged step in this file
-    # assumes. Without sudo the whole chain fails on the first redirection and
-    # the tests inherit a linker cache that knows nothing about
-    # .local_install.
-    purge = (
-        "sudo mkdir -p /var/backups/mtl_libav_shadow && "
-        "sudo mv -f /usr/local/lib/libav*.so* /usr/local/lib/libsw*.so* "
-        "/usr/local/lib/libpostproc*.so* /usr/local/lib/x86_64-linux-gnu/libst_plugin_st22_avcodec.so* "
-        "/usr/local/lib64/libst_plugin_st22_avcodec.so* "
-        "/usr/local/lib/libst_plugin_st22_avcodec.so* /var/backups/mtl_libav_shadow/ "
-        "2>/dev/null; true"
-    )
-    for host in hosts.values():
-        try:
-            host.connection.execute_command(
-                f"{purge} && printf '{conf}\\n' | sudo tee /etc/ld.so.conf.d/mtl_local.conf"
-                f" > /dev/null && sudo ldconfig"
-                f" && sudo ln -sf {ffmpeg_bin}/ffprobe /usr/local/bin/ffprobe"
-                f" && sudo ln -sf {ffmpeg_bin}/ffmpeg /usr/local/bin/ffmpeg",
-                shell=True,
-                timeout=15,
-            )
-        except Exception as e:
-            logger.warning("ldconfig registration failed on %s: %s", host.name, e)
-    yield
-
-
 @pytest.fixture(scope="session")
 def app_factory(mtl_path, hosts, host_dma_devices):
     """Return a factory that creates framework adapter instances.
@@ -1602,12 +1574,16 @@ def app_factory(mtl_path, hosts, host_dma_devices):
             app._default_dma_dev = dma_dev
             return app
         elif application == "ffmpeg":
-            return FFmpeg(
+            app = FFmpeg(
                 app_path=os.path.join(mtl_path, FFMPEG_PATH.removeprefix("./"))
             )
+            app._default_dma_dev = dma_dev
+            return app
         elif application == "gstreamer":
             # gst-launch-1.0 is the system binary; only the plugin is in-tree.
-            return GStreamer()
+            app = GStreamer()
+            app._default_dma_dev = dma_dev
+            return app
         else:
             raise ValueError(f"Unknown application: {application}")
 

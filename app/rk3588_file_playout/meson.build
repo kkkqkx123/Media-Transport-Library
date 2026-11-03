@@ -31,7 +31,7 @@ common_c_args = ['-D_GNU_SOURCE', '-DALLOW_EXPERIMENTAL_API', '-Wno-pedantic']
 # ---- common shared utilities (single source of truth) ----
 common_inc = include_directories('../rk3588_common/include',
                                 '../rk3588_common/include/rk3588_common')
-mp4_inc = [include_directories('.'), common_inc]
+file_playout_inc = [include_directories('.'), common_inc]
 
 # ---- FFmpeg + json-c (TX and/or RX config probe) ----
 libavformat_dep = disabler()
@@ -70,7 +70,7 @@ endif
 # ============================================================
 # Level 0: shared infrastructure (no MPP/DRM/ALSA)
 # ============================================================
-mp4_shared = static_library('mp4_shared',
+file_playout_shared = static_library('file_playout_shared',
   files(
     '../rk3588_common/src/ring_buffer.c',
     '../rk3588_common/src/slab_pool.c',
@@ -92,16 +92,16 @@ test_tx_tai_ts = executable('test_tx_tai_ts',
   files('tests/test_tx_tai_ts.c'),
   c_args: common_c_args,
   dependencies: [mtl_dep],
-  link_with: [mp4_shared],
-  include_directories: mp4_inc,
+  link_with: [file_playout_shared],
+  include_directories: file_playout_inc,
 )
 test('tx_tai_ts', test_tx_tai_ts)
 
 test_e2e_stamp = executable('test_e2e_stamp',
   files('tests/test_e2e_stamp.c'),
   c_args: common_c_args,
-  link_with: [mp4_shared],
-  include_directories: mp4_inc,
+  link_with: [file_playout_shared],
+  include_directories: file_playout_inc,
 )
 test('e2e_stamp', test_e2e_stamp)
 
@@ -109,11 +109,11 @@ test('e2e_stamp', test_e2e_stamp)
 # MP4 probe (FFmpeg) — config + TX demux
 # ============================================================
 if build_tx or build_rx
-  mp4_probe = static_library('mp4_probe',
+  file_playout_probe = static_library('file_playout_probe',
     files('tx/mp4_demux.c'),
     c_args: common_c_args,
     dependencies: [libavformat_dep, libavcodec_dep, libavutil_dep],
-    include_directories: mp4_inc,
+    include_directories: file_playout_inc,
   )
 endif
 
@@ -121,7 +121,7 @@ endif
 # TX: platform-independent (FFmpeg + MTL only)
 # ============================================================
 if build_tx
-  mp4_tx = static_library('mp4_tx',
+  file_playout_tx_lib = static_library('file_playout_tx_lib',
     files(
       'tx/extradata_handler.c',
       'tx/mtl_tx_video.c',
@@ -131,25 +131,25 @@ if build_tx
     ),
     c_args: common_c_args,
     dependencies: [libavformat_dep, libavcodec_dep, libavutil_dep, mtl_dep],
-    link_with: [mp4_shared, mp4_probe],
-    include_directories: mp4_inc,
+    link_with: [file_playout_shared, file_playout_probe],
+    include_directories: file_playout_inc,
   )
 
   file_playout_tx = executable('file_playout_tx',
-    files('file_playout_config.c', 'mp4_tx_app.c'),
+    files('file_playout_config.c', 'file_playout_tx_app.c'),
     c_args: common_c_args,
     dependencies: [mtl_dep, threads_dep, libjson_c_dep,
                    libavformat_dep, libavcodec_dep, libavutil_dep],
-    link_with: [mp4_shared, mp4_probe, mp4_tx],
-    include_directories: mp4_inc,
+    link_with: [file_playout_shared, file_playout_probe, file_playout_tx_lib],
+    include_directories: file_playout_inc,
   )
 
   executable('test_file_playout',
     files('tests/test_file_playout.c'),
     c_args: common_c_args,
     dependencies: [libavformat_dep, libavcodec_dep, libavutil_dep, threads_dep],
-    link_with: [mp4_shared, mp4_probe, mp4_tx],
-    include_directories: mp4_inc,
+    link_with: [file_playout_shared, file_playout_probe, file_playout_tx_lib],
+    include_directories: file_playout_inc,
   )
 endif
 
@@ -160,7 +160,7 @@ if build_rx
   libdrm_dep    = dependency('libdrm', required: true)
   libasound_dep = dependency('alsa', required: true)
 
-  mp4_rx = static_library('mp4_rx',
+  file_playout_rx_lib = static_library('file_playout_rx_lib',
     files(
       'rx/alsa_audio.c',
       'rx/playout_buffer.c',
@@ -179,24 +179,24 @@ if build_rx
     c_args: common_c_args,
     dependencies: [libasound_dep, mtl_dep, threads_dep,
                    rockchip_mpp_dep, libdrm_dep],
-    link_with: [mp4_shared],
-    include_directories: mp4_inc,
+    link_with: [file_playout_shared],
+    include_directories: file_playout_inc,
   )
 
   file_playout_rx = executable('file_playout_rx',
-    files('file_playout_config.c', 'mp4_rx_app.c'),
+    files('file_playout_config.c', 'file_playout_rx_app.c'),
     c_args: common_c_args,
     dependencies: [mtl_dep, threads_dep, libasound_dep, libjson_c_dep,
                    libavformat_dep, libavcodec_dep, libavutil_dep],
-    link_with: [mp4_shared, mp4_probe, mp4_rx],
-    include_directories: mp4_inc,
+    link_with: [file_playout_shared, file_playout_probe, file_playout_rx_lib],
+    include_directories: file_playout_inc,
   )
 
   test_media_clk = executable('test_media_clk',
     files('tests/test_media_clk.c', 'rx/media_clk.c'),
     c_args: common_c_args,
     dependencies: [mtl_dep],
-    include_directories: mp4_inc,
+    include_directories: file_playout_inc,
   )
   test('media_clk', test_media_clk)
 
@@ -204,21 +204,21 @@ if build_rx
     files('tests/rx_minimal.c'),
     c_args: common_c_args,
     dependencies: [mtl_dep, threads_dep],
-    include_directories: mp4_inc,
+    include_directories: file_playout_inc,
   )
 
   test_drm_mode = executable('test_drm_mode',
     files('tests/test_drm_mode.c'),
     c_args: common_c_args,
-    link_with: [mp4_shared],
-    include_directories: mp4_inc,
+    link_with: [file_playout_shared],
+    include_directories: file_playout_inc,
   )
   test('drm_mode', test_drm_mode)
 
   test_display_layout = executable('test_display_layout',
     files('tests/test_display_layout.c', 'shared/display_layout.c'),
     c_args: common_c_args,
-    include_directories: mp4_inc,
+    include_directories: file_playout_inc,
   )
   test('display_layout', test_display_layout)
 
@@ -226,6 +226,6 @@ if build_rx
     files('tests/test_drm_plane.c'),
     c_args: common_c_args,
     dependencies: [libdrm_dep],
-    include_directories: mp4_inc,
+    include_directories: file_playout_inc,
   )
 endif

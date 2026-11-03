@@ -5,7 +5,7 @@
 #include <signal.h>
 #include <stdatomic.h>
 
-#include "mp4_dist_config.h"
+#include "file_playout_config.h"
 #include "ipc/ipc_server.h"
 #include "engine/capability.h"
 #include "engine/session_mgr.h"
@@ -51,10 +51,10 @@ int main(int argc, char** argv) {
     free(cap_json);
     dvs_capability_free(&cap);
 
-    mp4_dist_cfg cfg;
+    file_playout_cfg cfg;
     memset(&cfg, 0, sizeof(cfg));
     if (config_path) {
-        if (mp4_dist_config_load(config_path, &cfg) != 0) {
+        if (file_playout_config_load(config_path, &cfg) != 0) {
             fprintf(stderr, "failed to load config: %s\n", config_path);
             return 1;
         }

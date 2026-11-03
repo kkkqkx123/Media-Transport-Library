@@ -11,7 +11,7 @@
 
 | 阶段 | 文档声明 | 实测结果 |
 |---|---|---|
-| **S0** 公共库扩展 | "扩展 `rk3588_common`" | **未落地**。`rk3588_common/` 仍只有 A/B 档（ring_buffer/slab_pool/timer + 5 头文件）。`dvs_media/meson.build` 实际走文档允许的 fallback：直接把 `mp4_dist/shared/*.c`、`mp4_dist/rx/*.c` 编进 `dvs_shared`/`dvs_rx` 静态库。两 app 各自仍持有 `shared/` 副本。 |
+| **S0** 公共库扩展 | "扩展 `rk3588_common`" | **未落地**。`rk3588_common/` 仍只有 A/B 档（ring_buffer/slab_pool/timer + 5 头文件）。`dvs_media/meson.build` 实际走文档允许的 fallback：直接把 `file_playout/shared/*.c`、`file_playout/rx/*.c` 编进 `dvs_shared`/`dvs_rx` 静态库。两 app 各自仍持有 `shared/` 副本。 |
 | **S1** 引擎 + IPC | "引擎各模块实现" | **协议层完成、引擎层全空**。`ipc_server.c`（8 消息 + 信封 + 事件广播）与 `state_machine.c`（idle→prepared→committed + revision 幂等）真实可用且被单测覆盖。`engine/session_mgr.c`、`engine/layout_executor.c`、`engine/audio_arbiter.c`、`engine/capability.c` **均为空 stub**（`dvs_media_stub()`）。`dvs_media_main.c` 在 `--config` 模式仅 `sleep(1)` 退出，从不启动 RX 管线；`query_state` 在 IPC 层直接返回写死 `rxSessions:0, decoding:0, layers:0, ptp:unknown/0`。 |
 | **S2** 代理 + node-admin | "实现完成（21/21 单测）" | **agent 层基本完成**：`node_store.cpp`（PBKDF2+legacy 迁移）、`registration.cpp`（空 URL 本地自治 / 非空注册心跳）、`main.cpp`（登录限速、改密、六 scope 路由、IPC 桥、全部节点/媒体/维护路由、静态托管）、`maintenance.cpp`（reboot/factory_reset/upgrade 语义）、`web/src/real-api.js` + `packs/node-admin/node-admin.html:517` 已激活。**偏差**：`main.cpp:188` 严格登录态校验被注释；改密接口硬编码用户 `admin`。媒体态来自 S1 stub，故"六 zone 真实反映 dvs-media"仅部分成立。 |
 
@@ -25,7 +25,7 @@
 |---|---|---|---|---|
 | T1 | `engine/capability.c` 真实能力探测（outputPorts/maxDecodeSessions/maxLayers/ptp/mtl） | S1 | P0 | 需 RK3588（libdrm/MPP/MTL 链接） |
 | T2 | `ipc_server.c` `query_state` 改为调用真实能力/状态提供者 | S1 | P0 | 需 RK3588 |
-| T3 | `dvs_media_main.c` `--config` 真正启动媒体管线（抽取 `mp4_dist_mtl_init`/`rx_main_loop` 为库） | S1 | P0 | 需 RK3588 |
+| T3 | `dvs_media_main.c` `--config` 真正启动媒体管线（抽取 `file_playout_mtl_init`/`rx_main_loop` 为库） | S1 | P0 | 需 RK3588 |
 | T4 | 实现 `session_mgr`/`layout_executor`（两段式 prepare/commit + 影子回滚）/`audio_arbiter`，由 `rx_compositor` 演进 | S1 | P0 | 需 RK3588 |
 | T5 | S0 文档回写：`AGENTS.md` + `docs/app/README.md` 共享代码节 | S0 | P1 | 文档（x86 可审） |
 | T6 | `dvs_agent` 登录态严格化（env 门控）+ 改密接口用户参数化 | S2 | P2 | **x86 可构建+单测** |
@@ -71,14 +71,14 @@
 
 ### T3 — `dvs_media_main.c` `--config` 真正启动管线（P0，已落地）
 
-**现状**：`--config` 仅 `mp4_dist_config_load` + `sleep(1)` 退出，无媒体。
-**关键发现**：`mp4_dist_mtl_init` 实际定义在 `mp4_dist_config.c`（已被 `dvs_media` 链接），无需抽取 `mp4_dist_run.c`——故直接复用即可，不改动 `mp4_dist` 侧代码。
+**现状**：`--config` 仅 `file_playout_config_load` + `sleep(1)` 退出，无媒体。
+**关键发现**：`file_playout_mtl_init` 实际定义在 `file_playout_config.c`（已被 `dvs_media` 链接），无需抽取 `file_playout_run.c`——故直接复用即可，不改动 `file_playout` 侧代码。
 **修改方案（已落地）**：
-1. 新增 `engine/engine_ctx.c/.h`：封装 MTL 实例 + 单个 `rx_compositor`，提供 `create/destroy/start/stop/apply_layout` 与后台 run-loop 线程（复用 `run_compositor` 的字段映射与 `mp4_dist_mtl_init`/`mp4_dist_mode_dims`/`mp4_dist_pip_validate`/`mp4_dist_apply_drm_mode`）。
+1. 新增 `engine/engine_ctx.c/.h`：封装 MTL 实例 + 单个 `rx_compositor`，提供 `create/destroy/start/stop/apply_layout` 与后台 run-loop 线程（复用 `run_compositor` 的字段映射与 `file_playout_mtl_init`/`file_playout_mode_dims`/`file_playout_pip_validate`/`file_playout_apply_drm_mode`）。
 2. `dvs_media_main.c`：`--config` 分支 `dvs_engine_start` 真正出画（test_time 内阻塞，SIGINT/SIGTERM 优雅退出）；`--ipc-sock` 分支先 `dvs_engine` 起引擎（有初始布局则直接应用，否则仅 init MTL），再 `dvs_ipc_server_run`。
 3. IPC 与引擎经 `dvs_ipc_engine_hooks_t` 解耦（`engine/ipc_engine_bridge.c` 仅编译进真实二进制），no-MTL 单测不受影响。
 
-**验证**：RK3588 单板 `dvs_media --config cfg.json` 实测出画（沿用 mp4_dist RX 验证脚本）；x86 已对 no-MTL 测试路径做语法校验。
+**验证**：RK3588 单板 `dvs_media --config cfg.json` 实测出画（沿用 file_playout RX 验证脚本）；x86 已对 no-MTL 测试路径做语法校验。
 
 ### T4 — `session_mgr` / `layout_executor` / `audio_arbiter` 真实实现（P0，已落地基线）
 
@@ -93,9 +93,9 @@
 
 ### T5 — S0 文档回写（P1，x86 可审）
 
-- `AGENTS.md` 第 13–14 行 `app/dvs_media/`、`app/dvs_agent/` 说明补充：S0 实际采用 fallback（`dvs_media` 直接消费 `mp4_dist/shared`、`rk3588_common` 仅 A/B 档）；dvs_agent 选型要点（C++17 / 自研 POSIX 网络栈 / PBKDF2 / vendored SQLite / 平台 stub 空 URL 自治）。
+- `AGENTS.md` 第 13–14 行 `app/dvs_media/`、`app/dvs_agent/` 说明补充：S0 实际采用 fallback（`dvs_media` 直接消费 `file_playout/shared`、`rk3588_common` 仅 A/B 档）；dvs_agent 选型要点（C++17 / 自研 POSIX 网络栈 / PBKDF2 / vendored SQLite / 平台 stub 空 URL 自治）。
 - `AGENTS.md` Gotchas 增加：dvs_media 构建需 `rockchip_mpp`（x86 不可构建，仅 RK3588/devs）。
-- `docs/app/README.md` 第 22–23 行"共享代码"节更正：dvs_media 已通过 meson 直接复用 `mp4_dist/shared` 与 `rk3588_common`（A/B），公共库抽取尚未完成。
+- `docs/app/README.md` 第 22–23 行"共享代码"节更正：dvs_media 已通过 meson 直接复用 `file_playout/shared` 与 `rk3588_common`（A/B），公共库抽取尚未完成。
 
 ### T6 — `dvs_agent` 登录态与改密修正（P2，x86 可构建+单测）
 
@@ -133,7 +133,7 @@
 | T6 | ✅ 已执行+验证 | agent 改密用户参数化 + 登录态 env 门控；x86 构建+单测通过（1/1 OK） |
 | T1 | 🔧 已落地代码（x86 语法校验通过，未链接构建） | `engine/capability.{h,c}` 真实探测（DRM/MPP/MTL 失败降级）+ `dvs_media_main.c` 启动打印 |
 | T2 | 🔧 已落地代码（x86 语法校验通过，未链接构建） | `ipc_server.c` query_state 经 hook 取真实能力；`dvs_ipc_install_hooks` 解耦 |
-| T3 | 🔧 已落地代码（x86 语法校验通过，未链接构建） | `engine/engine_ctx.c` 复用 `mp4_dist_mtl_init`+`rx_compositor`；`--config` 真正出画；`--ipc-sock` 起引擎 |
+| T3 | 🔧 已落地代码（x86 语法校验通过，未链接构建） | `engine/engine_ctx.c` 复用 `file_playout_mtl_init`+`rx_compositor`；`--config` 真正出画；`--ipc-sock` 起引擎 |
 | T4 | 🔧 已落地代码（x86 语法校验通过，未链接构建） | `session_mgr/layout_executor/audio_arbiter` 为真实模块（recreate-on-commit 基线）；帧边界原子切换留 S4 |
 | S-A 帧边界原子切换 | ⬜ 规划中 | 需改共享 `rx_compositor`，硬件联调 |
 | S-B 白名单/LRU 准入 | ✅ 逻辑已单测(x86) / 🔧 引擎接线待构建 | `engine/session_admit.{h,c}` + `test_session_admit` 1/1 通过；`engine_ctx` 接线 |

@@ -4,12 +4,12 @@
 
 | 应用 | 定位 | 数据链路 |
 |---|---|---|
-| `app/rk3588_end2end/` | 低延迟实时采集-编码-传输-解码-渲染 | V4L2 采集 → RGA 转换 → MPP 编码 → MTL TX/RX → MPP 解码 → DRM 显示 |
-| `app/rk3588_mp4_dist/` | MP4 文件分发（多窗口/PvD） | FFmpeg demux → MTL TX/RX（视频+音频）→ MPP 解码 → DRM 多 plane 显示 + ALSA 音频 |
+| `app/rk3588_live_ingest/` | 低延迟实时采集-编码-传输-解码-渲染 | V4L2 采集 → RGA 转换 → MPP 编码 → MTL TX/RX → MPP 解码 → DRM 显示 |
+| `app/rk3588_file_playout/` | MP4 文件分发（多窗口/PvD） | FFmpeg demux → MTL TX/RX（视频+音频）→ MPP 解码 → DRM 多 plane 显示 + ALSA 音频 |
 
 硬件覆盖总览：
 
-| 硬件 | rk3588_end2end | rk3588_mp4_dist |
+| 硬件 | rk3588_live_ingest | rk3588_file_playout |
 |---|---|---|
 | V4L2 采集（rk_hdmirx） | ✅ /dev/video0 | — |
 | MPP VENC（H.264 编码） | ✅ | —（TX 直发码流，无编码） |
@@ -23,7 +23,7 @@
 
 ---
 
-## 1. rk3588_end2end
+## 1. rk3588_live_ingest
 
 ### 1.1 V4L2 视频采集（rk_hdmirx）
 
@@ -31,7 +31,7 @@
 - 驱动为 rk_hdmirx（HDMI RX 输入），使用多平面 API `V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE`（`v4l2_capturer.c:91`）。
 - 格式协商：优先 `V4L2_PIX_FMT_NV12`（2-plane），失败回退 rk_hdmirx 默认的 `V4L2_PIX_FMT_BGR24`（`:94-104`）；实际协商结果记录在 `actual_fourcc / actual_num_planes / plane_stride`（`:106-108`）。
 - 分辨率/帧率：默认 1920x1080@60（`e2e_config.c:38-40`），`VIDIOC_S_PARM` 设置 timeperframe（`:116-121`）。
-- 缓冲方式：**MMAP**（REQBUFS + QUERYBUF + mmap，`:124-160`），buf_count = 6（`e2e_app.c:299`）；每个 plane 通过 `VIDIOC_EXPBUF` 导出 dma-buf fd（`:162-171`），下游以 fd 引用帧。
+- 缓冲方式：**MMAP**（REQBUFS + QUERYBUF + mmap，`:124-160`），buf_count = 6（`live_ingest.c:299`）；每个 plane 通过 `VIDIOC_EXPBUF` 导出 dma-buf fd（`:162-171`），下游以 fd 引用帧。
 - 调用时机：`tx_pipeline_create`（`tx_pipeline.c:233`）创建，专用 capture 线程（`tx_pipeline.c:226-273`）循环 DQBUF → `capture_on_frame` 回调（打 PTP/单调时间戳后推 `ring_cap2enc`，`tx_pipeline.c:60-92`）→ 立即 QBUF 归还。帧的存活完全依赖 dma-buf fd 引用。
 
 ### 1.2 MPP 硬件编解码
@@ -54,7 +54,7 @@
 
 - 文件：`codec/rga_converter.c`（librga C API：`c_RkRgaInit / c_RkRgaGetAllocBufferCache / c_RkRgaGetBufferFd / c_RkRgaBlit`）。
 - 用途：BGR3 → NV12 颜色空间转换（BT.709，`color_space_mode=2`，`:81-88`），同尺寸无缩放。
-- 输出 buffer：预分配 pool（默认 12 个，`e2e_app.c:301`），每个导出 dma-buf fd（`:37-47`），轮转使用（`:70-71`）。
+- 输出 buffer：预分配 pool（默认 12 个，`live_ingest.c:301`），每个导出 dma-buf fd（`:37-47`），轮转使用（`:70-71`）。
 - 同步方式：`c_RkRgaBlit`（`:92`）为同步阻塞调用，无 fence/异步路径。
 - 调用时机：TX encode 线程每帧 `rga_convert`（`tx_pipeline.c:105`）；src 为 V4L2 导出的 dma-buf（零拷贝输入），dst 为 RGA 自有 dma-buf，输出 fd 直接给 MPP 编码器。
 
@@ -74,16 +74,16 @@
   - RGA `c_RkRgaGetAllocBufferCache`（转换输出）；
   - MPP ION/DMA_HEAP buffer group（解码输出）。
 - 无直接操作 `/dev/dma_heap/*`（cma/system）节点的代码。
-- `hal/slab_pool.c`：普通 malloc 的 slab 池（非 dma-buf），原子 CAS 分配 + cond 等待；TX 512KB × ring×3（`tx_pipeline.c:212`），RX 512KB × 10（`e2e_app.c:141-167`），用于码流包暂存。MTL fb 由 MTL 库分配（`st22_tx_get_fb_addr`，`mtl_tx.c:119`）。
+- `hal/slab_pool.c`：普通 malloc 的 slab 池（非 dma-buf），原子 CAS 分配 + cond 等待；TX 512KB × ring×3（`tx_pipeline.c:212`），RX 512KB × 10（`live_ingest.c:141-167`），用于码流包暂存。MTL fb 由 MTL 库分配（`st22_tx_get_fb_addr`，`mtl_tx.c:119`）。
 
 ### 1.6 MTL 网络传输
 
-- 初始化：`mtl_setup_single`（`e2e_app.c:116-138`），`MTL_PMD_NATIVE_AF_XDP` + `MTL_PROTO_STATIC`，单端口；默认 TX 口 `native_af_xdp:enP3p49s0`，RX 口 `native_af_xdp:eth0`（`e2e_config.c:45-50`，r8168 单队列）；flags：BIND_NUMA、TX/RX_VIDEO_MIGRATE、RX_SEPARATE_VIDEO_LCORE（`:96-99`）。
+- 初始化：`mtl_setup_single`（`live_ingest.c:116-138`），`MTL_PMD_NATIVE_AF_XDP` + `MTL_PROTO_STATIC`，单端口；默认 TX 口 `native_af_xdp:enP3p49s0`，RX 口 `native_af_xdp:eth0`（`e2e_config.c:45-50`，r8168 单队列）；flags：BIND_NUMA、TX/RX_VIDEO_MIGRATE、RX_SEPARATE_VIDEO_LCORE（`:96-99`）。
 - 协议：**ST 2110-22（ST22 JPEG-XS frame-level codestream）**，非 ST2110-20/30/40。
   - TX：`st22_tx_create`（`mtl_tx.c:87-115`），payload_type 112，`ST20_FMT_YUV_420_8BIT` + `ST22_PACK_CODESTREAM`，DISABLE_BOXES，8 fb × 512KB；
   - RX：`st22_rx_create`（`mtl_rx.c:90-118`）同参数；TX/RX 各 1 会话。
 - Pacing：由 MTL 库内部 pacing（app 按 fps 注册，`st_frame_rate_to_st_fps`）；app 侧 `hal/timer.c:39-48` 的 `e2e_timer_wait_frame` 用 `clock_nanosleep(CLOCK_MONOTONIC)` 做帧步进（ref/测试路径）。
-- 时钟：`mtl_ptp_read_time` 作为 time_now 回调注入 tx/rx pipeline（`e2e_app.c:205,311`），失败回退 CLOCK_MONOTONIC（`tx_pipeline.c:67-69`）。
+- 时钟：`mtl_ptp_read_time` 作为 time_now 回调注入 tx/rx pipeline（`live_ingest.c:205,311`），失败回退 CLOCK_MONOTONIC（`tx_pipeline.c:67-69`）。
 - RX 桥：`mtl_rx_bridge.c:71-77` 从 MTL fb **memcpy** 到 slab 再推 dec_ring（一次 CPU 拷贝），MTL fb 尽早归还。
 
 ### 1.7 定时器 / CPU 布局
@@ -110,7 +110,7 @@ RX: native_af_xdp (eth0) ST22 收帧
 
 ---
 
-## 2. rk3588_mp4_dist
+## 2. rk3588_file_playout
 
 ### 2.1 MP4 解封装（纯软件，FFmpeg libavformat）
 
@@ -122,7 +122,7 @@ RX: native_af_xdp (eth0) ST22 收帧
 ### 2.2 MPP 硬件解码
 
 - 文件：`shared/mpp_decoder.c`（经 `shared/codec_plugin.h` 的 codec_plugin 抽象注册，供 rx_compositor / rx_pipeline 使用）。
-- `mpp_init(MPP_CTX_DEC, MPP_VIDEO_CodingAVC)`（L372）— 仅 H.264；关闭 deinterlace（L369）、`MPP_DEC_SET_DISABLE_DPB_CHECK`（L377）、`split_parse`（L385，可由 env `MP4_DIST_MPP_FORCE_SPLIT` / `MP4_DIST_NO_SPLIT_PARSE` 控制，L336-344）。
+- `mpp_init(MPP_CTX_DEC, MPP_VIDEO_CodingAVC)`（L372）— 仅 H.264；关闭 deinterlace（L369）、`MPP_DEC_SET_DISABLE_DPB_CHECK`（L377）、`split_parse`（L385，可由 env `FILE_PLAYOUT_MPP_FORCE_SPLIT` / `FILE_PLAYOUT_NO_SPLIT_PARSE` 控制，L336-344）。
 - DMABUF 输出：`dec_get_frame`（L197）→ `mpp_frame_get_buffer`（L224）→ `mpp_buffer_get_fd`（L231）直接取 dma-buf fd + hor/ver stride（L250-251）交 DRM import；`held[FB_DELAY]` 环形持有 MppFrame 延迟归还。
 - 喂数：`dec_put_packet`（L167）、`mpp_dec_put_whole/put_au/put_chunk/pull`（L454-611）；EOS（L496-518）；软 reset（L520，绕开 MPP 1.3.x `api->reset()` SIGSEGV）。
 - 解码 buffer 由 MPP 内部 buffer group 管理（`mpp_buffer_group_put` L430），未显式挂 DMA heap，fd 可直接 drmPrime import。
@@ -134,7 +134,7 @@ RX: native_af_xdp (eth0) ST22 收帧
 
 ### 2.4 DRM/KMS 多窗口显示
 
-- 文件：`shared/drm_renderer.c`（辅助：`shared/drm_mode.c`、`shared/display_layout.c`）；默认 `/dev/dri/card0`、connector `HDMI-A-1`（`mp4_dist_config.c` L40-41）。
+- 文件：`shared/drm_renderer.c`（辅助：`shared/drm_mode.c`、`shared/display_layout.c`）；默认 `/dev/dri/card0`、connector `HDMI-A-1`（`file_playout_config.c` L40-41）。
 - `drm_renderer_create`（L296-408）：open + `DRM_CLIENT_CAP_UNIVERSAL_PLANES`（L315）、find_conn、encoder→crtc；模式选择 `pick_connector_mode`（L235，"auto" 时最接近 1080p60）。
 - 合成方式：
   - 全屏：CRTC page-flip（`drmModePageFlip` + `page_flip_handler` L56，`drm_renderer_display_fullscreen` L480）；NV12 fb 由 `import_nv12_fb`（L453）用 `drmModeAddFB2` 导入解码 DMABUF。
@@ -189,21 +189,21 @@ RX: native_af_xdp (eth0) ST22 收帧
 
 ### 3.1 重复模块（各目录内副本，非编译期共享）
 
-| mp4_dist | end2end 对应 | 说明 |
+| file_playout | end2end 对应 | 说明 |
 |---|---|---|
 | `shared/mpp_decoder.c` | `codec/mpp_decoder.c` | 同经 `codec_plugin.h` 抽象；end2end 另有 mpp_encoder、rga_converter |
-| `shared/drm_renderer.c` | `io/drm_renderer.c` | end2end 为单窗口 legacy page-flip；mp4_dist 增加多 plane 合成 |
+| `shared/drm_renderer.c` | `io/drm_renderer.c` | end2end 为单窗口 legacy page-flip；file_playout 增加多 plane 合成 |
 | `shared/ring_buffer.c` | `pipeline/ring_buffer.c` | 同构 SPSC ring |
 | `shared/slab_pool.c` | `hal/slab_pool.c` | 同构 malloc slab 池；end2end 另有闲置的 `hal/dma_allocator.c` |
 | `mtl_rx_bridge.c` / `pipeline_common.h` / `rx_pipeline.c` | `pipeline/` 同名文件 | 同构 RX 管线 |
 
 ### 3.2 关键差异
 
-- **TX 侧硬件**：end2end 有完整的 V4L2 采集 + RGA CSC + MPP 编码硬件链路；mp4_dist 的 TX 是纯 CPU（demux 直发已有码流，无编码器、无 RGA）。
-- **合成**：end2end 单窗口 page-flip；mp4_dist 用 DRM 多 overlay plane 硬件合成多窗口，RGA 完全未用。
-- **音频**：仅 mp4_dist 有 ALSA + ST2110-30 + AV sync。
-- **PTP**：end2end 用 MTL 内部 PTP（`mtl_ptp_read_time`）；mp4_dist 用外部 linuxptp + `CLOCK_TAI`。
-- **协议**：两者视频均为 ST2110-22（ST22 frame-level），mp4_dist 额外有 ST2110-30 音频。
+- **TX 侧硬件**：end2end 有完整的 V4L2 采集 + RGA CSC + MPP 编码硬件链路；file_playout 的 TX 是纯 CPU（demux 直发已有码流，无编码器、无 RGA）。
+- **合成**：end2end 单窗口 page-flip；file_playout 用 DRM 多 overlay plane 硬件合成多窗口，RGA 完全未用。
+- **音频**：仅 file_playout 有 ALSA + ST2110-30 + AV sync。
+- **PTP**：end2end 用 MTL 内部 PTP（`mtl_ptp_read_time`）；file_playout 用外部 linuxptp + `CLOCK_TAI`。
+- **协议**：两者视频均为 ST2110-22（ST22 frame-level），file_playout 额外有 ST2110-30 音频。
 
 
 

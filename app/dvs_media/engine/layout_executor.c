@@ -18,7 +18,7 @@
  * frame-N vblank atomic plane switch and rollback from a saved shadow copy on
  * commit failure, instead of full compositor recreation. */
 
-static mp4_dist_pip_stream g_pending[MP4_PIP_MAX_LANES];
+static file_playout_pip_stream g_pending[MP4_PIP_MAX_LANES];
 static uint64_t g_pending_apply_at_ns = 0;
 static int g_pending_count = 0;
 static char g_pending_audio_owner[64];
@@ -27,7 +27,7 @@ static pthread_mutex_t g_pending_mu = PTHREAD_MUTEX_INITIALIZER;
 
 /* Parse a "streams" (or "layout") JSON array into pip_stream structs.
  * Accepts camelCase or snake_case keys. Returns 0 on success. */
-int dvs_layout_from_json(struct json_object* req, mp4_dist_pip_stream* out,
+int dvs_layout_from_json(struct json_object* req, file_playout_pip_stream* out,
                          int* count) {
     if (!req || !out || !count) return -1;
     struct json_object* arr = NULL;
@@ -40,7 +40,7 @@ int dvs_layout_from_json(struct json_object* req, mp4_dist_pip_stream* out,
     if (n > MP4_PIP_MAX_LANES) n = MP4_PIP_MAX_LANES;
     for (int i = 0; i < n; i++) {
         struct json_object* s = json_object_array_get_idx(arr, i);
-        mp4_dist_pip_stream* p = &out[i];
+        file_playout_pip_stream* p = &out[i];
         memset(p, 0, sizeof(*p));
         struct json_object* v;
         if (json_object_object_get_ex(s, "lane", &v)) p->lane = json_object_get_int(v);
@@ -78,7 +78,7 @@ static uint64_t json_u64(struct json_object* o, const char* a, const char* b) {
     return 0;
 }
 
-int dvs_layout_prepare(const mp4_dist_pip_stream* streams, int count) {
+int dvs_layout_prepare(const file_playout_pip_stream* streams, int count) {
     if (count < 0 || count > MP4_PIP_MAX_LANES) return -1;
     pthread_mutex_lock(&g_pending_mu);
     memcpy(g_pending, streams, (size_t)count * sizeof(*streams));
@@ -97,7 +97,7 @@ uint64_t dvs_layout_pending_apply_at_ns(void) {
 }
 
 int dvs_layout_prepare_from_json(struct json_object* req) {
-    mp4_dist_pip_stream buf[MP4_PIP_MAX_LANES];
+    file_playout_pip_stream buf[MP4_PIP_MAX_LANES];
     int n = 0;
     if (dvs_layout_from_json(req, buf, &n) != 0) return -1;
 
@@ -122,7 +122,7 @@ int dvs_layout_prepare_from_json(struct json_object* req) {
 }
 
 int dvs_layout_commit(dvs_engine* e) {
-    mp4_dist_pip_stream buf[MP4_PIP_MAX_LANES];
+    file_playout_pip_stream buf[MP4_PIP_MAX_LANES];
     int n = 0;
     char owner[64];
     int volume;

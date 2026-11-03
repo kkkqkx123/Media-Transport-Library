@@ -85,7 +85,7 @@ MTL 提供两种方式：
 1. 内置 PTP：`MTL_FLAG_PTP_ENABLE`，需要网卡支持硬件时间戳。
 2. 外部 PTP：应用提供 `ptp_get_time_fn`，通常接 linuxptp 的 `CLOCK_TAI`。
 
-RK3588 参考应用 `rk3588_mp4_dist` 使用外部 linuxptp。RK3588 板载网卡通常没有 PTP 硬件时间戳，软件时间戳在局域网可达百微秒到毫秒级，足以支撑 60 Hz 下 16.7 ms 的帧边界对齐。
+RK3588 参考应用 `rk3588_file_playout` 使用外部 linuxptp。RK3588 板载网卡通常没有 PTP 硬件时间戳，软件时间戳在局域网可达百微秒到毫秒级，足以支撑 60 Hz 下 16.7 ms 的帧边界对齐。
 
 PTP 状态需要作为节点能力上报，平台在发起同帧操作前检查同步资格。
 
@@ -113,7 +113,7 @@ PTP 状态需要作为节点能力上报，平台在发起同帧操作前检查�
 
 MTL 的 ST 2110-22 通过插件接口加载编码器和解码器，插件导出 `st_plugin_get_meta`、`st_plugin_create`、`st_plugin_free`。树内 `plugins/st22_avcodec` 基于 libavcodec，适合 x86 评估。
 
-RK3588 上更合适的是 MPP 硬件编解码。参考应用 `rk3588_mp4_dist` 在应用层做 MPP 编解码，再把码流交给 ST 2110-22 会话。这条路径可以直接产品化，也可以封装成 MTL 插件。
+RK3588 上更合适的是 MPP 硬件编解码。参考应用 `rk3588_file_playout` 在应用层做 MPP 编解码，再把码流交给 ST 2110-22 会话。这条路径可以直接产品化，也可以封装成 MTL 插件。
 
 ### 4.6 可观测性
 
@@ -127,7 +127,7 @@ RK3588 上更合适的是 MPP 硬件编解码。参考应用 `rk3588_mp4_dist` �
 
 ## 5. RK3588 参考应用
 
-### 5.1 rk3588_end2end
+### 5.1 rk3588_live_ingest
 
 链路：
 
@@ -146,7 +146,7 @@ RX: MTL RX -> slice 重组 -> MPP 解码 -> DRM 渲染
 
 这个应用适合作为输入盒采集编码链路和输出盒解码显示链路的骨架。
 
-### 5.2 rk3588_mp4_dist
+### 5.2 rk3588_file_playout
 
 链路：
 

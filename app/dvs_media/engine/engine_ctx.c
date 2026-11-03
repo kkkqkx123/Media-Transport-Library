@@ -1,7 +1,7 @@
 #include "engine_ctx.h"
 
-#include "mp4_dist_config.h"      /* mp4_dist_mtl_init, mode_dims, apply_drm_mode */
-#include "shared/display_layout.h" /* mp4_dist_pip_validate, MP4_PIP_MAX_LANES */
+#include "file_playout_config.h"      /* file_playout_mtl_init, mode_dims, apply_drm_mode */
+#include "shared/display_layout.h" /* file_playout_pip_validate, MP4_PIP_MAX_LANES */
 #include "session_admit.h"         /* whitelist + LRU admission (S4) */
 #include "audio_arbiter.h"         /* ALSA audio routing (S4) */
 #include "capability.h"
@@ -40,7 +40,7 @@ static void* engine_loop(void* arg) {
     return NULL;
 }
 
-dvs_engine* dvs_engine_create(const mp4_dist_cfg* base_cfg) {
+dvs_engine* dvs_engine_create(const file_playout_cfg* base_cfg) {
     if (!base_cfg) return NULL;
     dvs_engine* e = calloc(1, sizeof(*e));
     if (!e) return NULL;
@@ -79,7 +79,7 @@ void dvs_capability_refresh_mtl(dvs_capability* cap, void* mtl_handle) {
 }
 
 static uint64_t engine_now_ns(dvs_engine* e) {
-    if (e->st && e->cfg.ptp_mode != MP4_DIST_PTP_MONOTONIC)
+    if (e->st && e->cfg.ptp_mode != FILE_PLAYOUT_PTP_MONOTONIC)
         return mtl_ptp_read_time(e->st);
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -107,7 +107,7 @@ int dvs_engine_init_mtl(dvs_engine* e) {
     if (!e) return -1;
     pthread_mutex_lock(&e->mu);
     if (e->st == NULL) {
-        e->st = mp4_dist_mtl_init(&e->cfg, e->cfg.rx_port, e->cfg.rx_lip, 0, 1,
+        e->st = file_playout_mtl_init(&e->cfg, e->cfg.rx_port, e->cfg.rx_lip, 0, 1,
                                   e->cfg.mtl_log_level, e->cfg.mtl_lcores_rx);
         if (!e->st) {
             pthread_mutex_unlock(&e->mu);
@@ -121,9 +121,9 @@ int dvs_engine_init_mtl(dvs_engine* e) {
 }
 
 static rx_compositor* build_compositor(dvs_engine* e,
-                                       const mp4_dist_pip_stream* streams,
+                                       const file_playout_pip_stream* streams,
                                        int count) {
-    mp4_dist_cfg* cfg = &e->cfg;
+    file_playout_cfg* cfg = &e->cfg;
     memcpy(cfg->pip_streams, streams, (size_t)count * sizeof(*streams));
     cfg->pip_stream_count = count;
 
@@ -144,11 +144,11 @@ static rx_compositor* build_compositor(dvs_engine* e,
     if (cfg->height <= 0) cfg->height = 1080;
     if (cfg->fps <= 0.0f)
         cfg->fps = streams[0].fps > 0 ? streams[0].fps : 24.0f;
-    mp4_dist_apply_drm_mode(cfg);
+    file_playout_apply_drm_mode(cfg);
 
     int mode_w = 0, mode_h = 0;
-    mp4_dist_mode_dims(cfg, &mode_w, &mode_h);
-    if (mp4_dist_pip_validate(cfg->pip_streams, count, mode_w, mode_h) < 0) {
+    file_playout_mode_dims(cfg, &mode_w, &mode_h);
+    if (file_playout_pip_validate(cfg->pip_streams, count, mode_w, mode_h) < 0) {
         fprintf(stderr, "dvs_engine: layout validation failed\n");
         return NULL;
     }
@@ -172,20 +172,20 @@ static rx_compositor* build_compositor(dvs_engine* e,
         .cpu_render = cfg->cpu_render,
         .cpu_audio = cfg->cpu_audio,
     };
-    if (cfg->ptp_mode != MP4_DIST_PTP_MONOTONIC) {
+    if (cfg->ptp_mode != FILE_PLAYOUT_PTP_MONOTONIC) {
         cp.time_now = (uint64_t(*)(void*))mtl_ptp_read_time;
         cp.time_priv = e->st;
     }
     return rx_compositor_create(&cp);
 }
 
-int dvs_engine_apply_layout(dvs_engine* e, const mp4_dist_pip_stream* streams,
+int dvs_engine_apply_layout(dvs_engine* e, const file_playout_pip_stream* streams,
                             int count) {
     return dvs_engine_apply_layout_at(e, streams, count, 0);
 }
 
 int dvs_engine_apply_layout_at(dvs_engine* e,
-                               const mp4_dist_pip_stream* streams, int count,
+                               const file_playout_pip_stream* streams, int count,
                                uint64_t apply_at_ns) {
     if (!e) return -1;
     if (count < 0 || count > MP4_PIP_MAX_LANES) return -1;
@@ -193,7 +193,7 @@ int dvs_engine_apply_layout_at(dvs_engine* e,
     pthread_mutex_lock(&e->mu);
 
     if (e->st == NULL) {
-        e->st = mp4_dist_mtl_init(&e->cfg, e->cfg.rx_port, e->cfg.rx_lip, 0, 1,
+        e->st = file_playout_mtl_init(&e->cfg, e->cfg.rx_port, e->cfg.rx_lip, 0, 1,
                                   e->cfg.mtl_log_level, e->cfg.mtl_lcores_rx);
         if (!e->st) {
             pthread_mutex_unlock(&e->mu);
@@ -205,7 +205,7 @@ int dvs_engine_apply_layout_at(dvs_engine* e,
 
     if (count <= 0) {
         /* clear: media off, keep MTL up for fast future commits */
-        mp4_dist_pip_stream old[MP4_PIP_MAX_LANES];
+        file_playout_pip_stream old[MP4_PIP_MAX_LANES];
         int old_n = e->cfg.pip_stream_count;
         if (old_n > MP4_PIP_MAX_LANES) old_n = MP4_PIP_MAX_LANES;
         memcpy(old, e->cfg.pip_streams, (size_t)old_n * sizeof(*old));
@@ -227,7 +227,7 @@ int dvs_engine_apply_layout_at(dvs_engine* e,
     if (e->comp) {
         int fr = rx_compositor_try_fast_apply(e->comp, streams, count);
         if (fr == 0) {
-            mp4_dist_pip_stream old[MP4_PIP_MAX_LANES];
+            file_playout_pip_stream old[MP4_PIP_MAX_LANES];
             int old_n = e->cfg.pip_stream_count;
             if (old_n > MP4_PIP_MAX_LANES) old_n = MP4_PIP_MAX_LANES;
             memcpy(old, e->cfg.pip_streams, (size_t)old_n * sizeof(*old));

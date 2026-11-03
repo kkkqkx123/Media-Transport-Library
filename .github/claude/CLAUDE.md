@@ -8,9 +8,9 @@ Two standalone apps live on the `feat/rk3588-apps` branch (commit `add rk3568 ap
 
 | App | What it does |
 |---|---|
-| `app/rk3588_end2end/` | Low-latency live pipeline: V4L2 capture → MPP encode (+RGA conversion) → MTL TX → MTL RX → MPP decode → DRM render. `codec/` wraps MPP behind `codec_plugin.h`; `hal/` has DMA allocator, slab pool, timer, SEI timestamps; `pipeline/` has TX/RX pipelines, ring buffer, slice reassembler; `mtl_tx.c`/`mtl_rx.c`/`mtl_rx_bridge.c` wrap the MTL session layer. Unit tests in `tests/`. |
-| `app/rk3588_mp4_dist/` | MP4 file distribution: TX demuxes MP4 (`tx/mp4_demux`, playlist, `tx_scheduler`) and sends video/audio over MTL; RX does playout buffering, AV sync, ALSA audio, multi-window composition (`rx/rx_compositor`) and DRM display. `shared/` duplicates MPP decode/DRM/ring/slab helpers from the other app (each app carries its own copy). Includes dual-host PTP configs (`config/ptp/`) and Python log-verification scripts in `tests/`. |
-| `app/dvs_media/` | 节点媒体引擎 (C, MTL/MPP/RGA/DRM/ALSA):由 mp4_dist 演进,支持 IPC configure/prepare/commit/abort/clear/query_state,布局热更新与能力上报。 |
+| `app/rk3588_live_ingest/` | Low-latency live pipeline: V4L2 capture → MPP encode (+RGA conversion) → MTL TX → MTL RX → MPP decode → DRM render. `codec/` wraps MPP behind `codec_plugin.h`; `hal/` has DMA allocator, slab pool, timer, SEI timestamps; `pipeline/` has TX/RX pipelines, ring buffer, slice reassembler; `mtl_tx.c`/`mtl_rx.c`/`mtl_rx_bridge.c` wrap the MTL session layer. Unit tests in `tests/`. |
+| `app/rk3588_file_playout/` | MP4 file distribution: TX demuxes MP4 (`tx/mp4_demux`, playlist, `tx_scheduler`) and sends video/audio over MTL; RX does playout buffering, AV sync, ALSA audio, multi-window composition (`rx/rx_compositor`) and DRM display. `shared/` duplicates MPP decode/DRM/ring/slab helpers from the other app (each app carries its own copy). Includes dual-host PTP configs (`config/ptp/`) and Python log-verification scripts in `tests/`. |
+| `app/dvs_media/` | 节点媒体引擎 (C, MTL/MPP/RGA/DRM/ALSA):由 file_playout 演进,支持 IPC configure/prepare/commit/abort/clear/query_state,布局热更新与能力上报。 |
 | `app/dvs_agent/` | 节点代理 (C++17):本地 HTTP + node-device-admin 静态前端,六 scope 配置状态机,注册/心跳,维护操作;依赖 json-c + SQLite amalgamation。 |
 | `app/dvs_platform/` | 平台服务 (C++17, 与代理同栈):节点注册/心跳网关,分组/墙/场景/绑定/白名单文档,布局像素拆分,跨节点 prepare/commit 屏障与回退,退役墓碑,串行批量升级;直编 SQLite,无新增运行时依赖。复用代理的 HTTP 服务与客户端源文件,不预抽公共库。 |
 
@@ -52,7 +52,7 @@ Prefer these over re-deriving things from source:
 
 - **Two install trees, not interchangeable**: `build/` + `/usr/local` is what gtest/`KahawaiTest` uses; `.local_install/mtl/bin/{MtlManager,RxTxApp}` is what the pytest acceptance suite uses (`tests/acceptance/mtl_engine/const.py` hardcodes `PREFIX = ".local_install"`).
 - **`tests/acceptance/mtl_engine/` contains BOTH `RxTxApp.py` and `rxtxapp.py` as real, different files.** On case-insensitive filesystems (Windows/macOS) git records edits to the wrong one. Never assume they are the same file.
-- **Two near-duplicate modules**: `rx_compositor` vs the end2end `io/drm_renderer.c` and `mp4_dist/shared/drm_renderer.c`. Confirm the target file before editing.
+- **Two near-duplicate modules**: `rx_compositor` vs the end2end `io/drm_renderer.c` and `file_playout/shared/drm_renderer.c`. Confirm the target file before editing.
 - **`mt-system-admin`'s "setup CLI only, never ad-hoc shell" rule is enforced by its prompt, not by withholding the Bash tool.** If you see it reach for raw shell (`sysctl`, `dpdk-devbind.py`, …), that's a bug in the agent's behavior, not permission to allow it.
 
 ---

@@ -57,7 +57,7 @@
 
 ## 5. L3：端到端数据面
 
-- 板端无 `InTheGrey.mp4`，且 `e2e_app` 的 AF_XDP 路径需要 MtlManager，因此未完成完整音视频端到端发送。
+- 板端无 `InTheGrey.mp4`，且 `live_ingest` 的 AF_XDP 路径需要 MtlManager，因此未完成完整音视频端到端发送。
 - MTL AF_XDP 单实例初始化与队列创建已验证通过。
 
 **结果：⚠️ 部分验证（传输初始化通过，完整媒体流未跑通）**
@@ -82,12 +82,12 @@
 ## 8. 结论
 
 - 已验证通过：库加载、组件测试（6 项）、MTL AF_XDP 传输初始化、V4L2 1080p60 采集、RGA/MPP 编码初始化。
-- 待补齐：MtlManager、MP4 测试片源、HDMI 显示器、linuxptp，以完成 e2e_app / mp4_dist 全链路与双机 PTP 验证。
+- 待补齐：MtlManager、MP4 测试片源、HDMI 显示器、linuxptp，以完成 live_ingest / file_playout 全链路与双机 PTP 验证。
 ---
 
 ## 9. 补充验证：内核后端 TX/RX
 
-### 9.1 mp4_dist_tx（kernel backend）
+### 9.1 file_playout_tx（kernel backend）
 
 - 配置：`tx_port=kernel:enP2p33s0`，TX/RX IP 均为 `192.168.80.202`
 - 结果：MTL 初始化成功，`st22_tx_create` / `st30_tx_create` 成功，链路发送约 4.06 Mb/s、11238 packets
@@ -114,14 +114,14 @@
 
 ### 10.2 AF_XDP 运行结果
 
-- `e2e_app tx` 仍失败：`register fail` / `AF_XDP backend must run with MTL Manager!`
+- `live_ingest tx` 仍失败：`register fail` / `AF_XDP backend must run with MTL Manager!`
 - Manager 日志显示：`Underlying driver does not support XDP in native mode`
 - 结论：板端网卡驱动（`enP2p33s0`）在当前 5.10 内核下不支持 native XDP，因此 AF_XDP 路径不可用。
 
 ### 10.3 可用替代路径
 
 - 使用 `kernel:` 后端进行 MTL 验证，不依赖 MtlManager 与 XDP 驱动支持。
-- `mp4_dist_tx` 已在内核后端成功发送 ST22/ST30 数据。
+- `file_playout_tx` 已在内核后端成功发送 ST22/ST30 数据。
 
 ---
 

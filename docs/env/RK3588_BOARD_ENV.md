@@ -1,7 +1,7 @@
 # RK3588 开发板环境实测记录（board = 192.168.80.202）
 
 采集方式：`ssh board`（root），全部为板上实测结果，非推断。采集时间：**2026-10-24**。
-配套阅读：`docs/analysis/AF_XDP_EBPF.md`（AF_XDP 集成方案）、`docs/app/rk3588_end2end.md`、`docs/app/rk3588_mp4_dist.md`。
+配套阅读：`docs/analysis/AF_XDP_EBPF.md`（AF_XDP 集成方案）、`docs/app/rk3588_live_ingest.md`、`docs/app/rk3588_file_playout.md`。
 
 ---
 
@@ -70,8 +70,8 @@
 
 - 网卡不是 `docs/analysis/AF_XDP_EBPF.md` §5/§6 假设的 **r8168/RTL8125**，而是 **Motorcomm YT6801**（PCIe，厂商 out-of-tree/builtin 驱动）。
 - 文档里配置的 `tx_port = "native_af_xdp:enP3p49s0"` 现在指向的是**没插网线的 eth1**；板上唯一通的是 eth0（`enP2p33s0`），而它只协商到 **100 Mb/s** —— 单路 1080p ST2110 约需 1.2 Gbps 以上，当前物理链路连一路都跑不满。改端口名之前先解决接线与速率。
-- `ethtool -T eth0` 无 HW timesync、无 `/dev/ptp*`、板上未装 `ptp4l`/`phc2sys` → `rk3588_mp4_dist` 依赖的外部 PTP（CLOCK_TAI / linuxptp）方案在本板**当前不可用**，只能用软件时间戳或系统时钟。
-- "单队列"约束只在 **TX 侧**成立（RX 有 4 队列），`e2e_app.c` 里 `rx_queues_cnt=1` 的注释依据（r8168）与实情不符，但结论仍然安全。
+- `ethtool -T eth0` 无 HW timesync、无 `/dev/ptp*`、板上未装 `ptp4l`/`phc2sys` → `rk3588_file_playout` 依赖的外部 PTP（CLOCK_TAI / linuxptp）方案在本板**当前不可用**，只能用软件时间戳或系统时钟。
+- "单队列"约束只在 **TX 侧**成立（RX 有 4 队列），`live_ingest.c` 里 `rx_queues_cnt=1` 的注释依据（r8168）与实情不符，但结论仍然安全。
 
 ---
 
@@ -164,7 +164,7 @@
 | 4 | **`CONFIG_BPF_JIT` 未开** | 性能 | 重编内核打开 `BPF_JIT`（与 #1 同一批内核改动最省事） |
 | 5 | **无 BTF / 无 KPROBES** | 观测能力缺失 | 需要 `tools/ebpf` 类 CO-RE/fentry 工具时打开 `DEBUG_INFO_BTF` + `KPROBES` |
 | 6 | eth1 没插线、eth0 只 100 Mb/s | 物理层，最先决 | 先接线并确认链路能到 1G/2.5G，否则任何 ST2110 流都跑不动 |
-| 7 | 无 HW timesync / 无 `/dev/ptp*` / 无 linuxptp | 影响 mp4_dist 的 PTP 方案 | 装 linuxptp 走软件时间戳，或改用系统时钟 |
+| 7 | 无 HW timesync / 无 `/dev/ptp*` / 无 linuxptp | 影响 file_playout 的 PTP 方案 | 装 linuxptp 走软件时间戳，或改用系统时钟 |
 
 ---
 
@@ -186,14 +186,14 @@
 
 | 依赖 | 用途 | 板上现状 | 判定 |
 |---|---|---|---|
-| **MPP** | `rk3588_end2end` 编解码、`mp4_dist` 解码 | `rockchip_mpp` pkg-config **1.3.9**，头文件 `/usr/include/rockchip/mpp_*.h` 齐备，`librockchip_mpp.so{,.0,.1}` 在 `/usr/lib/aarch64-linux-gnu/`，**`/dev/mpp_service` 存在**，示例二进制 `/usr/bin/mpi_enc_test`、`mpi_dec_test`、`mpi_dec_mt_test` 等已在 | ✅ 可直接编译运行 |
+| **MPP** | `rk3588_live_ingest` 编解码、`file_playout` 解码 | `rockchip_mpp` pkg-config **1.3.9**，头文件 `/usr/include/rockchip/mpp_*.h` 齐备，`librockchip_mpp.so{,.0,.1}` 在 `/usr/lib/aarch64-linux-gnu/`，**`/dev/mpp_service` 存在**，示例二进制 `/usr/bin/mpi_enc_test`、`mpi_dec_test`、`mpi_dec_mt_test` 等已在 | ✅ 可直接编译运行 |
 | **RGA** | end2end 的颜色/格式转换 | `librga` **2.1.0**，头文件 `/usr/include/rga/`（`im2d_*.h`、`GrallocOps.h`、`drmrga.h`），**`/dev/rga` 存在** | ✅ |
 | **DRM/KMS** | `drm_renderer` 渲染、`rx_compositor` 合成 | `/dev/dri/card0`、`card1`、`renderD128`、`renderD129`；`libdrm` **2.4.114** + pkg-config；`gbm`/`egl`/`glesv2`/`wayland-egl` 均在 | ✅ 节点齐全（**connector/plane/模式未实测**，需上屏验证） |
 | **V4L2 采集** | end2end 的采集源 | **只有 `/dev/video40`**，`v4l2-ctl` 显示 driver/card = **`rk_hdmirx`**（bus `fdee0000.hdmirx-controller`，capabilities: Video Capture Multiplanar + Streaming）；`/dev/v4l/by-path` 存在，`libv4l2` 1.22.1 + `libv4l2.h` | ⚠️ 采集源是 **HDMI-IN，不是摄像头**；无 `/dev/media*`（无 media controller）、无 ISP 节点（虽装了 `camera-engine-rkaiq` 6.30.4）。multiplanar 路径必须走通 |
-| **ALSA** | `mp4_dist` 音频输出 | 声卡 4 张：`rockchip-hdmiin`(0)、**`rockchip-es8388`(1)**、`rockchip-hdmi0`(2)、`rockchip-hdmi1`(3)，`aplay -l` 可见；但 **`alsa` pkg-config 缺失、`/usr/include/alsa/asoundlib.h` 不存在** | ❌ 运行时可用，**编译期缺 dev 包**：需 `apt install libasound2-dev` |
+| **ALSA** | `file_playout` 音频输出 | 声卡 4 张：`rockchip-hdmiin`(0)、**`rockchip-es8388`(1)**、`rockchip-hdmi0`(2)、`rockchip-hdmi1`(3)，`aplay -l` 可见；但 **`alsa` pkg-config 缺失、`/usr/include/alsa/asoundlib.h` 不存在** | ❌ 运行时可用，**编译期缺 dev 包**：需 `apt install libasound2-dev` |
 | **GStreamer / FFmpeg** | 备选管线 | `gst-launch-1.0` 1.20.3 + `rockchipmpp` 插件（`mpph264enc`/`mpph265enc`/`mppvideodec`/`mppjpegenc`…共 8 个 RK 元件）；`ffmpeg` 已装（自建串 `7d0f880f0a`）；`v4l2-ctl` 在 | ✅ |
 | **OpenCV** | 可选 | `opencv4` pkg-config 存在 | ✅ |
-| **linuxptp** | `mp4_dist` 的 PTP 授时 | `ptp4l`/`phc2sys` **未安装**，无 `/dev/ptp*`，网卡无 HW timesync | ❌（见 §3） |
+| **linuxptp** | `file_playout` 的 PTP 授时 | `ptp4l`/`phc2sys` **未安装**，无 `/dev/ptp*`，网卡无 HW timesync | ❌（见 §3） |
 
 ---
 
@@ -257,5 +257,5 @@ ssh board 'ethtool -i eth0; ethtool -l eth0; ethtool -T eth0; ls /sys/class/net/
 | `mtl.xdp.o` 加载 | 本板无 libxdp，**未实测**；装好 libxdp 后需验 plain-XDP + hash map 在无 BTF 内核上能否被 dispatcher 加载 |
 | DRM 上屏 | connector/plane/`rx_compositor` 多窗口合成未实测 |
 | HDMI-RX 采集 | `/dev/video40` 的实际分辨率/色彩格式、multiplanar 与 MPP 输入对接未实测 |
-| ALSA 编译依赖 | 待装 `libasound2-dev` 后验证 `mp4_dist` 能否编过 |
+| ALSA 编译依赖 | 待装 `libasound2-dev` 后验证 `file_playout` 能否编过 |
 

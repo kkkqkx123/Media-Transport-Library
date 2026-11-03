@@ -32,19 +32,22 @@ struct enc_ring {
   pthread_cond_t  not_empty;
   atomic_int full_drops;
   /* RC hot-reconfig mailbox: collector applies it serially with
-   * encode_put_frame/encode_get_packet (MPP_ENC_SET_CFG must not race) */
+   * encode_put_frame/encode_get_packet (MPP_ENC_SET_CFG must not race).
+   * Fields always hold the last applied values so a partial update still
+   * reapplies a fully valid config. */
   struct {
     pthread_mutex_t lock;
     bool            pending;
     int32_t         bitrate;
     int32_t         gop;
+    int32_t         qp;
   } rc;
 };
 
 struct mpp_enc {
   MppCtx ctx; MppApi* api; MppEncCfg cfg;
   struct slab_pool* pool;
-  int w, h, gop, bitrate;
+  int w, h, gop, bitrate, qp_init;
   int intra_refresh_mode, intra_refresh_arg;
   int frames_out;  /* completed frames emitted to the ring */
 
@@ -153,19 +156,24 @@ static void apply_pending_rc(struct mpp_enc* e) {
   }
   int32_t bitrate = e->ring.rc.bitrate;
   int32_t gop     = e->ring.rc.gop;
+  int32_t qp      = e->ring.rc.qp;
   e->ring.rc.pending = false;
   pthread_mutex_unlock(&e->ring.rc.lock);
 
-  /* e->cfg keeps the full initial config; only the RC fields change */
   mpp_enc_cfg_set_s32(e->cfg, "rc:bps_target", bitrate);
   mpp_enc_cfg_set_s32(e->cfg, "rc:bps_min", (int32_t)(bitrate * 0.9f));
   mpp_enc_cfg_set_s32(e->cfg, "rc:bps_max", (int32_t)(bitrate * 1.1f));
   mpp_enc_cfg_set_s32(e->cfg, "rc:gop", gop);
+  mpp_enc_cfg_set_s32(e->cfg, "rc:qp_init", qp);
   MPP_RET r = e->api->control(e->ctx, MPP_ENC_SET_CFG, e->cfg);
   if (r)
     fprintf(stderr, "mpp_enc: RC reconfig failed %d\n", r);
-  else
-    printf("mpp_enc: RC reconfig %dbps gop=%d\n", bitrate, gop);
+  else {
+    e->bitrate = bitrate;
+    e->gop = gop;
+    e->qp_init = qp;
+    printf("mpp_enc: RC reconfig %dbps gop=%d qp=%d\n", bitrate, gop, qp);
+  }
 }
 
 static void* collector_thread(void* arg) {
@@ -241,6 +249,7 @@ static int enc_init(void** out, struct codec_config* c) {
   e->w = c->width; e->h = c->height;
   e->gop = c->gop_size ? c->gop_size : 60;
   e->bitrate = c->bitrate_bps;
+  e->qp_init = 26;
   e->intra_refresh_mode = c->intra_refresh_mode;
   e->intra_refresh_arg  = c->intra_refresh_arg;
 
@@ -300,6 +309,9 @@ static int enc_init(void** out, struct codec_config* c) {
   }
 
   ring_init(&e->ring, NULL); /* pool wired in mpp_encoder_create */
+  e->ring.rc.bitrate = e->bitrate;
+  e->ring.rc.gop = e->gop;
+  e->ring.rc.qp = e->qp_init;
   atomic_init(&e->running, false);
   atomic_store(&e->last_output_ns, now_ns());
   *out = e;
@@ -415,6 +427,13 @@ static int enc_set_param(void* ctx, enum codec_param k, int v) {
     if (v <= 0) return -EINVAL;
     pthread_mutex_lock(&e->ring.rc.lock);
     e->ring.rc.gop = v;
+    e->ring.rc.pending = true;
+    pthread_mutex_unlock(&e->ring.rc.lock);
+    return 0;
+  case CODEC_PARAM_QP:
+    if (v < 0 || v > 51) return -EINVAL;
+    pthread_mutex_lock(&e->ring.rc.lock);
+    e->ring.rc.qp = v;
     e->ring.rc.pending = true;
     pthread_mutex_unlock(&e->ring.rc.lock);
     return 0;

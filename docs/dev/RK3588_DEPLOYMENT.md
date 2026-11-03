@@ -14,8 +14,8 @@
 | AF_XDP 后端 | `libxdp.so.1.6.0` + 软链 `libxdp.so.1`/`libxdp.so` | `sysroot/usr/lib/aarch64-linux-gnu/` | 动态链同一个 `libbpf` |
 | BPF 库 | `libbpf.so.1.4.0` + 软链 `libbpf.so.1` | `sysroot/usr/lib/aarch64-linux-gnu/` | 与 MTL 内 DPDK 用的 libbpf 1.4.0 一致 |
 | DPDK 运行时 | `librte_*.so*` 全部 | `sysroot/usr/lib/librte_*.so*` | DPDK 26.07 共享库（`libmtl.so` 的 NEEDED） |
-| 应用 | `e2e_app` `mp4_dist_tx` `mp4_dist_rx` `rx_minimal` + `test_*` | `app/rk3588_{end2end,mp4_dist}/build/` | 各为独立可执行文件 |
-| 配置 | `config/`（mp4_dist 的 `ptp/`、`*.json.example`） | `app/rk3588_mp4_dist/config/` | 运行时以 `--config config/xxx.json` 传入（相对路径） |
+| 应用 | `live_ingest` `file_playout_tx` `file_playout_rx` `rx_minimal` + `test_*` | `app/rk3588_{end2end,file_playout}/build/` | 各为独立可执行文件 |
+| 配置 | `config/`（file_playout 的 `ptp/`、`*.json.example`） | `app/rk3588_file_playout/config/` | 运行时以 `--config config/xxx.json` 传入（相对路径） |
 
 > **注意**：板端**已具备** `libnuma` `libjson-c` `libasound` `librockchip_mpp` `librga` `libdrm` `libavformat/codec/util` `libelf` `libbsd` 等；缺的只有上表的 MTL / XDP / BPF / DPDK 全家桶。
 
@@ -39,13 +39,13 @@ ldconfig
 ### 2.2 应用 → 独立目录（隔离、易卸载）
 ```
 /opt/mtl-rk3588/
-  bin/      e2e_app  mp4_dist_tx  mp4_dist_rx  rx_minimal  test_*
-  config/   (复制 app/rk3588_mp4_dist/config/)
+  bin/      live_ingest  file_playout_tx  file_playout_rx  rx_minimal  test_*
+  config/   (复制 app/rk3588_file_playout/config/)
 ```
 应用以 `--config` 读取相对 `config/` 的 JSON，因此在该目录下运行：
 ```bash
 cd /opt/mtl-rk3588
-./bin/mp4_dist_tx 300 --config config/tx_dual_host.json --fps 25
+./bin/file_playout_tx 300 --config config/tx_dual_host.json --fps 25
 ```
 
 > 也可改为把二进制装到 `/usr/local/bin/`、配置装到 `/usr/local/share/mtl-rk3588/config/`，但需改用绝对 `--config` 路径。
@@ -58,7 +58,7 @@ cd /opt/mtl-rk3588
 ```
 /home/kkkqkx/mtl/release/
   lib/      libmtl.so + libxdp* + libbpf* + librte_*.so*
-  bin/      e2e_app mp4_dist_tx mp4_dist_rx rx_minimal test_*
+  bin/      live_ingest file_playout_tx file_playout_rx rx_minimal test_*
   config/   config/ 副本
 ```
 该目录同时作为 devs → 板端 的中转暂存。
@@ -102,9 +102,9 @@ ssh board 'ldconfig'
 
 ```bash
 # 库解析
-ssh board 'ldd /opt/mtl-rk3588/bin/mp4_dist_tx | grep -i "not found"'   # 应为空
+ssh board 'ldd /opt/mtl-rk3588/bin/file_playout_tx | grep -i "not found"'   # 应为空
 # 启动自检（不需要硬件即可验证动态链接与参数解析）
-ssh board '/opt/mtl-rk3588/bin/mp4_dist_tx --help'
-ssh board '/opt/mtl-rk3588/bin/e2e_app --help'
+ssh board '/opt/mtl-rk3588/bin/file_playout_tx --help'
+ssh board '/opt/mtl-rk3588/bin/live_ingest --help'
 ```
 完整管线（捕获/编码/收发/解码/显示）需接 NIC、摄像头、显示器后在板端实跑。

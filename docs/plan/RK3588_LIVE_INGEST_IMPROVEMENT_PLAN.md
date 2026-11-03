@@ -1,11 +1,11 @@
 # RK3588 End2End App 采集/编码链路改进设计方案
 
 对照参考实现：ZLMediaKit `src/HdmiIn/`（V4L2 采集 → RGA 转换 → MPP 编码 → 分发）。
-被改进对象：`app/rk3588_end2end/`（`io/v4l2_capturer.c`、`codec/{mpp_encoder,rga_converter}.c`、`pipeline/tx_pipeline.c`）。
+被改进对象：`app/rk3588_live_ingest/`（`io/v4l2_capturer.c`、`codec/{mpp_encoder,rga_converter}.c`、`pipeline/tx_pipeline.c`）。
 
 ## 1. 现状对照总结
 
-| 维度 | rk3588_end2end 现状 | zlmediakit HdmiIn 做法 | 差距等级 |
+| 维度 | rk3588_live_ingest 现状 | zlmediakit HdmiIn 做法 | 差距等级 |
 |---|---|---|---|
 | 格式协商 | S_FMT 尝试 NV12→BGR3，不回读校验 | 候选清单逐个 S_FMT+G_FMT 回读校验，占位分辨率视为无信号 | 高 |
 | 信号/热插拔 | 无（设备节点固定、参数固定） | 订阅 V4L2_EVENT_SOURCE_CHANGE，事件驱动全量重建 | 高 |
@@ -155,7 +155,7 @@ stats 结构（各层原子计数 + 水位），tx_pipeline 每秒聚合一条�
 
 ## 4. 验证方式
 
-- 纯逻辑模块（sps_vui、归还状态机、帧率判定）进 `app/rk3588_end2end/tests/`，
+- 纯逻辑模块（sps_vui、归还状态机、帧率判定）进 `app/rk3588_live_ingest/tests/`，
   参照 `test_codec.c` 既有 gtest 风格。
 - 每阶段用 `docs/app/README.md` 的 E2E 流程在板上跑 24h 长稳，观察统计日志：
   丢帧率、在途缓冲峰值、RGA/编码失败计数均应为 0 或有界。

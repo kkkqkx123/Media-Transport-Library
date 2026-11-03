@@ -5,7 +5,7 @@
 > - `docs/archive/`：`RK3588_VERIFICATION_RESULTS.md`（2026-11-02 实测）、`RK3588_CROSS_COMPILE_PROGRESS.md`、`RK3588_5.10_DEBIAN_ACCOUNTS.md`
 > - `docs/dev/RK3588_VERIFICATION_PLAN.md`
 > - `docs/req/01~06`
-> - `docs/plan/`：`RK3588_SHARED_CODE_EXTRACTION.md`、`RK3588_END2END_IMPROVEMENT_PLAN.md`、`DVS_IPC_ASYNC_PLAN.md`、`DVS_FRONTEND_INTEGRATION_PLAN.md`
+> - `docs/plan/`：`RK3588_SHARED_CODE_EXTRACTION.md`、`RK3588_LIVE_INGEST_IMPROVEMENT_PLAN.md`、`DVS_IPC_ASYNC_PLAN.md`、`DVS_FRONTEND_INTEGRATION_PLAN.md`
 > - `patches/rk3588-5.10/`：`0001`(AF_XDP/BPF 配置)、`0002`(YT6801 驱动 + ttyS3 上报 + rootfs)、`base/kernel/arch`、`superseded/`
 >
 > 状态图例：⬜ 未开始　🟨 部分完成　✅ 已完成　⛔ 阻塞
@@ -14,7 +14,7 @@
 
 ## 0. 总览与结论
 
-- **当前进度**：userspace 交叉编译（DPDK+MTL+libxdp+rk3588 应用）已全部打通 ✅；库加载/L1 组件测试（6 项）/MTL 传输初始化/L2 ✅；`mp4_dist_tx` 内核后端 TX ✅。
+- **当前进度**：userspace 交叉编译（DPDK+MTL+libxdp+rk3588 应用）已全部打通 ✅；库加载/L1 组件测试（6 项）/MTL 传输初始化/L2 ✅；`file_playout_tx` 内核后端 TX ✅。
 - **最大阻塞（内核/驱动）**：板端 `yt6801` 网卡驱动未实现 `ndo_bpf`/`ndo_xdp_xmit`，**AF_XDP native 模式不可用**。当前只能走 `kernel:` 后端（见验证归档 §11）。这是唯一需要内核级代码改动才能解锁的能力。
 - **验证缺口**：L3 完整音视频流、L4 解码/显示、L5 双机 PTP、L6 长稳均未跑通，主因是缺片源 `InTheGrey.mp4`、物理 HDMI 显示器、`linuxptp`。
 - **应用/平台**：end2end 改进、共享库 C 档、IPC 异步化、dvs_media/dvs_agent/platform（S0–S5）全部 ⬜。
@@ -25,7 +25,7 @@
 
 | ID | 任务 | 状态 | 依赖 | 退出标准 |
 |----|------|------|------|----------|
-| **K1** | **YT6801 驱动实现 XDP 支持**（`ndo_bpf` / `ndo_xdp_xmit` / `ndo_xdp_flush`），解锁 MTL `native_af_xdp` | ⬜ | `0002` 驱动已 bringup | `e2e_app tx` 经 `native_af_xdp:enP2p33s0` 不再报 `Underlying driver does not support XDP`；MtlManager native attach 成功。需评估 YT6801 数据面改 XDP 回归成本 |
+| **K1** | **YT6801 驱动实现 XDP 支持**（`ndo_bpf` / `ndo_xdp_xmit` / `ndo_xdp_flush`），解锁 MTL `native_af_xdp` | ⬜ | `0002` 驱动已 bringup | `live_ingest tx` 经 `native_af_xdp:enP2p33s0` 不再报 `Underlying driver does not support XDP`；MtlManager native attach 成功。需评估 YT6801 数据面改 XDP 回归成本 |
 | **K1-alt** | 替代方案：换用支持 XDP 的 NIC/驱动（验证归档 §11.3 指出 USB 网卡通用 XDP 已可用），避免驱动改动 | ⬜ | 硬件到货 | 选定 NIC 在 5.10 下 `ethtool -i` 含 XDP 支持，AF_XDP 跑通 |
 | **K2** | 基于 `patches/rk3588-5.10/` 构建并固化可部署内核镜像（`base/kernel/arch` + `0001` + `0002` + 可选 K1），记录独立的内核交叉编译/打包步骤（当前仅 userspace 有 `RK3588_CROSS_COMPILE_PROGRESS.md`） | 🟨 | 0001/0002 已存在 | `ztl_defconfig` 编译出可启动内核；板端 `CONFIG_XDP_SOCKETS`/`BPF_SYSCALL`/`DEBUG_INFO_BTF` 生效（可由 `/proc/config.gz` 或 `/boot/config` 校验） |
 | **K3** | 确认/补齐 **DMA32 堆**：RGA 报 `unsupported memory larger than 4G`（改进方案 §2.2 P2）。内核需保证 `system-uncached-dma32` 堆可用或保留低于 4G 的 DMA 可寻址区 | ⬜ | 硬件确认 | end2end `dma32_allocator` 路径可走内核 dma-heap 而非用户态绕过；RGA 大于 4G 地址告警消失 |
@@ -43,14 +43,14 @@
 | ID | 任务 | 状态 | 依赖 | 退出标准 |
 |----|------|------|------|----------|
 | **V1** | L1：`test_codec`/`test_io`/`test_pipeline` 在**接入 HDMI 显示器**后跑通 | ⬜ | 物理显示器 | 三测试 `0 failed`；`test_pipeline` RX 解码路径 ready（当前仅 TX ready） |
-| **V2** | L3：`e2e_app` 完整音视频端到端（需 `InTheGrey.mp4` + MtlManager + 后端） | ⬜ | 片源 + K1 或 kernel 后端 | 板端 RX 收到帧、解码、DRM 出画、ALSA 出声 |
-| **V3** | L3：`mp4_dist` 单板/双机全链路（TX 发流 + RX 出画 + ALSA 播放） | 🟨 | 片源 + 显示器 | `mp4_dist_rx` 出现 MPP 解码成功、DRM pageflip、`av_sync clock=ptp`（或 monotonic 回退） |
+| **V2** | L3：`live_ingest` 完整音视频端到端（需 `InTheGrey.mp4` + MtlManager + 后端） | ⬜ | 片源 + K1 或 kernel 后端 | 板端 RX 收到帧、解码、DRM 出画、ALSA 出声 |
+| **V3** | L3：`file_playout` 单板/双机全链路（TX 发流 + RX 出画 + ALSA 播放） | 🟨 | 片源 + 显示器 | `file_playout_rx` 出现 MPP 解码成功、DRM pageflip、`av_sync clock=ptp`（或 monotonic 回退） |
 | **V4** | L5：双机 PTP（`linuxptp` 安装 + 偏差验证） | ⬜ | K4 + 第二台机器 | `ptp4l` master/slave 同步，`offset ≤ 2ms`，断网可恢复 |
 | **V5** | L4：DRM 渲染到**物理 HDMI 输出**（含 `rx_compositor` 多 plane 合成） | ⬜ | 显示器 | 显示器出现画面，多窗口叠加正确 |
 | **V6** | ALSA **HDMI 输出**播放验证（输入已 ✅，见验证归档 §12） | ⬜ | 显示器 | `hw:?,0` HDMI 输出出声，音量/静音生效 |
-| **V7** | `rx_minimal`/`mp4_dist_rx` 内核后端**回环收帧 0 frames** 根因排查（验证归档 §9.2 同机回环未收帧） | ⬜ | 片源或对端设备 + `tcpdump` | 明确是驱动回环限制还是配置问题；给出可复现的收帧命令 |
-| **V8** | AF_XDP 端到端（依赖 K1/K1-alt） | ⬜ | K1 | `e2e_app`/`mp4_dist` 走 `native_af_xdp` 收发正常 |
-| **V9** | L6：24h 稳定性长稳（`mp4_dist_rx 300` 监控 CPU/丢包/解码/温度） | ⬜ | V3/V5 | 24h 无崩溃、无持续丢帧、无降频重启 |
+| **V7** | `rx_minimal`/`file_playout_rx` 内核后端**回环收帧 0 frames** 根因排查（验证归档 §9.2 同机回环未收帧） | ⬜ | 片源或对端设备 + `tcpdump` | 明确是驱动回环限制还是配置问题；给出可复现的收帧命令 |
+| **V8** | AF_XDP 端到端（依赖 K1/K1-alt） | ⬜ | K1 | `live_ingest`/`file_playout` 走 `native_af_xdp` 收发正常 |
+| **V9** | L6：24h 稳定性长稳（`file_playout_rx 300` 监控 CPU/丢包/解码/温度） | ⬜ | V3/V5 | 24h 无崩溃、无持续丢帧、无降频重启 |
 | **V10** | PTP 资格阈值实测：NFR-04 同帧偏差 ≤1 帧、`apply_at` guard 取值（req 05 §6.5 / 04 §6） | ⬜ | V4 + S4 | 实测偏差回填阈值表 |
 
 ---
@@ -74,12 +74,12 @@
 
 | ID | 任务 | 状态 | 依赖 | 退出标准 |
 |----|------|------|------|----------|
-| **A1** | C 档 `drm_renderer`/`mpp_decoder` 合并决策与执行：以 mp4_dist 接口为基准重设计，end2end 做适配层；或确认 dvs-media 直接消费 `rk3588_mp4_dist/shared/` 副本（SHARED §2 / FRONTEND S0） | ⬜ | 无 | 决策记录落档；若合并则两 app 仍全绿 |
+| **A1** | C 档 `drm_renderer`/`mpp_decoder` 合并决策与执行：以 file_playout 接口为基准重设计，end2end 做适配层；或确认 dvs-media 直接消费 `rk3588_file_playout/shared/` 副本（SHARED §2 / FRONTEND S0） | ⬜ | 无 | 决策记录落档；若合并则两 app 仍全绿 |
 | **A2** | D 档模块（`drm_mode`/`display_layout`/`ptp_time`/`e2e_stamp` 等）迁入 common，供 dvs-media 复用（FRONTEND S0） | ⬜ | A1 | dvs-media 能 include common 头并链接静态库 |
 
 ### 4.2 end2end 采集/编码链路改进（IMP）
 
-> 来源 `RK3588_END2END_IMPROVEMENT_PLAN.md`，当前 `test_pipeline` 仅 TX ready。
+> 来源 `RK3588_LIVE_INGEST_IMPROVEMENT_PLAN.md`，当前 `test_pipeline` 仅 TX ready。
 
 | ID | 任务（对应方案 §2 段落） | 状态 | 依赖 | 退出标准 |
 |----|------|------|------|----------|

@@ -25,7 +25,7 @@ MTL 是“一个库工程 + 多个独立子工程”的 meson 结构：根工程
 | 守护进程 | `manager/` | `MtlManager`（+`mtl.xdp.o`） | 多进程资源仲裁、AF_XDP |
 | ld_preload | `ld_preload/` | 空壳，无构建目标 | — |
 | RxTxApp | `tests/tools/RxTxApp/` | `RxTxApp` | pytest 验收套件 |
-| rk3588 参考应用 | `app/rk3588_end2end/`、`app/rk3588_mp4_dist/` | `e2e_app`、`mp4_dist_tx/rx` 等 | DVS 节点媒体引擎起点 |
+| rk3588 参考应用 | `app/rk3588_live_ingest/`、`app/rk3588_file_playout/` | `live_ingest`、`file_playout_tx/rx` 等 | DVS 节点媒体引擎起点 |
 
 ### 1.2 `build.sh` 流程
 
@@ -46,7 +46,7 @@ MTL 是“一个库工程 + 多个独立子工程”的 meson 结构：根工程
 | --- | --- | --- |
 | DPDK_VER / DPDK_MTL_MINOR_VER | 26.07 / 91 | 必选外部依赖（打补丁构建，见 §2） |
 | ICE_VER / IAVF_VER | 2.6.7 / 4.13.35 | Intel 内核驱动补丁（x86 硬件 pacing，RK3588 无关） |
-| FFMPEG_VERSION | 7.0 | `st22_avcodec` 插件、`mp4_dist` TX 解复用 |
+| FFMPEG_VERSION | 7.0 | `st22_avcodec` 插件、`file_playout` TX 解复用 |
 | XDP_TOOLS_VER / EBPF_VER | 1.6.3 / 1.7.0 | AF_XDP 后端（RK3588 推荐数据面，见 §3.2） |
 | SVT_JPEG_XS_VER | 8e50180… | JPEG-XS 编码链（DVS V1.0 用 H.264/HEVC，暂不涉及） |
 | OPENH264_VER | 2.6.0 | 编码库（同上） |
@@ -111,7 +111,7 @@ MTL 是“一个库工程 + 多个独立子工程”的 meson 结构：根工程
 
 两者都是**独立 meson 工程，不在 `app/meson.build`、不在 `build.sh`、不在 CI**（`.github/workflows` 无 rk3588/aarch64 job），构建方式固定为在各自目录 `meson setup build && ninja -C build`，并依赖已安装的 `mtl.pc`（注意用 `MTL_INSTALL_PREFIX` 时同步导出 `PKG_CONFIG_PATH`）。
 
-### 5.1 `app/rk3588_end2end`（工程名 rk3588_e2e，`warning_level=3`）
+### 5.1 `app/rk3588_live_ingest`（工程名 rk3588_live_ingest，`warning_level=3`）
 
 按阶段组织为 4 个静态库 + 5 个可执行文件，依赖探测决定构建深度：
 
@@ -121,17 +121,17 @@ MTL 是“一个库工程 + 多个独立子工程”的 meson 结构：根工程
 | P2 IO | `e2e_io`、`test_io` | libdrm + threads（V4L2 用内核头，无库依赖） | 同上 |
 | P3 Codec | `e2e_codec`、`test_codec` | `rockchip_mpp` + `librga`（pkg-config） | **缺失时静默跳过**（连 test_codec 都不生成） |
 | P4 Pipeline | `e2e_pipe`、`test_pipeline` | mpp+rga（`mtl` 有才链） | 同上 |
-| P5 整机 | `e2e_app` | mpp+rga+**mtl+json-c 四者全齐** | 缺失时静默跳过 |
+| P5 整机 | `live_ingest` | mpp+rga+**mtl+json-c 四者全齐** | 缺失时静默跳过 |
 
-风险：`rockchip_mpp`、`librga`、`mtl`、`json-c` 都是 `required: false`，依赖没装齐时 `ninja` 仍“成功”，但 `e2e_app` 根本没构建——**构建脚本必须显式校验 `e2e_app` 产物存在**，不能只看退出码。
+风险：`rockchip_mpp`、`librga`、`mtl`、`json-c` 都是 `required: false`，依赖没装齐时 `ninja` 仍“成功”，但 `live_ingest` 根本没构建——**构建脚本必须显式校验 `live_ingest` 产物存在**，不能只看退出码。
 
-### 5.2 `app/rk3588_mp4_dist`（工程名 mp4_dist）
+### 5.2 `app/rk3588_file_playout`（工程名 file_playout）
 
 - `meson_options.txt`：`build_tx`（默认 true）、`build_rx`（默认 true），全关时报错。
 - 公共必需：`threads`、`mtl`（`required: true`）；TX 与 RX 任一开启都必需 `libavformat/libavcodec/libavutil/json-c`（FFmpeg 版本按 versions.env 钉 7.0 的发行版包或自编译）。
 - TX 平台无关（FFmpeg 解复用 + ST2110-22/30 发送），x86 上可用 `-Dbuild_tx=true -Dbuild_rx=false` 单独构建。
 - RX 仅 RK3588：`build_rx=true` 时做 **MPP 链接测试**（`#include <rockchip/…>` + `cc.links`），失败即 configure 报错并提示改用 tx-only；另必需 `libdrm`、`alsa`。
-- 产物：`mp4_dist_tx`、`mp4_dist_rx`、`rx_minimal`、`test_drm_plane`，以及 5 个注册为 meson test 的主机侧单测（`tx_tai_ts`、`e2e_stamp`、`media_clk`、`drm_mode`、`display_layout`，`ninja -C build test` 可跑）。
+- 产物：`file_playout_tx`、`file_playout_rx`、`rx_minimal`、`test_drm_plane`，以及 5 个注册为 meson test 的主机侧单测（`tx_tai_ts`、`e2e_stamp`、`media_clk`、`drm_mode`、`display_layout`，`ninja -C build test` 可跑）。
 
 ### 5.3 板端外部依赖清单（pkg-config 名）
 
@@ -184,13 +184,13 @@ MTL_INSTALL_PREFIX=$PWD/.local_install ./build.sh
 ./build.sh unit
 # 5) 两个参考应用（确保 PKG_CONFIG_PATH 能找到 mtl.pc，注意 bash 赋值不做 glob 展开，用 find 定位）
 export PKG_CONFIG_PATH="$(find $PWD/.local_install -name mtl.pc -printf '%h\n' | head -1):${PKG_CONFIG_PATH:-}"
-( cd app/rk3588_end2end  && meson setup build && ninja -C build )
-( cd app/rk3588_mp4_dist && meson setup build && ninja -C build )
+( cd app/rk3588_live_ingest  && meson setup build && ninja -C build )
+( cd app/rk3588_file_playout && meson setup build && ninja -C build )
 # 6) 产物断言（防 RB5 静默降级）
-test -x app/rk3588_end2end/build/e2e_app
-test -x app/rk3588_mp4_dist/build/mp4_dist_tx -a -x app/rk3588_mp4_dist/build/mp4_dist_rx
+test -x app/rk3588_live_ingest/build/live_ingest
+test -x app/rk3588_file_playout/build/file_playout_tx -a -x app/rk3588_file_playout/build/file_playout_rx
 ```
 
 ## 9. 参考文件索引
 
-`build.sh`、`meson.build`、`meson_options.txt`、`versions.env`、`VERSION`；`lib/meson.build`、`lib/src/{,datapath,dev,st2110}/meson.build`；`script/build_dpdk.sh`、`script/build_ebpf_xdp.sh`、`script/build_drivers.sh`、`script/check_dpdk_patches.sh`、`script/common.sh`；`manager/meson.build`；`plugins/meson.build`、`plugins/st22_avcodec/meson.build`、`script/build_st22_avcodec_plugin.sh`；`ld_preload/meson.build`；`tests/meson.build`、`tests/unit/meson.build`、`tests/tools/RxTxApp/meson.build`；`app/meson.build`、`app/rk3588_end2end/meson.build`、`app/rk3588_mp4_dist/meson.build(+meson_options.txt)`；`doc/build.md`；`docs/req/02-MTL基座分析.md` §6、`docs/req/05-实施路线与验证.md` P0/§13。
+`build.sh`、`meson.build`、`meson_options.txt`、`versions.env`、`VERSION`；`lib/meson.build`、`lib/src/{,datapath,dev,st2110}/meson.build`；`script/build_dpdk.sh`、`script/build_ebpf_xdp.sh`、`script/build_drivers.sh`、`script/check_dpdk_patches.sh`、`script/common.sh`；`manager/meson.build`；`plugins/meson.build`、`plugins/st22_avcodec/meson.build`、`script/build_st22_avcodec_plugin.sh`；`ld_preload/meson.build`；`tests/meson.build`、`tests/unit/meson.build`、`tests/tools/RxTxApp/meson.build`；`app/meson.build`、`app/rk3588_live_ingest/meson.build`、`app/rk3588_file_playout/meson.build(+meson_options.txt)`；`doc/build.md`；`docs/req/02-MTL基座分析.md` §6、`docs/req/05-实施路线与验证.md` P0/§13。

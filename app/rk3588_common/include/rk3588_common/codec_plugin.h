@@ -20,6 +20,7 @@ enum codec_param {
   CODEC_PARAM_B_FRAMES,
   CODEC_PARAM_LOW_LATENCY,
   CODEC_PARAM_NUM_SLICES,
+  CODEC_PARAM_QP,
 };
 
 struct codec_config {

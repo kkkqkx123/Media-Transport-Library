@@ -295,7 +295,7 @@ static int tx_stack_create(struct tx_stack* ts, struct live_ingest_cfg* cfg,
         .mtl_sink = &ts->mtl_sink,
     };
     ts->tp = tx_pipeline_create(&txp);
-    if (!ts->tp) return -1;
+    if (!ts->tp) return -errno;
 
     printf("TX: port=%s lip=%s dip=%s udp=%u (direct-write)\n",
            cfg->tx_port, cfg->tx_lip, cfg->tx_dip, cfg->udp_port);
@@ -333,7 +333,15 @@ static int run_tx_mode(struct live_ingest_cfg* cfg) {
     if (!st) return 1;
     apply_log_level(st, cfg->log_level);
     struct tx_stack ts;
-    if (tx_stack_create(&ts, cfg, st, true) != 0) {
+    int rc = tx_stack_create(&ts, cfg, st, true);
+    while (rc == -ENODATA && atomic_load(&g_run)) {
+        if (ts.mtx) { mtl_tx_free(ts.mtx); ts.mtx = NULL; }
+        fprintf(stderr, "live_ingest: no HDMI signal, retry in 1s\n");
+        sleep(1);
+        memset(&ts, 0, sizeof(ts));
+        rc = tx_stack_create(&ts, cfg, st, true);
+    }
+    if (rc != 0) {
         tx_stack_free(&ts);
         return 1;
     }

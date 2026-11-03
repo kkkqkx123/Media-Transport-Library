@@ -1,6 +1,6 @@
 # 前端原型(ref/)与 DVS 需求、RK3588 app 层的对应关系与集成设计
 
-> 输入:`docs/req/`(11 条 REQ 归并分析)、`ref/video-control-platform/`(平台后台原型)、`ref/node-device-admin/`(节点本机后台原型)、`app/rk3588_end2end/`、`app/rk3588_mp4_dist/`。
+> 输入:`docs/req/`(11 条 REQ 归并分析)、`ref/video-control-platform/`(平台后台原型)、`ref/node-device-admin/`(节点本机后台原型)、`app/rk3588_live_ingest/`、`app/rk3588_file_playout/`。
 > 本文回答两个问题:原型页面/数据模型与需求的对应关系;如何把两个原型承载的业务能力集成到现有 rk3588 app 层,形成"平台控制面 + 节点代理 + 节点媒体引擎"的可落地架构。
 > 状态:draft,供评审;不替代 REQ 的验收口径。
 
@@ -8,7 +8,7 @@
 
 1. 两个原型与 `docs/req` 的 11 条 REQ 是一一对应的业务载体:`video-control-platform` 覆盖 REQ-0001~0007、0010、0011(平台侧),`node-device-admin` 覆盖 REQ-0008、0009(节点侧)。原型的 `_shared/` 三件套(`platform-store.js` / `node-state.js` / `playback-tasks.js`)已经把需求文档建议的数据模型(组、墙、场景、绑定、白名单、能力、播放任务、八态任务状态机)具象成了可运行的字段结构,可直接作为平台后端数据模型的契约基线。
 2. 原型是"零依赖、零构建"的原生 HTML/JS + localStorage 模拟,API 全部由 `mock-api.js` 在浏览器内拦截;真实集成时这些 API 契约(路径、响应包 `{ok,status,code,msg,data}`、`Idempotency-Key`、审计事件)应原样保留,由真实平台服务(REST)和节点代理(HTTP)实现。
-3. 现有 rk3588 app 层没有任何运行期控制通道(无 IPC/HTTP,一次性 argv+JSON 静态配置),这是集成的主要缺口。`mp4_dist/shared/` 已具备公共库雏形(slab/ring/timer/ptp_time/drm_renderer 多 plane/display_layout/mpp_decoder),应以它为基础抽出"节点媒体引擎"(`dvs-media`),补上 IPC 状态机(configure/prepare/commit/clear/query_state)、能力上报、布局热更新与动态会话管理。
+3. 现有 rk3588 app 层没有任何运行期控制通道(无 IPC/HTTP,一次性 argv+JSON 静态配置),这是集成的主要缺口。`file_playout/shared/` 已具备公共库雏形(slab/ring/timer/ptp_time/drm_renderer 多 plane/display_layout/mpp_decoder),应以它为基础抽出"节点媒体引擎"(`dvs-media`),补上 IPC 状态机(configure/prepare/commit/clear/query_state)、能力上报、布局热更新与动态会话管理。
 4. 端到端集成路径:媒体引擎(MTL/MPP/RGA/DRM/ALSA)→ 节点代理(HTTP 本机页 + 到平台的注册/心跳/媒体回执通道)→ 平台服务(operation/revision/prepare-commit 框架)→ 前端(直接复用/改造两个原型)。媒体引擎的接口按 `docs/req/06-数据与接口建议.md` 第 2 节协议实现。
 5. 实施顺序遵循 `docs/req/05-实施路线与验证.md` 的 P1→P2:先抽公共库 + dvs-media IPC MVP(对应原型 node-admin 页的能力),再做平台控制面并把原型页面接到真实 API(对应 platform 原型页的能力)。
 
@@ -64,16 +64,16 @@
 
 详细盘点见附录 A,核心结论:
 
-| 维度 | rk3588_end2end | rk3588_mp4_dist |
+| 维度 | rk3588_live_ingest | rk3588_file_playout |
 | --- | --- | --- |
-| 进程 | `e2e_app` 单进程 tx/rx/both | `mp4_dist_tx` / `mp4_dist_rx` 双可执行 |
+| 进程 | `live_ingest` 单进程 tx/rx/both | `file_playout_tx` / `file_playout_rx` 双可执行 |
 | 配置 | argv + JSON(仅单流) | argv + 完整 JSON(pip_streams[]/tx_streams[]、DRM/ALSA/PTP/CPU 亲和) |
 | 控制通道 | 无(SIGINT 之外零接口) | 无 |
 | 布局 | 单流 DRM 单层 | 多 lane:8 lane 上限、NV12 直通实测 4 路,`display_layout` → DRM 多 plane |
 | 复用件 | dma_allocator、rga_converter、mpp_encoder、slice_reassembler、supervisor | shared/(slab、ring、timer、ptp_time、drm_renderer 多 plane、display_layout、mpp_decoder、codec_plugin) |
-| 重复代码 | 与 mp4_dist 的 slab/ring/timer/decoder/bridge/config 各一套 | — |
+| 重复代码 | 与 file_playout 的 slab/ring/timer/decoder/bridge/config 各一套 | — |
 
-mp4_dist 是第二代实现,`shared/` 已是事实上的公共库;以它为底座上收 end2end 的增量(DMA 分配器、编码器、RGA、切片重组)即可得到节点媒体引擎的素材。
+file_playout 是第二代实现,`shared/` 已是事实上的公共库;以它为底座上收 end2end 的增量(DMA 分配器、编码器、RGA、切片重组)即可得到节点媒体引擎的素材。
 
 ## 4. 集成架构设计
 
@@ -90,7 +90,7 @@ mp4_dist 是第二代实现,`shared/` 已是事实上的公共库;以它为底�
 ├ 节点网关(WS/TLS)───────────────────────────────────────┤
 ├ 节点代理(dvs-agent,新建)──────────────────────────────┤
 │  注册/心跳 · 配置状态机 · 本机 HTTP + 静态前端 · 升级   │
-├ 节点媒体引擎(dvs-media,由 mp4_dist/shared 演进)────────┤
+├ 节点媒体引擎(dvs-media,由 file_playout/shared 演进)────────┤
 │  MTL TX/RX · MPP · RGA · DRM 多plane · ALSA · PTP      │
 └────────────────────────────────────────────────────────┘
 ```
@@ -103,7 +103,7 @@ mp4_dist 是第二代实现,`shared/` 已是事实上的公共库;以它为底�
 
 | 层 | 来源 | 说明 |
 | --- | --- | --- |
-| `common/` 公共库 | mp4_dist `shared/` 为主 | slab_pool、ring_buffer、timer、ptp_time、drm_renderer(多 plane)、drm_mode、display_layout、mpp_decoder、codec_plugin;从 end2end 上收 dma_allocator/dma32_allocator、mpp_encoder、rga_converter、slice_reassembler、sei_timestamp |
+| `common/` 公共库 | file_playout `shared/` 为主 | slab_pool、ring_buffer、timer、ptp_time、drm_renderer(多 plane)、drm_mode、display_layout、mpp_decoder、codec_plugin;从 end2end 上收 dma_allocator/dma32_allocator、mpp_encoder、rga_converter、slice_reassembler、sei_timestamp |
 | `engine/` 引擎核心 | 新写 | 会话管理器(动态创建/销毁 MTL ST22/ST30 会话)、布局执行器(接收 JSON 布局片段→影子布局→原子提交 DRM plane)、音频仲裁(audioOwner+volume→ALSA)、能力探测(分辨率/路数/plane 数/编解码) |
 | `ipc/` 控制接口 | 新写 | Unix domain socket(JSON 行协议,req 04 §3 消息集):`configure / prepare / commit / abort / set_sources / clear / query_state / event` |
 | `cli/` | 改造 mp4_rx_app | 启动参数兼容:`--config`(静态 JSON,兼容现有联调)、`--ipc-sock`(受控模式) |
@@ -141,7 +141,7 @@ mp4_dist 是第二代实现,`shared/` 已是事实上的公共库;以它为底�
 
 ## 5. 实施步骤(映射 req 05 阶段)
 
-1. **P1-a 公共库抽取**:建 `app/common/`(或 dvs_media 内 common/),合并两 app 的重复实现,现有 end2end/mp4_dist 改为引用,跑通双方单测。
+1. **P1-a 公共库抽取**:建 `app/common/`(或 dvs_media 内 common/),合并两 app 的重复实现,现有 end2end/file_playout 改为引用,跑通双方单测。
 2. **P1-b dvs-media MVP**:engine + ipc,UML 消息集按 req 06 §2;退出标准=req 05 §3(单节点 4 窗口、音频、恢复布局)。此阶段前端可用 node-admin 原型 + 手工 mock 验证 IPC。
 3. **P1-c dvs-agent MVP**:本地 HTTP + node-admin 原型接入真实 `/api/v1/node/*`;注册/心跳可用一个最小平台 stub。
 4. **P2 平台服务**:实现 mock-api 契约 + 节点网关;video-control-platform 原型页替换数据源,走通 FLOW-01(两节点 2×1 墙:建组→建墙→绑定→白名单→开窗→存场景)。
@@ -161,19 +161,19 @@ mp4_dist 是第二代实现,`shared/` 已是事实上的公共库;以它为底�
 
 ## 附录 A:rk3588 app 层盘点明细
 
-### A.1 rk3588_end2end
+### A.1 rk3588_live_ingest
 
-- 入口 `e2e_app.c:459 main()`,模式 `tx/rx/both`(`run_tx_mode:349`、`run_rx_mode:373`、`run_both_mode:410`)。
+- 入口 `live_ingest.c:459 main()`,模式 `tx/rx/both`(`run_tx_mode:349`、`run_rx_mode:373`、`run_both_mode:410`)。
 - argv 解析 `parse_args(:49-93)`;JSON 配置 `e2e_config.c:82` 仅取 `streams[0]/interfaces[0]`(:98、:115),单流设计。
 - TX 线程链:V4L2 采集(`io/v4l2_capturer.c:449`)→ RGA → MPP 编码(`codec/mpp_encoder.c:330` collector 线程)→ tx_pipeline 编码线程 + supervisor 看门狗(`pipeline/tx_pipeline.c:534、552`)→ MTL TX。
 - RX 线程链:MTL RX → bridge(`mtl_rx_bridge.c:121`)→ 解码(`pipeline/rx_pipeline.c:205`)→ DRM。
 - 独有可复用件:`hal/dma_allocator.c`、`hal/dma32_allocator.c`、`hal/sei_timestamp.c`、`codec/rga_converter.c`、`codec/mpp_encoder.c`、`pipeline/slice_reassembler.c`。
 
-### A.2 rk3588_mp4_dist
+### A.2 rk3588_file_playout
 
 - TX:`mp4_tx_app.c:25 main()` → `tx/tx_scheduler.c:500、511` 每 lane video 线程 + audio 线程,`tx_streams[]`(`shared/display_layout.h:46-57`)。
 - RX:`mp4_rx_app.c:387 main()`,`pip_stream_count>0` 走 `run_compositor(:114)`,否则 `run_legacy_pipeline(:205)`。
-- 配置:`mp4_dist_config.c:72-286 mp4_dist_config_load`(端口/IP、DRM、ALSA、CPU 亲和、`ptp_mode:172-180`、`display_viewport:189-200`、`pip_streams[]:203+`)。
+- 配置:`file_playout_config.c:72-286 file_playout_config_load`(端口/IP、DRM、ALSA、CPU 亲和、`ptp_mode:172-180`、`display_viewport:189-200`、`pip_streams[]:203+`)。
 - 合成:`rx/rx_compositor.c`,`MP4_PIP_MAX_LANES=8`、NV12 直通 4 路(`shared/display_layout.h:16-17`);layout 由 `display_layout_from_pip_streams(:87)` 解析为 `{dst_x/y/w/h,zpos,plane_id}`;create 一次性构建(`rx_compositor.c:401、414-437、498-572`),运行期不可变;音频只取 main lane(`:467-482`);统计 stdout(`:595-641`)。
 - shared 静态库:`meson.build:69-84`。
 

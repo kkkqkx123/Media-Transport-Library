@@ -59,6 +59,7 @@ struct tx_pipeline {
      * oversize and encoder-recv failures downstream */
     uint64_t               stat_captured;
     uint64_t               stat_encoded;
+    uint64_t               stat_encoded_bytes;
     uint32_t               stat_ring_drops;
     uint32_t               stat_sink_drops;
 };
@@ -174,7 +175,7 @@ static void* supervise_thread(void* arg) {
     struct tx_pipeline* tp = (struct tx_pipeline*)arg;
 
     /* per-tick stats deltas for the 1s aggregation log */
-    uint64_t prev_captured = 0, prev_encoded = 0;
+    uint64_t prev_captured = 0, prev_encoded = 0, prev_bytes = 0;
     uint64_t prev_rga_calls = 0, prev_rga_fails = 0, prev_exhausted = 0;
     uint64_t prev_cpu_fb = 0, prev_full_drops = 0;
 
@@ -185,6 +186,7 @@ static void* supervise_thread(void* arg) {
         uint64_t captured_now = tp->stat_captured;
         bool trigger = atomic_exchange(&tp->flag_capture_error, false) ||
                        atomic_exchange(&tp->flag_signal_change, false);
+        if (!tp->capture || !tp->encoder) trigger = true;
 
         if (!trigger && captured_now > atomic_load(&tp->last_captured_seen)) {
             uint64_t last_out = 0;
@@ -209,11 +211,12 @@ static void* supervise_thread(void* arg) {
             uint64_t full_drops = 0;
             if (tp->encoder && tp->encoder->get_full_drops)
                 tp->encoder->get_full_drops(tp->encoder->priv, &full_drops);
-            printf("tx_pipe[1s]: cap=%llu/s enc=%llu/s ring_drop=%u sink_drop=%u "
+            printf("tx_pipe[1s]: cap=%llu/s enc=%llu/s %llukbps ring_drop=%u sink_drop=%u "
                    "outstanding=%d peak=%d full_ev=%llu enc_full_drop=%llu streak=%u | "
                    "rga ok=%llu fail=%llu pool_full=%llu cpu_fb=%llu ema=%lluus\n",
                    (unsigned long long)(captured_now - prev_captured),
                    (unsigned long long)(tp->stat_encoded - prev_encoded),
+                   (unsigned long long)((tp->stat_encoded_bytes - prev_bytes) * 8 / 1000),
                    tp->stat_ring_drops,
                    tp->stat_sink_drops,
                    tp->capture ? v4l2_capturer_outstanding(tp->capture) : -1,
@@ -228,6 +231,7 @@ static void* supervise_thread(void* arg) {
                    (unsigned long long)rs.time_ema_us);
             prev_captured   = captured_now;
             prev_encoded    = tp->stat_encoded;
+            prev_bytes      = tp->stat_encoded_bytes;
             prev_rga_calls  = rs.calls;
             prev_rga_fails  = rs.fails;
             prev_exhausted  = rs.pool_exhausted;
@@ -322,6 +326,18 @@ static void* encode_thread(void* arg) {
             continue;
         if (!f) continue;
 
+        uint32_t min_stride = (uint32_t)tp->cfg.width;
+        if (f->fourcc == V4L2_PIX_FMT_BGR24) min_stride = (uint32_t)tp->cfg.width * 3;
+        else if (f->fourcc == V4L2_PIX_FMT_UYVY || f->fourcc == V4L2_PIX_FMT_YUYV)
+            min_stride = (uint32_t)tp->cfg.width * 2;
+        if (f->fd < 0 || f->stride < min_stride) {
+            tp->stat_sink_drops++;
+            if (f->capture)
+                v4l2_capturer_release(f->capture, f->buf_index, f->generation);
+            free(f);
+            continue;
+        }
+
         /* NV12 single-plane capture feeds MPP directly; anything else goes
          * through RGA into the shared NV12 pool. */
         int enc_fd = f->fd;
@@ -388,9 +404,10 @@ static void* encode_thread(void* arg) {
                     mtl_memcpy(fb + SEI_TS_NAL_SIZE, data, size);
                     size_t total = size + SEI_TS_NAL_SIZE;
                     if (tp->cfg.mtl_sink->publish_fb(tp->cfg.mtl_sink->priv,
-                                                     fb_idx, total) == 0)
+                                                     fb_idx, total) == 0) {
                         tp->stat_encoded++;
-                    else {
+                        tp->stat_encoded_bytes += total;
+                    } else {
                         tp->cfg.mtl_sink->abort_fb(tp->cfg.mtl_sink->priv, fb_idx);
                         tp->stat_sink_drops++;
                     }
@@ -449,6 +466,7 @@ static void* encode_thread(void* arg) {
                 pkt->frame_seq     = f->frame_seq;
                 if (ring_push(tp->ring_enc2dec, pkt) == 0) {
                     tp->stat_encoded++;
+                    tp->stat_encoded_bytes += total;
                 } else {
                     tp->stat_sink_drops++;
                     slab_free(tp->slab, base);
@@ -505,11 +523,17 @@ struct tx_pipeline* tx_pipeline_create(struct tx_pipeline_params* p) {
     tp->encoder = mpp_encoder_create(&codec_cfg, tp->slab);
     if (!tp->encoder) { fprintf(stderr, "tx_pipe: encoder create failed\n"); goto fail; }
 
-    /* V4L2 capture */
+    /* V4L2 capture: ENODATA means no signal, caller retries periodically */
     tp->capture = v4l2_capturer_create(p->v4l2_device, p->width, p->height,
                                        p->fps, p->v4l2_buf_count,
                                        capture_on_frame, tp);
-    if (!tp->capture) { fprintf(stderr, "tx_pipe: capture create failed\n"); goto fail; }
+    if (!tp->capture) {
+        int saved = errno;
+        fprintf(stderr, "tx_pipe: capture create failed (%s)\n",
+                saved == ENODATA ? "no signal" : strerror(saved));
+        errno = saved;
+        goto fail_errno;
+    }
     v4l2_capturer_set_error_cb(tp->capture, capture_error_cb, tp);
     v4l2_capturer_set_signal_change_cb(tp->capture, signal_change_cb, tp);
     atomic_init(&tp->flag_capture_error, false);
@@ -523,6 +547,12 @@ struct tx_pipeline* tx_pipeline_create(struct tx_pipeline_params* p) {
 
 fail:
     tx_pipeline_free(tp);
+    return NULL;
+
+fail_errno: {
+    int saved = errno;
+    tx_pipeline_free(tp);
+    errno = saved;
     return NULL;
 }
 
@@ -627,4 +657,9 @@ struct ring_buffer* tx_pipeline_get_output_ring(struct tx_pipeline* tp) {
 
 struct slab_pool* tx_pipeline_get_slab_pool(struct tx_pipeline* tp) {
     return tp ? tp->slab : NULL;
+}
+
+int tx_pipeline_set_param(struct tx_pipeline* tp, enum codec_param k, int v) {
+    if (!tp || !tp->encoder || !tp->encoder->set_param) return -EINVAL;
+    return tp->encoder->set_param(tp->encoder->priv, k, v);
 }

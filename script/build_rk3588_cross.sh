@@ -18,7 +18,7 @@
 #   --clean               remove build dirs before building
 #   --fetch               download DPDK/xdp-tools sources if missing
 #   --no-xdp              skip AF_XDP backend (no xdp-tools/libxdp)
-#   --no-apps-rx          build mp4_dist TX only (no RX/MPP/DRM/ALSA)
+#   --no-apps-rx          build file_playout TX only (no RX/MPP/DRM/ALSA)
 #   --usdt                enable USDT (requires sys/sdt.h in sysroot)
 #   --patch-stdbool       append #include <stdbool.h> to app .c files missing it
 #   -h, --help            show this help
@@ -63,7 +63,7 @@ Options:
   --clean               remove build dirs before building
   --fetch               download DPDK/xdp-tools sources if missing
   --no-xdp              skip AF_XDP backend
-  --no-apps-rx          build mp4_dist TX only
+  --no-apps-rx          build file_playout TX only
   --usdt                enable USDT (requires sys/sdt.h)
   --patch-stdbool       append #include <stdbool.h> to app .c missing it
   -h, --help            show this help
@@ -230,7 +230,7 @@ patch_stdbool() {
 	python3 - "$repo_dir" <<'PY'
 import os, glob
 root = __import__('sys').argv[1]
-for app in ('app/rk3588_end2end', 'app/rk3588_mp4_dist'):
+for app in ('app/rk3588_live_ingest', 'app/rk3588_file_playout'):
     base = os.path.join(root, app)
     for dp,_,fs in os.walk(base):
         for f in fs:
@@ -360,15 +360,15 @@ build_manager() {
 build_apps() {
 	run_stage apps || return 0
 	if [[ "$PATCH_BOOL" == "1" ]]; then patch_stdbool; fi
-	# end2end
-	cd "$repo_dir/app/rk3588_end2end"
+	# live_ingest
+	cd "$repo_dir/app/rk3588_live_ingest"
 	if [[ "$CLEAN" == "1" ]]; then rm -rf build-aarch64; fi
 	if [[ ! -f build-aarch64/build.ninja ]]; then
 		meson setup build-aarch64 --cross-file "$CROSS_FILE"
 	fi
 	ninja -C build-aarch64 -j"$JOBS"
-	# mp4_dist
-	cd "$repo_dir/app/rk3588_mp4_dist"
+	# file_playout
+	cd "$repo_dir/app/rk3588_file_playout"
 	if [[ "$CLEAN" == "1" ]]; then rm -rf build-aarch64; fi
 	local opts="-Dbuild_tx=true"
 	[[ "$MP4_RX" == "1" ]] && opts="$opts -Dbuild_rx=true" || opts="$opts -Dbuild_rx=false"
@@ -384,9 +384,9 @@ assert_products() {
 	log_info "asserting products..."
 	test -f "$SYSROOT/usr/lib/aarch64-linux-gnu/libmtl.so" || { log_error "libmtl.so missing"; exit 1; }
 	if run_stage apps; then
-		test -x "$repo_dir/app/rk3588_end2end/build-aarch64/e2e_app" || log_warning "e2e_app not built (dependency missing?)"
-		test -x "$repo_dir/app/rk3588_mp4_dist/build-aarch64/mp4_dist_tx" || log_warning "mp4_dist_tx not built"
-		[[ "$MP4_RX" == "1" ]] && { test -x "$repo_dir/app/rk3588_mp4_dist/build-aarch64/mp4_dist_rx" || log_warning "mp4_dist_rx not built"; }
+		test -x "$repo_dir/app/rk3588_live_ingest/build-aarch64/live_ingest" || log_warning "live_ingest not built (dependency missing?)"
+		test -x "$repo_dir/app/rk3588_file_playout/build-aarch64/file_playout_tx" || log_warning "file_playout_tx not built"
+		[[ "$MP4_RX" == "1" ]] && { test -x "$repo_dir/app/rk3588_file_playout/build-aarch64/file_playout_rx" || log_warning "file_playout_rx not built"; }
 	fi
 	file "$SYSROOT/usr/lib/aarch64-linux-gnu/libmtl.so" 2>/dev/null | grep -q aarch64 && log_success "libmtl.so is aarch64"
 }

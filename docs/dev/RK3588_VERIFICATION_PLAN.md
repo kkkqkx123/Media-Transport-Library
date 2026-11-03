@@ -1,7 +1,7 @@
 # RK3588 功能验证方案
 
 > 最后更新：2026-11-02
-> 适用：在 RK3588 板端对 MTL 库与 `rk3588_end2end` / `rk3588_mp4_dist` 应用做功能完整性验证。
+> 适用：在 RK3588 板端对 MTL 库与 `rk3588_live_ingest` / `rk3588_file_playout` 应用做功能完整性验证。
 > 部署前提见 `docs/dev/RK3588_DEPLOYMENT.md`，交叉编译链路见 `docs/archive/RK3588_CROSS_COMPILE_PROGRESS.md`。
 
 ---
@@ -14,7 +14,7 @@
 |---|---|
 | 板端 IP | `192.168.80.202`，RK3588，Debian 11，内核 5.10.226 |
 | MTL 库 | `/usr/lib/aarch64-linux-gnu/libmtl.so` 26.9.0.DEV |
-| 应用 | `/opt/mtl-rk3588/bin/` 下 `e2e_app`、`mp4_dist_tx`、`mp4_dist_rx`、`rx_minimal`、`test_*` |
+| 应用 | `/opt/mtl-rk3588/bin/` 下 `live_ingest`、`file_playout_tx`、`file_playout_rx`、`rx_minimal`、`test_*` |
 | 网口 | `enP2p33s0` UP；`enP3p49s0` 无载波 DOWN |
 | 摄像头 | `/dev/video0` = `rk_hdmirx`，接入 HDMI 时钟视频后为 1920×1080@60 BGR3 |
 | 显示 | HDMI-A-1/2、DP-1 全部 disconnected；仅 `Writeback-1` connected |
@@ -83,19 +83,19 @@ timeout 8 ./rx_minimal_afxdp
 
 - 接入 HDMI 显示器后重跑 `test_io`、`test_codec`、`test_pipeline`。
 - 无显示器时可使用 `Writeback-1` 连接器做无头 DRM 路径验证。
-- `mp4_dist_rx` 应出现 MPP 解码成功、DRM pageflip、ALSA 播放。
+- `file_playout_rx` 应出现 MPP 解码成功、DRM pageflip、ALSA 播放。
 
 ### L5：双机 PTP
 
 1. 板端与 PC 安装 `linuxptp`，运行 `set_tai_offset`，同步 TAI。
-2. PC（192.168.80.211）启动 PTP master + `mp4_dist_tx`。
-3. 板端启动 PTP slave + `mp4_dist_rx`。
+2. PC（192.168.80.211）启动 PTP master + `file_playout_tx`。
+3. 板端启动 PTP slave + `file_playout_rx`。
 4. 检查 `PTP mode=external`、`av_sync clock=ptp`、PTS 单调。
 
 ### L6：稳定性与性能
 
 ```bash
-./mp4_dist_rx 300 --config config/rx_mp4_dist.json --fps 23.976
+./file_playout_rx 300 --config config/rx_file_playout.json --fps 23.976
 ```
 
 监控 CPU、丢包、解码帧数、playout 延迟与 DRM 刷新率。
@@ -106,7 +106,7 @@ timeout 8 ./rx_minimal_afxdp
 
 | 阻塞项 | 说明 |
 |---|---|
-| MtlManager 未安装 | AF_XDP 多队列/共享模式不可用，`e2e_app` 的 AF_XDP 路径需要它 |
-| `InTheGrey.mp4` 未部署 | 板端无法运行 `mp4_dist_tx` 全链路 |
+| MtlManager 未安装 | AF_XDP 多队列/共享模式不可用，`live_ingest` 的 AF_XDP 路径需要它 |
+| `InTheGrey.mp4` 未部署 | 板端无法运行 `file_playout_tx` 全链路 |
 | 无 HDMI 显示器 | DRM 渲染测试无法在物理显示器上验证 |
 | linuxptp 未安装 | 双机 PTP 验证前需安装 |

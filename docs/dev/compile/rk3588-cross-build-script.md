@@ -35,7 +35,7 @@
 | `--clean` | — | 否 | 构建前清空对应 build 目录 |
 | `--fetch` | — | 否 | 缺源码时自动下载 DPDK/xdp-tools |
 | `--no-xdp` | `RK3588_ENABLE_XDP=0` | 启用 | 跳过 AF_XDP 后端 |
-| `--no-apps-rx` | — | RX 开启 | mp4_dist 仅构建 TX |
+| `--no-apps-rx` | — | RX 开启 | file_playout 仅构建 TX |
 | `--usdt` | `RK3588_ENABLE_USDT=1` | 关闭 | 启用 USDT（需 sysroot 有 `sys/sdt.h`） |
 | `--patch-stdbool` | — | 否 | 为缺失 `stdbool.h` 的应用 `.c` 补 include |
 
@@ -65,7 +65,7 @@ script/build_rk3588_cross.sh --fetch
 ## 5. 构建产物与验证
 
 - `libmtl.so`：`$SYSROOT/usr/lib/aarch64-linux-gnu/libmtl.so`（aarch64）。
-- 应用：`app/rk3588_end2end/build-aarch64/e2e_app`、`app/rk3588_mp4_dist/build-aarch64/mp4_dist_tx`（及 `mp4_dist_rx`）。
+- 应用：`app/rk3588_live_ingest/build-aarch64/live_ingest`、`app/rk3588_file_playout/build-aarch64/file_playout_tx`（及 `file_playout_rx`）。
 - 脚本末尾自动执行 `file`/`test -x` 断言；若失败请检查 sysroot `.pc` 是否齐全（RB16）。
 
 ## 6. 常见问题

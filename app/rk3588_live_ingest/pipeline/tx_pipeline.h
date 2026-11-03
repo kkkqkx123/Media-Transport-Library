@@ -2,6 +2,7 @@
 #define _LIVE_INGEST_TX_PIPELINE_H_
 
 #include "pipeline_common.h"
+#include "codec_plugin.h"
 #include <stdint.h>
 
 struct ring_buffer;
@@ -58,5 +59,10 @@ void  tx_pipeline_stop(struct tx_pipeline* tp);
 struct ring_buffer* tx_pipeline_get_output_ring(struct tx_pipeline* tp);
 /** Get the shared slab pool for coded data lifecycle management. */
 struct slab_pool*  tx_pipeline_get_slab_pool(struct tx_pipeline* tp);
+
+/** Forward RC hot-reconfig to the encoder mailbox (thread-safe, non-blocking).
+ * Supported params: CODEC_PARAM_BITRATE, CODEC_PARAM_GOP_SIZE, CODEC_PARAM_QP.
+ * Returns 0 on accepted, -ENOSYS for unsupported, -EINVAL for bad value. */
+int tx_pipeline_set_param(struct tx_pipeline* tp, enum codec_param k, int v);
 
 #endif /* _LIVE_INGEST_TX_PIPELINE_H_ */

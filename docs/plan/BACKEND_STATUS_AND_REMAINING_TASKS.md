@@ -11,7 +11,7 @@
 | 模块 | 状态 | 说明 |
 |---|---|---|
 | `app/dvs_common` | 可用 | HTTP server/client、SHA256/PBKDF2、SQLite 封装。 |
-| `app/dvs_media` | 单节点 MVP | 复用 `rk3588_mp4_dist` 的 RX compositor/DRM/MPP/ALSA；IPC 状态机、白名单准入、布局 prepare/commit、能力探测已实现。 |
+| `app/dvs_media` | 单节点 MVP | 复用 `rk3588_file_playout` 的 RX compositor/DRM/MPP/ALSA；IPC 状态机、白名单准入、布局 prepare/commit、能力探测已实现。 |
 | `app/dvs_agent` | 单节点控制面 MVP | 节点存储、六 scope 配置状态机、注册/心跳、本机 HTTP、维护操作、媒体 IPC 转发已实现。 |
 | `app/dvs_platform` | 通用文档库 + 协调器原型 | 通用 CRUD、tombstone、operation barrier、布局拆分数学、串行升级入口已实现。 |
 

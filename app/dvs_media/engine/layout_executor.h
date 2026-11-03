@@ -7,9 +7,9 @@
 /* layout_executor — two-phase prepare/commit over a shadow layout (see
  * layout_executor.c). */
 
-int dvs_layout_from_json(struct json_object* req, mp4_dist_pip_stream* out,
+int dvs_layout_from_json(struct json_object* req, file_playout_pip_stream* out,
                          int* count);
-int dvs_layout_prepare(const mp4_dist_pip_stream* streams, int count);
+int dvs_layout_prepare(const file_playout_pip_stream* streams, int count);
 int dvs_layout_prepare_from_json(struct json_object* req);
 uint64_t dvs_layout_pending_apply_at_ns(void);
 int dvs_layout_commit(dvs_engine* e);

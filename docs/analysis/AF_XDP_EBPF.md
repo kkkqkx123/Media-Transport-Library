@@ -74,13 +74,13 @@ MTL 把 AF_XDP 作为除 DPDK PMD 之外的"生产级"数据面后端：用户�
 
 两个应用**均已按 native AF_XDP 配置**，不是"将来要用"，而是"已写好、待环境满足"：
 
-- `app/rk3588_end2end/e2e_config.c`：`tx_port = "native_af_xdp:enP3p49s0"`、`rx_port = "native_af_xdp:eth0"`；`e2e_app.c: mtl_setup_single()` 固定 `pmd[MTL_PORT_P] = MTL_PMD_NATIVE_AF_XDP`，`net_proto = MTL_PROTO_STATIC`，且注释明确了单队列约束：TX-only 也要 `rx_queues_cnt=1` 才能在 `mt_dev.c` 选 1q 路径。
+- `app/rk3588_live_ingest/e2e_config.c`：`tx_port = "native_af_xdp:enP3p49s0"`、`rx_port = "native_af_xdp:eth0"`；`live_ingest.c: mtl_setup_single()` 固定 `pmd[MTL_PORT_P] = MTL_PMD_NATIVE_AF_XDP`，`net_proto = MTL_PROTO_STATIC`，且注释明确了单队列约束：TX-only 也要 `rx_queues_cnt=1` 才能在 `mt_dev.c` 选 1q 路径。
   - **板上实测校正**：网卡**不是 r8168/RTL8125**，两个口都是 **Motorcomm yt6801**（builtin，`drivers/ztl/yt6801`）。`enP3p49s0` 就是 **eth1**，当前**未插网线（NO-CARRIER）**；唯一有链路的是 **eth0 = `enP2p33s0`**，且只协商到 **100 Mb/s**——单路 1080p 需 ~1.2 Gbps，物理链路先决。队列实测 **RX 4 / TX 1**，"单队列"只在 TX 侧成立，代码里 `rx_queues_cnt=1` 的写法仍安全但理由已变。
-- `app/rk3588_mp4_dist/mp4_dist_config.c`：`mp4_dist_pmd_from_port()` 按端口名前缀解析（`native_af_xdp:` → NATIVE_AF_XDP，`kernel:` → KERNEL_SOCKET，`dpdk_af_xdp:` → DPDK_AF_XDP），`mp4_dist_mtl_init()` 额外处理了两个单队列关键点：
+- `app/rk3588_file_playout/file_playout_config.c`：`file_playout_pmd_from_port()` 按端口名前缀解析（`native_af_xdp:` → NATIVE_AF_XDP，`kernel:` → KERNEL_SOCKET，`dpdk_af_xdp:` → DPDK_AF_XDP），`file_playout_mtl_init()` 额外处理了两个单队列关键点：
   - ST22 视频 + ST30 音频同端口时必须 `MTL_FLAG_SHARED_RX_QUEUE`/`MTL_FLAG_SHARED_TX_QUEUE`（rsq/tsq demux），否则第二个会话覆盖 xdp queue 的 `rx_entry`，音频 tasklet 在 `mt_rxq_burst` SIGSEGV；
   - PTP 走 `ptp_get_time_fn` 外部 CLOCK_TAI（linuxptp），因为板载网卡无 HW timesync（**实测**：`ethtool -T eth0` 只有 `software-receive`/`software-system-clock`，PTP Hardware Clock = none，且板上无 `/dev/ptp*`、未装 `ptp4l`/`phc2sys` → 该方案当前不可用，需装 linuxptp 或改用系统时钟）。
 
-端到端链路（V4L2→MPP→MTL TX→MTL RX→MPP→DRM）与 mp4_dist 都只经 `mtl_init`/`st22p_*`/`st30p_*` 标准 API，**不直接触碰 AF_XDP**——后端选择完全由 `mtl_init_params.pmd/port` 决定，这是集成的关键优点。
+端到端链路（V4L2→MPP→MTL TX→MTL RX→MPP→DRM）与 file_playout 都只经 `mtl_init`/`st22p_*`/`st30p_*` 标准 API，**不直接触碰 AF_XDP**——后端选择完全由 `mtl_init_params.pmd/port` 决定，这是集成的关键优点。
 
 ## 6. RK3588 上启用 AF_XDP 的集成清单
 
@@ -99,13 +99,13 @@ MTL 把 AF_XDP 作为除 DPDK PMD 之外的"生产级"数据面后端：用户�
 
 4. `sudo sysctl -w vm.nr_hugepages=2048`（AF_XDP 后端同样吃 hugepage，因为 mempool 是 hugepage 内存直接注册 UMEM）。**实测**：本板内核无 `HUGETLBFS`，此命令无效——`/proc/meminfo` 无任何 `Huge*` 行、`/sys/kernel/mm/hugepages/` 不存在、`/dev/hugepages` 不存在；`CONFIG_CMA=y`（16 MiB）**不能**当 hugetlb 用。见 §6 构建期第 1 条，须先重编内核。
 5. `sudo MtlManager` 先启动（应用必须连上 manager，否则 `mt_dev_xdp_init` 直接失败；非 root 应用还需 `CAP_NET_RAW`）。
-6. 端口名保持 `native_af_xdp:<if>`；单队列网卡两个应用的 `tx_queues_cnt/rx_queues_cnt=1` 约定与 mp4_dist 的 SHARED_QUEUE flag 已在代码里，不要改掉。**实测注意**：板上 `enP3p49s0` = eth1（未插线），活动口是 eth0（`enP2p33s0`，仅 100 Mb/s），选口前先确认链路。
+6. 端口名保持 `native_af_xdp:<if>`；单队列网卡两个应用的 `tx_queues_cnt/rx_queues_cnt=1` 约定与 file_playout 的 SHARED_QUEUE flag 已在代码里，不要改掉。**实测注意**：板上 `enP3p49s0` = eth1（未插线），活动口是 eth0（`enP2p33s0`，仅 100 Mb/s），选口前先确认链路。
 
 **特有风险与对策**
 
 | 风险 | 说明 | 对策 |
 |---|---|---|
-| 板载网卡不支持 XDP native / zero-copy | **已实测证实**（非"可能"）：yt6801 上 `ip link set ... xdpdrv` 返回 `Underlying driver does not support XDP in native mode.`，`xdpgeneric` 成功 | 代码已自动退 `XDP_MODE_SKB` 挂载与 copy 模式；再不行退 `kernel:` 后端（mp4_dist 已支持按端口名切换）。要性能只能换网卡或给驱动补 `ndo_bpf` |
+| 板载网卡不支持 XDP native / zero-copy | **已实测证实**（非"可能"）：yt6801 上 `ip link set ... xdpdrv` 返回 `Underlying driver does not support XDP in native mode.`，`xdpgeneric` 成功 | 代码已自动退 `XDP_MODE_SKB` 挂载与 copy 模式；再不行退 `kernel:` 后端（file_playout 已支持按端口名切换）。要性能只能换网卡或给驱动补 `ndo_bpf` |
 | 队列限速 pacing 不可用 | **两层原因**：① MTL 的 RL 探测只对驱动名 `ice` 执行（`mt_af_xdp.c:792`），rk3588 板载网卡压根不会被探测；② 即便手工写 `tx-0/tx_maxrate` 也返回 `EOPNOTSUPP`（实测），且探测函数写死的 `tx-1` 在本板根本不存在（只有 `tx-0`） | 用默认 TSC 软件 pacing（当前 rk3588 应用的既定选择，见 req/02 §2.2 R6） |
 | `BPF_JIT` 未开 + 无 BTF | **实测**：`# CONFIG_BPF_JIT is not set`（eBPF 走解释器，µs pacing 性能致命）、无 `/sys/kernel/btf/vmlinux`、`# CONFIG_KPROBES is not set` | 重编内核打开 `BPF_JIT`/`DEBUG_INFO_BTF`/`KPROBES`；在此之前 `tools/ebpf/`（`et`/`lcore_monitor`）全部不可用 |
 | `mtl.xdp.o` 与板上内核不匹配 | clang 编译的 BPF 依赖内核头兼容性。原对策（`bpftool btf dump`）**在本板不可用**——无 BTF 也无 bpftool | `mtl.xdp.c` 是 plain XDP + hash map，理论上不依赖 BTF，但板上无 libxdp **尚未实测加载**；装载失败看 `xdp-loader status`（需先部署 xdp-tools） |
@@ -121,8 +121,8 @@ MTL 把 AF_XDP 作为除 DPDK PMD 之外的"生产级"数据面后端：用户�
 sudo sysctl -w vm.nr_hugepages=2048     # 本板内核无 HUGETLBFS，现在执行无效
 sudo MtlManager &                 # 等 manager 就绪
 xdp-loader status                 # 确认 mtl_dp_filter 挂上（本板暂无 xdp-loader，需部署）
-./e2e_app rx  --port native_af_xdp:eth0 &       # eth0 = enP2p33s0，当前唯一有链路的口
-./e2e_app tx  --port native_af_xdp:enP3p49s0    # = eth1，实测未插线(NO-CARRIER)！
+./live_ingest rx  --port native_af_xdp:eth0 &       # eth0 = enP2p33s0，当前唯一有链路的口
+./live_ingest tx  --port native_af_xdp:enP3p49s0    # = eth1，实测未插线(NO-CARRIER)！
 # 回归确认：lib/configure 日志有 MTL_HAS_XDP_BACKEND；manager 日志有 udp4_dp_filter 更新
 ```
 

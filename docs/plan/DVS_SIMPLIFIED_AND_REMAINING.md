@@ -18,7 +18,7 @@ T3/T4 的基线把"布局切换"实现为 `stop+free+create+start` 重建 compos
 - **当前**：`engine/engine_ctx.c::dvs_engine_apply_layout` 每次 commit 重建整个 `rx_compositor`（极短黑帧，且解码器重建开销大）。
 - **目标（req 06 §2 / S4）**：两阶段 `prepare`(预建/复用 plane、framebuffer、解码器，保持当前画面) + `commit`(仅切 plane 属性 src_crop/dst/z/visible，在 vblank 帧边界原子切换)；commit 前存影子副本，失败/abort 从副本回滚。
 - **修改方案**：
-  1. 在 `mp4_dist/rx/rx_compositor.c` 拆出 `rx_compositor_prepare(layout)` 与 `rx_compositor_commit()`（复用 `:396` 的 lane→plane resolve，但把"切换"与"构建"分离）。**这是共享模块，改动需 mp4_dist 联调回归。**
+  1. 在 `file_playout/rx/rx_compositor.c` 拆出 `rx_compositor_prepare(layout)` 与 `rx_compositor_commit()`（复用 `:396` 的 lane→plane resolve，但把"切换"与"构建"分离）。**这是共享模块，改动需 file_playout 联调回归。**
   2. `engine_ctx.c` 改为：commit 调 `rx_compositor_commit()`；`apply_at` 字段驱动延迟到指定帧号切换。
   3. `engine/engine_ctx.h` 增加 `pending` 影子布局 + `apply_at` 字段。
 - **验证**：RK3588 单板 4 路热切验证无黑帧、abort 回滚；**本机不可构建**。

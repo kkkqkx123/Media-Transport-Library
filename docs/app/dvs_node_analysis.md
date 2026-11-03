@@ -5,26 +5,26 @@
 
 ## 1. dvs_media(节点媒体引擎)现状
 
-目录:`app/dvs_media/`,独立 meson 工程,链接 mp4_dist 的 RX 管线静态库(`dvs_rx`)与共享基础设施(`dvs_shared`)。
+目录:`app/dvs_media/`,独立 meson 工程,链接 file_playout 的 RX 管线静态库(`dvs_rx`)与共享基础设施(`dvs_shared`)。
 
 ### 1.1 已实现
 
 | 模块 | 状态 | 说明 |
 | --- | --- | --- |
-| `dvs_media_main.c` | ✅ 骨架完成 | 两种模式:`--config <json>` 加载 mp4_dist 配置后即退出(仅 smoke);`--ipc-sock <path>` 进入 IPC 服务;两者都未启动任何 MTL 会话 |
+| `dvs_media_main.c` | ✅ 骨架完成 | 两种模式:`--config <json>` 加载 file_playout 配置后即退出(仅 smoke);`--ipc-sock <path>` 进入 IPC 服务;两者都未启动任何 MTL 会话 |
 | `ipc/ipc_server.c` | ✅ 结构完成 | Unix domain socket + JSON 行协议,顺序 accept/单请求/单响应;支持 8 条消息:`configure / prepare / commit / abort / clear / set_sources / query_state / event`,响应为统一 envelope(`ok/status/code/msg/data/requestId`) |
 | `ipc/state_machine.c` | ⚠️ 最小实现 | 仅维护一个全局 `(revision, state_name)`;commit 时 revision+1;**无 idle→prepared→committed 迁移校验、无旧 revision 拒绝、无持久化** |
 | `engine/session_mgr.c` | ❌ stub | 空函数;MTL `st22p_rx_*`/`st30p_rx_*` 会话生命周期未实现 |
 | `engine/layout_executor.c` | ❌ stub | 空函数;prepare 影子布局 / commit 帧边界原子切 plane 未实现 |
 | `engine/audio_arbiter.c` | ❌ stub | 空函数;audioOwner/volume → ALSA 未实现 |
 | `engine/capability.c` | ❌ stub | 空函数;能力探测(DRM mode/MPP 路数/DRM plane 数/PTP)未实现 |
-| 复用层(meson 引入) | ✅ 可用 | 编译期复用 `mp4_dist/rx` 全套 RX 管线(组播收流、MPP 解码、playout buffer、av_sync、rx_compositor、alsa_audio)及 `mp4_dist_config.c`,但与 IPC/状态机**之间没有任何调用关系**——复用代码是"挂在链接线上",不是"接进引擎" |
+| 复用层(meson 引入) | ✅ 可用 | 编译期复用 `file_playout/rx` 全套 RX 管线(组播收流、MPP 解码、playout buffer、av_sync、rx_compositor、alsa_audio)及 `file_playout_config.c`,但与 IPC/状态机**之间没有任何调用关系**——复用代码是"挂在链接线上",不是"接进引擎" |
 
 ### 1.2 功能判定
 
 - IPC `prepare/commit` 只改状态机字符串,**不创建会话、不预解码、不切布局**;`query_state` 返回的 `rxSessions/decoding/layers/ptp` 全部是硬编码 0/`unknown`。
 - req 04 §3 的八条 IPC 消息**名称齐、语义空**;S1 退出标准(单节点 4 路窗口 IPC 增删、帧边界切换、abort 回滚、kill 恢复)一条都未达成。
-- 真正能跑的媒体能力仍停留在它复用的 `rk3588_mp4_dist`(按 MP4 分发的静态管线),dvs_media 自身是"壳"。
+- 真正能跑的媒体能力仍停留在它复用的 `rk3588_file_playout`(按 MP4 分发的静态管线),dvs_media 自身是"壳"。
 
 ## 2. dvs_agent(节点代理)现状
 

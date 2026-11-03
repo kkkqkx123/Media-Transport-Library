@@ -272,9 +272,14 @@ static int handle_line(dvs_client_t* c, char* line) {
     }
     int rx_sessions = 0, decoding = 0, layers = 0;
     if (g_hooks.counts) g_hooks.counts(&rx_sessions, &decoding, &layers);
+    char ptp_state[32];
+    int ptp_off = 0;
+    snprintf(ptp_state, sizeof(ptp_state), "%s", g_cap.ptp_state);
+    ptp_off = g_cap.ptp_offset_us;
+    if (g_hooks.ptp_state) g_hooks.ptp_state(ptp_state, sizeof(ptp_state), &ptp_off);
     char ptp[128];
     snprintf(ptp, sizeof(ptp), "{\"state\":\"%s\",\"offsetUs\":%d}",
-             g_cap.ptp_state, g_cap.ptp_offset_us);
+             ptp_state, ptp_off);
     snprintf(data, sizeof(data),
              "{\"state\":\"%s\",\"revision\":%d,\"operationId\":\"%s\",\"opState\":%d,"
              "\"rxSessions\":%d,\"decoding\":%d,\"layers\":%d,\"ptp\":%s}",

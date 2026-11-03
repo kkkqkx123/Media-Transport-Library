@@ -164,7 +164,7 @@ body[data-proto-page="node-admin"] #zone-info .info-grid .v {
   <body class="itc-platform" data-itc-page="node-admin" data-proto-page="node-admin" data-proto-l1="node">
     <div class="proto-shell">
       <aside class="proto-side">
-        <div class="proto-side-logo"><div class="proto-side-logo-mark"><img src="../../assets/brand/ITC Design-logo-write.svg" alt="ITC" /></div></div>
+        <div class="proto-side-logo"><div class="proto-side-logo-mark"><img src="../../assets/brand/ITC Design-logo-write.svg" alt="DVS" /></div></div>
         <nav class="proto-side-menu">
           <a class="proto-side-item is-active" data-page="node" href="#"><i class="t-icon t-icon-setting-filled" aria-hidden="true"></i><span>配置</span></a>
         </nav>
@@ -507,27 +507,49 @@ body[data-proto-page="node-admin"] #zone-info .info-grid .v {
     </div>
 
     <script src="../../_shared/proto-shell.js"></script>
-    <script src="../../_shared/node-state.js"></script>
     <script src="../../_shared/hardware-capabilities.js"></script>
-    <script src="../../_shared/playback-tasks.js"></script>
-    <script src="../../_shared/mock-api.js"></script>
-    <!-- S2: real-api.js overrides global.DvsMockApi with the live dvs-agent
-         HTTP adapter (fetch + session cookie). Loaded after mock-api.js; page
-         logic that calls DvsMockApi.request is unchanged. -->
+    <!-- Formal: real-api.js is the sole adapter (fetch + session cookie). -->
     <script src="../../_shared/real-api.js"></script>
     <script>
       (function () {
-        var nodeId = "d1";
-        DvsPlaybackTasks.restorePrototypeTasksForNode(nodeId);
-        var nodeSnapshot = DvsNodeState.get(nodeId) || {};
-        var currentRole = nodeSnapshot.role || "output";
-        var pendingRole = nodeSnapshot.pendingRole || null;
+        var nodeId = null;
+        var nodeSnapshot = {};
+        var currentRole = "output";
+        var pendingRole = null;
         var opsRunning = false;
         var fwReady = false;
         var fwFailure = false;
+        var pendingFwFile = null;
+        var pendingFwSha = "";
         var registrationBusy = false;
         var configJobs = {};
-        var nodeCapabilities = DvsHardwareCapabilities.resolve(nodeSnapshot);
+        var nodeCapabilities = DvsHardwareCapabilities.resolve({});
+        var mediaState = {};
+
+        function api(method, path, body, opts) {
+          return DvsMockApi.request(method, path, body || {}, opts || {});
+        }
+        function apiAsync(method, path, body, opts) {
+          return DvsMockApi.requestAsync(method, path, body || {}, opts || {});
+        }
+
+        function loadNodeInfo() {
+          return apiAsync("GET", "/api/v1/node/info").then(function (r) {
+            if (!r || !r.ok) return r;
+            nodeSnapshot = r.data || {};
+            nodeId = nodeSnapshot.id || nodeId;
+            currentRole = nodeSnapshot.role || "output";
+            pendingRole = nodeSnapshot.pendingRole || null;
+            nodeCapabilities = DvsHardwareCapabilities.resolve(nodeSnapshot);
+            return r;
+          });
+        }
+        function loadMediaState() {
+          return apiAsync("GET", "/api/v1/node/media/status").then(function (r) {
+            if (r && r.ok) mediaState = r.data || {};
+            return r;
+          });
+        }
 
         function $(id) { return document.getElementById(id); }
         function roleText(role) { return role === "input" ? "输入盒" : "输出盒"; }
@@ -541,8 +563,9 @@ body[data-proto-page="node-admin"] #zone-info .info-grid .v {
           if (node && node.registerState === "failed") return "register_failed";
           return "online";
         }
+        var RUNTIME_STATES = { online: "在线", offline: "离线", registering: "注册中", register_failed: "注册失败", network_reconfiguring: "网络切换中", rebooting: "重启中", factory_resetting: "恢复出厂中", upgrading: "升级中", upgrade_failed: "升级失败" };
         function runtimeStateText(state) {
-          return (DvsNodeState.runtimeStates && DvsNodeState.runtimeStates[state]) || state || "在线";
+          return RUNTIME_STATES[state] || state || "在线";
         }
         function runtimeStateClass(state) {
           if (state === "online") return "state-online";
@@ -619,18 +642,40 @@ body[data-proto-page="node-admin"] #zone-info .info-grid .v {
           return node && node.currentPlayback && node.currentPlayback.status === "playing"
             ? node.currentPlayback.name + " · " + node.currentPlayback.taskId : "未播放";
         }
-        function patchNode(patch) {
-          nodeSnapshot = DvsNodeState.update(nodeId, patch) || nodeSnapshot;
+        function mergeNode(patch) {
+          patch = patch || {};
+          Object.keys(patch).forEach(function (k) {
+            if (patch[k] && typeof patch[k] === "object" && !Array.isArray(patch[k]) && nodeSnapshot[k] && typeof nodeSnapshot[k] === "object") {
+              var merged = Object.assign({}, nodeSnapshot[k]);
+              Object.keys(patch[k]).forEach(function (kk) { merged[kk] = patch[k][kk]; });
+              nodeSnapshot[k] = merged;
+            } else {
+              nodeSnapshot[k] = patch[k];
+            }
+          });
           return nodeSnapshot;
         }
+        function patchNode(patch) { return mergeNode(patch); }
         function patchNodeConfig(key, state, detail) {
           var states = {}, messages = {};
           states[key] = state;
           messages[key] = detail;
           patchNode({ configStates: states, configMessages: messages });
         }
+        function refreshConfigStates() {
+          var cs = (nodeSnapshot && nodeSnapshot.configStates) || {};
+          var map = { "role-config-state": "role", "input-config-state": "input", "output-config-state": "output", "network-config-state": "network", "registration-config-state": "registration", "sip-config-state": "sip" };
+          Object.keys(map).forEach(function (id) {
+            var scope = map[id];
+            var st = cs[scope];
+            if (!st) return;
+            setConfigState(id, backendStateToUi(st), st);
+          });
+        }
         function syncNodeView() {
-          nodeSnapshot = DvsNodeState.get(nodeId) || nodeSnapshot;
+          nodeSnapshot = nodeSnapshot || {};
+          currentRole = nodeSnapshot.role || currentRole || "output";
+          pendingRole = (nodeSnapshot.pendingRole === undefined) ? pendingRole : nodeSnapshot.pendingRole;
           var state = runtimeState(nodeSnapshot);
           var stateText = runtimeStateText(state);
           $("ops-state-label").textContent = stateText;
@@ -678,7 +723,7 @@ body[data-proto-page="node-admin"] #zone-info .info-grid .v {
         }
         function openModal(id) { $(id).hidden = false; $(id).classList.add("is-open"); }
         function closeModal(id) { $(id).classList.remove("is-open"); $(id).hidden = true; }
-        function now() { return "2026-10-19 16:5" + Math.floor(Math.random() * 9); }
+        function now() { var d = new Date(); return d.toLocaleString(); }
         function setLastOps(type, result) {
           $("last-ops").textContent = "最近动作：" + type + " · " + now() + " · " + result;
         }
@@ -699,85 +744,80 @@ body[data-proto-page="node-admin"] #zone-info .info-grid .v {
           el.className = "tag-state state-" + state;
           if (detailEl && detail !== undefined) detailEl.textContent = detail;
         }
+        function backendStateToUi(state) {
+          if (state === "pending_apply") return "pending";
+          if (state === "applied") return "applied";
+          if (state === "failed") return "failed";
+          return "idle";
+        }
+        function pollConfig(id, scope, token, opts) {
+          var attempts = 0;
+          function tick() {
+            if (configJobs[id] !== token) return;
+            attempts++;
+            apiAsync("GET", "/api/v1/node/config/" + encodeURIComponent(scope)).then(function (r) {
+              if (configJobs[id] !== token) return;
+              if (!r || !r.ok) {
+                setConfigState(id, "failed", (r && r.msg) || "读取配置状态失败");
+                if (opts.button) opts.button.disabled = false;
+                return;
+              }
+              var cfg = r.data || {};
+              var ui = backendStateToUi(cfg.state);
+              var detail = cfg.errorReason || cfg.state;
+              if (ui === "pending") {
+                setConfigState(id, "applying", opts.applyingText || "正在应用配置");
+                if (opts.onApplying && attempts === 1) opts.onApplying();
+              } else {
+                setConfigState(id, ui, ui === "applied" ? (opts.appliedText || "配置已生效") : (cfg.errorReason || opts.failedText || "应用失败"));
+              }
+              // update nodeSnapshot configStates
+              if (!nodeSnapshot.configStates) nodeSnapshot.configStates = {};
+              nodeSnapshot.configStates[scope] = cfg.state;
+              if (ui === "applied") {
+                if (opts.onApplied) opts.onApplied(cfg);
+                if (opts.button) opts.button.disabled = false;
+                return;
+              }
+              if (ui === "failed") {
+                if (opts.onFail) opts.onFail(cfg);
+                if (opts.button) opts.button.disabled = false;
+                return;
+              }
+              if (attempts < 20) {
+                window.setTimeout(tick, 500);
+              } else {
+                setConfigState(id, "failed", "等待应用超时");
+                if (opts.button) opts.button.disabled = false;
+              }
+            });
+          }
+          window.setTimeout(tick, 400);
+        }
         function applyConfig(id, opts) {
+          opts = opts || {};
+          var scope = opts.scope;
           var token = (configJobs[id] || 0) + 1;
           configJobs[id] = token;
+          if (opts.button) opts.button.disabled = true;
           setConfigState(id, "pending", opts.pendingText || "配置已保存，等待节点应用");
           if (opts.onPending) opts.onPending();
-          if (opts.button) opts.button.disabled = true;
-          window.setTimeout(function () {
+          apiAsync("POST", "/api/v1/node/config/" + encodeURIComponent(scope), {
+            desiredValue: opts.desiredValue || {},
+            operationId: opts.operationId || ("op-" + Date.now())
+          }).then(function (r) {
             if (configJobs[id] !== token) return;
-            setConfigState(id, "applying", opts.applyingText || "正在应用配置");
-            if (opts.onApplying) opts.onApplying();
-            window.setTimeout(function () {
-              if (configJobs[id] !== token) return;
-              var failed = typeof opts.fail === "function" && opts.fail();
-              if (failed) {
-                setConfigState(id, "failed", opts.failedText || "应用失败，可修改后重试");
-                if (opts.onFail) opts.onFail();
-              } else {
-                setConfigState(id, "applied", opts.appliedText || "配置已生效");
-                if (opts.onApplied) opts.onApplied();
-              }
+            if (!r || !r.ok) {
+              setConfigState(id, "failed", (r && r.msg) || "提交失败");
+              if (opts.onFail) opts.onFail(r);
               if (opts.button) opts.button.disabled = false;
-            }, opts.applyDelay || 800);
-          }, opts.pendingDelay || 350);
-        }
-
-        /* ---------- 播放任务：当前播放与记录均由同一任务真源派生 ---------- */
-        function taskClass(status) {
-          if (status === "playing" || status === "success") return "is-playing";
-          if (status === "pending_check" || status === "pending_execution" || status === "executing") return "is-pending";
-          return "is-failed";
-        }
-        function taskButton(task) {
-          var html = "";
-          if (task.status === "pending_check") html += '<button type="button" class="proto-btn" data-task-action="check">检查</button>';
-          if (task.status === "pending_execution") html += '<button type="button" class="proto-btn proto-btn-primary" data-task-action="start">开始执行</button>';
-          if (task.status === "executing") html += '<button type="button" class="proto-btn" disabled>执行中</button>';
-          if (task.status === "playing") {
-            html += '<button type="button" class="proto-btn proto-btn-primary" data-task-action="finish">结束播放</button>';
-            html += '<button type="button" class="proto-btn" data-task-action="cancel">取消</button>';
-          }
-          return html;
-        }
-        function renderTaskRow(task, showAction) {
-          var status = DvsPlaybackTasks.statuses[task.status] || task.status;
-          var reason = task.errorReason ? " · " + task.errorReason : "";
-          return '<div class="task-row" data-task-id="' + task.id + '">' +
-            '<div class="task-main"><div class="task-name">' + task.name + '</div>' +
-            '<div class="task-meta"><span class="task-id">' + task.id + '</span> · ' + (task.scheduleAt || "未排期") + reason + '</div></div>' +
-            '<span class="task-status ' + taskClass(task.status) + '">' + status + '</span>' +
-            (showAction ? '<div class="task-actions">' + taskButton(task) + '</div>' : '') +
-            '</div>';
-        }
-        function renderPlaybackTasks() {
-          var current = currentRole === "output" ? DvsPlaybackTasks.currentForNode(nodeId) : null;
-          var currentBox = $("playback-current");
-          currentBox.setAttribute("data-task-id", current ? current.id : "");
-          $("playback-current-status").className = "task-status " + (current ? "is-playing" : "");
-          $("playback-current-status").textContent = current ? "播放中" : "暂无播放";
-          $("playback-current-detail").textContent = current
-            ? current.name + " · " + current.id + " · 开始于 " + (current.startedAt || "—") + " · " + (current.wallName || "—")
-            : "当前节点没有正在播放的任务";
-          var tasks = DvsPlaybackTasks.list({ nodeId: nodeId }).filter(function (task) { return !DvsPlaybackTasks.terminal[task.status]; });
-          var records = DvsPlaybackTasks.list({ nodeId: nodeId }).filter(function (task) { return DvsPlaybackTasks.terminal[task.status]; });
-          $("playback-task-list").innerHTML = tasks.length ? tasks.map(function (task) { return renderTaskRow(task, currentRole === "output"); }).join("") : '<div class="task-empty">暂无待执行任务</div>';
-          $("playback-record-list").innerHTML = records.length ? records.map(function (task) { return renderTaskRow(task, false); }).join("") : '<div class="task-empty">暂无播放记录</div>';
-        }
-        function taskAction(action, id) {
-          if (currentRole !== "output") {
-            protoToast("当前节点为输入盒，不能执行播放任务");
-            return;
-          }
-          var result = DvsMockApi.request("POST", "/api/v1/playback-tasks/" + encodeURIComponent(id) + "/" + action, {}, { idempotencyKey: id + ":" + action });
-          if (!result || !result.ok) {
-            protoToast((result && result.msg) || "任务操作未完成");
-            renderPlaybackTasks();
-            return;
-          }
-          protoToast(action === "check" ? "检查通过，任务进入待执行" : action === "start" ? "任务已开始执行" : action === "finish" ? "任务已完成" : "任务已取消");
-          renderPlaybackTasks();
+              return;
+            }
+            var cfg = r.data || {};
+            if (!nodeSnapshot.configStates) nodeSnapshot.configStates = {};
+            nodeSnapshot.configStates[scope] = cfg.state || "pending_apply";
+            pollConfig(id, scope, token, opts);
+          });
         }
 
         /* ---------- 分组菜单 / 右侧功能详情切换 ---------- */
@@ -813,13 +853,19 @@ body[data-proto-page="node-admin"] #zone-info .info-grid .v {
           if (!result.ok) {
             $("field-pwd").classList.add("is-error");
             $("login-err").style.display = "block";
-            $("login-err").textContent = result.error && result.error.message ? result.error.message : "账号或密码错误";
+            $("login-err").textContent = (result && result.msg) ? result.msg : "账号或密码错误";
             return;
           }
           $("field-pwd").classList.remove("is-error");
           $("login-err").style.display = "none";
           $("login-mask").style.display = "none";
-          protoToast("登录成功（首次登录建议修改密码）");
+          var req = result.data && result.data.requirement;
+          if (req && req.passwordChangeRequired) {
+            protoToast("首次登录请修改密码");
+            openModal("pwd-modal");
+          } else {
+            protoToast("登录成功");
+          }
         };
         $("login-pwd").addEventListener("keydown", function (e) { if (e.key === "Enter") $("btn-login").click(); });
         $("btn-logout").onclick = function () {
@@ -835,10 +881,12 @@ body[data-proto-page="node-admin"] #zone-info .info-grid .v {
           var o = $("pwd-old").value, n = $("pwd-new").value, n2 = $("pwd-new2").value;
           if (!o || !n) { $("pwd-err").style.display = "block"; $("pwd-err").textContent = "请填写完整"; return; }
           if (n !== n2) { $("pwd-err").style.display = "block"; $("pwd-err").textContent = "两次输入的新密码不一致"; return; }
-          closeModal("pwd-modal");
-          if (n.length < 8 || /^\d+$/.test(n)) protoToast("密码强度较弱，建议加强（已保存）");
-          else protoToast("密码修改成功");
-          setLastOps("修改密码", "成功");
+          apiAsync("POST", "/api/v1/node/password", { oldPassword: o, newPassword: n }).then(function (r) {
+            if (!r || !r.ok) { $("pwd-err").style.display = "block"; $("pwd-err").textContent = (r && r.msg) || "修改失败"; return; }
+            closeModal("pwd-modal");
+            protoToast("密码修改成功");
+            setLastOps("修改密码", "成功");
+          });
         };
 
         /* ---------- 角色区 ---------- */
@@ -888,19 +936,25 @@ body[data-proto-page="node-admin"] #zone-info .info-grid .v {
         });
         $("role-cancel").onclick = function () { closeModal("role-modal"); renderRole(); };
         $("role-ok").onclick = function () {
-          pendingRole = document.querySelector('input[name="role"]:checked').value;
-          patchNode({ pendingRole: pendingRole, configStates: { role: "pending" }, configMessages: { role: "已保存切换意图，等待重启应用" } });
-          closeModal("role-modal");
-          renderRole();
-          protoToast("配置已保存，等待重启应用");
-          setLastOps("角色切换配置", "待生效");
+          var target = document.querySelector('input[name="role"]:checked').value;
+          apiAsync("POST", "/api/v1/node/config/role", { desiredValue: { role: target }, operationId: "role-" + Date.now() }).then(function (r) {
+            if (!r || !r.ok) { protoToast((r && r.msg) || "角色切换配置失败"); return; }
+            pendingRole = target;
+            patchNode({ pendingRole: pendingRole, configStates: { role: "pending_apply" }, configMessages: { role: "已保存切换意图，等待重启应用" } });
+            closeModal("role-modal");
+            renderRole();
+            protoToast("配置已保存，等待重启应用");
+            setLastOps("角色切换配置", "待生效");
+          });
         };
         $("btn-undo-role").onclick = function () {
-          pendingRole = null;
-          patchNode({ pendingRole: null, configStates: { role: "applied" }, configMessages: { role: "已撤销切换，当前角色：" + roleText(currentRole) } });
-          renderRole();
-          protoToast("已撤销切换，节点保持原角色");
-          setLastOps("角色切换撤销", "已取消");
+          apiAsync("POST", "/api/v1/node/config/role", { desiredValue: { role: currentRole }, operationId: "role-undo-" + Date.now() }).then(function () {
+            pendingRole = null;
+            patchNode({ pendingRole: null, configStates: { role: "applied" }, configMessages: { role: "已撤销切换，当前角色：" + roleText(currentRole) } });
+            renderRole();
+            protoToast("已撤销切换，节点保持原角色");
+            setLastOps("角色切换撤销", "已取消");
+          });
         };
 
         /* ---------- 输入口 / 输出区 ---------- */
@@ -916,6 +970,8 @@ body[data-proto-page="node-admin"] #zone-info .info-grid .v {
             if (zone === "input") {
               var inputPort = $("sel-inputport").value;
               applyConfig("input-config-state", {
+                scope: "input",
+                desiredValue: { port: inputPort },
                 button: btn,
                 pendingText: "配置已保存，等待节点应用",
                 applyingText: "正在应用采集口配置",
@@ -949,6 +1005,11 @@ body[data-proto-page="node-admin"] #zone-info .info-grid .v {
                 : selectedMode || nodeCapabilities.safeModes[0] || { width: 1920, height: 1080, refreshHz: 60 };
               var outMode = document.querySelector('input[name="outmode"]:checked').value === "force" ? "强推" : "热插拔";
               applyConfig("output-config-state", {
+                scope: "output",
+                desiredValue: (function () {
+                  var outputMode = (document.querySelector('input[name="outmode"]:checked').value === "force") ? "force" : "hotplug";
+                  return { width: selectedOutput.width, height: selectedOutput.height, refreshHz: selectedOutput.refreshHz, mode: outputMode, connector: $("sel-outputport").value };
+                })(),
                 button: btn,
                 pendingText: "配置已保存，等待输出重新协商",
                 applyingText: "应用中 · 输出重新协商",
@@ -996,6 +1057,8 @@ body[data-proto-page="node-admin"] #zone-info .info-grid .v {
               content: "生效后请以新 IP 访问本机页（新地址：" + newIp + "）。确认保存？",
               onOk: function () {
                 applyConfig("network-config-state", {
+                  scope: "network",
+                  desiredValue: { mode: "static", ip: newIp, mask: $("in-mask").value, gateway: $("in-gw").value, dns: $("in-dns").value, server: $("in-server").value },
                   button: $("btn-save-net"),
                   pendingText: "配置已保存，等待网络应用",
                   applyingText: "应用中 · 正在切换网络地址",
@@ -1030,6 +1093,8 @@ body[data-proto-page="node-admin"] #zone-info .info-grid .v {
             content: "应用 DHCP 会让节点短暂断连并重新获取地址。确认保存网络配置？",
             onOk: function () {
               applyConfig("network-config-state", {
+                scope: "network",
+                desiredValue: { mode: "dhcp", server: $("in-server").value },
                 button: $("btn-save-net"),
                 pendingText: "配置已保存，等待网络应用",
                 applyingText: "应用中 · 正在获取 DHCP 地址",
@@ -1098,6 +1163,8 @@ body[data-proto-page="node-admin"] #zone-info .info-grid .v {
             return;
           }
           applyConfig("registration-config-state", {
+            scope: "registration",
+            desiredValue: { mode: regMode(), server: $("in-server").value },
             button: $("btn-save-registration"),
             pendingText: "配置已保存，等待注册应用",
             applyingText: "应用中 · 正在提交注册配置",
@@ -1131,6 +1198,8 @@ body[data-proto-page="node-admin"] #zone-info .info-grid .v {
         $("btn-save-sip").onclick = function () {
           if (!$("sip-enabled").checked) {
             applyConfig("sip-config-state", {
+              scope: "sip",
+              desiredValue: { enabled: false },
               button: $("btn-save-sip"),
               pendingText: "配置已保存，等待关闭 SIP",
               applyingText: "应用中 · 正在关闭 SIP",
@@ -1158,6 +1227,8 @@ body[data-proto-page="node-admin"] #zone-info .info-grid .v {
           $("sip-state").textContent = "连接中…";
           $("sip-state").className = "tag-pending";
           applyConfig("sip-config-state", {
+            scope: "sip",
+            desiredValue: { enabled: true, server: server, port: port, deviceId: device, user: user },
             button: $("btn-save-sip"),
             pendingText: "配置已保存，等待 SIP 应用",
             applyingText: "应用中 · 正在连接 SIP 服务",
@@ -1193,34 +1264,15 @@ body[data-proto-page="node-admin"] #zone-info .info-grid .v {
             title: "重启确认",
             content: "重启期间画面中断约 1 分钟。确认重启？" + (pendingRole ? "（本次重启将使角色切换生效）" : ""),
             onOk: function () {
-              patchNode({ online: false, runtimeState: "rebooting", runtimeMessage: "节点正在重启，暂时无法访问", exception: { code: "REBOOTING", reason: "节点正在重启", at: new Date().toISOString() } });
-              syncNodeView();
-              if (pendingRole) {
-                setConfigState("role-config-state", "applying", "应用中 · 正在清理、重启并校验新角色");
-              }
-              setOpsRunning(true, pendingRole ? "正在清理原角色绑定、窗口与白名单…" : "正在重启…");
-              setTimeout(function () {
-                if (pendingRole) {
-                  setOpsRunning(true, "清理完成，正在重启并校验新角色…");
-                  setTimeout(function () {
-                    currentRole = pendingRole;
-                    pendingRole = null;
-                    patchNode({ role: currentRole, pendingRole: null, online: true, runtimeState: "online", runtimeMessage: "运行正常", registerState: "registered", registerMessage: "已注册", configStates: { role: "applied" }, configMessages: { role: "已生效 · 当前角色：" + roleText(currentRole) }, exception: null, lastHeartbeat: new Date().toISOString() });
-                    renderRole();
-                    syncNodeView();
-                    setConfigState("role-config-state", "applied", "已生效 · 当前角色：" + (currentRole === "input" ? "输入盒" : "输出盒"));
-                    setOpsRunning(false);
-                    protoToast("角色切换成功：清理、重启与新角色校验均已完成");
-                    setLastOps("角色切换任务", "已生效");
-                  }, 1200);
-                } else {
-                  patchNode({ online: true, runtimeState: "online", runtimeMessage: "运行正常", exception: null, lastHeartbeat: new Date().toISOString() });
-                  syncNodeView();
-                  setOpsRunning(false);
-                  protoToast("重启完成");
-                  setLastOps("重启", "成功");
-                }
-              }, 900);
+              setOpsRunning(true, "正在重启…");
+              apiAsync("POST", "/api/v1/node/reboot").then(function (r) {
+                protoToast("重启指令已下发");
+                setLastOps("重启", "已提交");
+                setTimeout(function () { window.location.reload(); }, 3000);
+              }).catch(function () {
+                setOpsRunning(false);
+                protoToast("重启请求失败");
+              });
             }
           });
         };
@@ -1235,33 +1287,18 @@ body[data-proto-page="node-admin"] #zone-info .info-grid .v {
             title: "再次确认恢复出厂",
             content: "该操作会重置角色、输入口、输出参数和密码，节点将重启并暂时中断画面；网络设置与注册地址保留。仍要继续？",
             onOk: function () {
-              patchNode({ online: false, runtimeState: "factory_resetting", runtimeMessage: "正在恢复出厂，网络设置将保留", exception: { code: "FACTORY_RESETTING", reason: "正在恢复出厂，节点暂时不可用", at: new Date().toISOString() } });
-              syncNodeView();
-              setOpsRunning(true, "正在恢复出厂（保留网络设置与注册地址）…");
-              setTimeout(function () {
+              setOpsRunning(true, "正在恢复出厂…");
+              apiAsync("POST", "/api/v1/node/factory-reset").then(function (r) {
+                protoToast("恢复出厂指令已下发");
+                setLastOps("恢复出厂", "已提交");
+                setTimeout(function () { window.location.reload(); }, 3000);
+              }).catch(function () {
                 setOpsRunning(false);
-                currentRole = "output";
-                pendingRole = null;
-                patchNode({ role: "output", pendingRole: null, online: true, runtimeState: "online", runtimeMessage: "恢复出厂完成，运行正常", exception: null, configStates: { role: "applied", input: "idle", output: "applied" }, configMessages: { role: "已恢复出厂 · 当前角色：输出盒" } });
-                nodeSnapshot = DvsNodeState.get(nodeId) || nodeSnapshot;
-                nodeSnapshot.input = { port: nodeCapabilities.inputPorts[0] && nodeCapabilities.inputPorts[0].id, signal: null };
-                nodeSnapshot.output = { width: 1920, height: 1080, refreshHz: 60, mode: "force", connector: nodeCapabilities.outputPorts[0] && nodeCapabilities.outputPorts[0].id };
-                patchNode({ input: nodeSnapshot.input, output: nodeSnapshot.output });
-                renderHardwareCapabilities();
-                $("custom-res").style.display = "none";
-                $("res-w").value = "";
-                $("res-h").value = "";
-                $("res-hz").value = "";
-                document.querySelector('input[name="outmode"][value="force"]').checked = true;
-                renderRole();
-                syncNodeView();
-                protoToast("恢复出厂完成：网络设置与注册地址已保留，其余已重置（密码回默认）");
-                setLastOps("恢复出厂", "成功（保留网络）");
-              }, 2500);
+                protoToast("恢复出厂请求失败");
+              });
             }
           });
         };
-
         $("btn-pick-fw").onclick = function () { $("fw-input").click(); };
         $("fw-input").addEventListener("change", function () {
           var f = this.files && this.files[0];
@@ -1275,8 +1312,17 @@ body[data-proto-page="node-admin"] #zone-info .info-grid .v {
           }
           fwReady = true;
           fwFailure = f.name.toLowerCase().indexOf("fail") >= 0;
+          pendingFwFile = f;
+          pendingFwSha = "";
           $("btn-upgrade").disabled = false;
-          protoToast("固件包校验通过（" + f.name + "），可开始升级" + (fwFailure ? "（将模拟失败）" : ""));
+          if (window.crypto && window.crypto.subtle) {
+            f.arrayBuffer().then(function (buf) {
+              return window.crypto.subtle.digest("SHA-256", buf);
+            }).then(function (hash) {
+              pendingFwSha = Array.from(new Uint8Array(hash)).map(function (b) { return b.toString(16).padStart(2, "0"); }).join("");
+            }).catch(function () { pendingFwSha = ""; });
+          }
+          protoToast("固件包校验通过（" + f.name + "），可开始升级");
           setLastOps("固件校验", "通过");
           this.value = "";
         });
@@ -1286,40 +1332,30 @@ body[data-proto-page="node-admin"] #zone-info .info-grid .v {
             title: "开始升级确认",
             content: "升级期间节点会暂时离线，严禁断电或关闭页面。失败时保留当前旧版本并允许重试。确认开始升级？",
             onOk: function () {
-              patchNode({ online: false, runtimeState: "upgrading", runtimeMessage: "正在升级，请勿断电或关闭页面", exception: { code: "UPGRADING", reason: "节点正在升级，暂时不可用", at: new Date().toISOString() } });
-              syncNodeView();
               setOpsRunning(true, "升级开始");
               $("fw-prog").hidden = false;
               $("fw-status").hidden = false;
               $("fw-status").textContent = "升级中，请勿关闭页面…";
-              var p = 0;
-              var timer = setInterval(function () {
-                p += 10;
-                $("fw-prog-bar").style.width = p + "%";
-                if (p >= 100) {
-                  clearInterval(timer);
-                  setOpsRunning(false);
-                  if (fwFailure) {
-                    fwReady = true;
-                    $("btn-upgrade").disabled = false;
-                    $("fw-status").hidden = false;
-                    $("fw-status").textContent = "升级失败：节点已回到旧版本，可重新选择固件包重试。";
-                    patchNode({ online: true, runtimeState: "upgrade_failed", runtimeMessage: "升级失败，已保留旧版本，可重试", exception: { code: "UPGRADE_FAILED", reason: "升级失败，已保留旧版本，可重试", at: new Date().toISOString() } });
-                    syncNodeView();
-                    protoToast("升级失败，旧版本仍可运行");
-                    setLastOps("固件升级", "失败（旧版本保留）");
-                  } else {
-                    $("fw-status").hidden = true;
-                    fwReady = false;
-                    fwFailure = false;
-                    $("btn-upgrade").disabled = true;
-                    patchNode({ online: true, runtimeState: "online", runtimeMessage: "运行正常", fw: "V1.0.1-20261019", exception: null });
-                    syncNodeView();
-                    protoToast("升级完成，固件版本已更新为 V1.0.1-20261019");
-                    setLastOps("固件升级", "成功");
-                  }
+              apiAsync("POST", "/api/v1/node/upgrade", { filename: pendingFwFile ? pendingFwFile.name : "fw.bin", sha256: pendingFwSha }).then(function (r) {
+                setOpsRunning(false);
+                if (!r || !r.ok) {
+                  $("fw-status").textContent = "升级失败：节点已回到旧版本，可重新选择固件包重试。";
+                  protoToast("升级失败");
+                  setLastOps("固件升级", "失败");
+                  return;
                 }
-              }, 300);
+                $("fw-status").hidden = true;
+                fwReady = false;
+                pendingFwFile = null;
+                pendingFwSha = "";
+                $("btn-upgrade").disabled = true;
+                protoToast("升级完成");
+                setLastOps("固件升级", "成功");
+                setTimeout(function () { window.location.reload(); }, 1500);
+              }).catch(function () {
+                setOpsRunning(false);
+                protoToast("升级请求失败");
+              });
             }
           });
         };
@@ -1339,23 +1375,26 @@ body[data-proto-page="node-admin"] #zone-info .info-grid .v {
             showZone(a.getAttribute("data-zone"));
           });
         });
-        DvsNodeState.subscribe(function () {
-          var latest = DvsNodeState.get(nodeId);
-          if (!latest) return;
-          nodeSnapshot = latest;
-          if (!opsRunning && !registrationBusy) {
-            currentRole = latest.role || currentRole;
-            pendingRole = latest.pendingRole || null;
-          }
-          syncNodeView();
-          renderPlaybackTasks();
-        });
-        DvsPlaybackTasks.subscribe(function () { renderPlaybackTasks(); });
-        renderHardwareCapabilities();
-        syncNodeView();
-        renderPlaybackTasks();
-        showZone("role");
-        renderRole();
+        function initFromBackend() {
+          loadNodeInfo().then(function (r) {
+            if (!r || !r.ok) { protoToast("加载节点信息失败"); return; }
+            renderHardwareCapabilities();
+            syncNodeView();
+            refreshConfigStates();
+            renderRole();
+            renderPlaybackTasks();
+            showZone("role");
+            loadMediaState();
+          });
+        }
+        initFromBackend();
+        // periodic refresh
+        setInterval(function () {
+          if (opsRunning || registrationBusy) return;
+          loadNodeInfo().then(function (r) {
+            if (r && r.ok) { renderHardwareCapabilities(); syncNodeView(); renderRole(); }
+          });
+        }, 5000);
       })();
     </script>
   </body>

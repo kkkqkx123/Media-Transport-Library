@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,6 +48,7 @@ struct drm_renderer {
     int            compositor_layers;
     int            layer_fb_idx[DISPLAY_LAYOUT_MAX_LAYERS];
     struct plane_slot* layer_fbs;
+    pthread_mutex_t layout_mu;
 };
 
 static void page_flip_handler(int fd, unsigned int frame, unsigned int sec,
@@ -296,6 +298,7 @@ struct drm_renderer* drm_renderer_create(const drm_renderer_params* params) {
     struct drm_renderer* r = calloc(1, sizeof(*r));
     if (!r) return NULL;
 
+    pthread_mutex_init(&r->layout_mu, NULL);
     r->width     = params->content_width;
     r->height    = params->content_height;
     r->buf_count = params->buf_count > 0 ? params->buf_count : 5;
@@ -407,6 +410,31 @@ const display_layout* drm_renderer_layout(const struct drm_renderer* r) {
     return r ? &r->layout : NULL;
 }
 
+int drm_renderer_update_layout(struct drm_renderer* r,
+                               const display_layout* next) {
+    if (!r || !next) return -EINVAL;
+    if (!r->compositor_active) return -ENOTSUP;
+    if (next->layer_count != r->compositor_layers) return -EXDEV;
+    if (next->mode_w != r->mode_w || next->mode_h != r->mode_h) return -EXDEV;
+    for (int i = 0; i < next->layer_count; i++) {
+        if (next->layers[i].plane_id != r->layout.layers[i].plane_id)
+            return -EXDEV;
+    }
+    pthread_mutex_lock(&r->layout_mu);
+    for (int i = 0; i < next->layer_count; i++) {
+        r->layout.layers[i].dst_x = next->layers[i].dst_x;
+        r->layout.layers[i].dst_y = next->layers[i].dst_y;
+        r->layout.layers[i].dst_w = next->layers[i].dst_w;
+        r->layout.layers[i].dst_h = next->layers[i].dst_h;
+        r->layout.layers[i].zpos  = next->layers[i].zpos;
+        r->layout.layers[i].lane  = next->layers[i].lane;
+        r->layout.layers[i].main  = next->layers[i].main;
+    }
+    r->layout.layer_count = next->layer_count;
+    pthread_mutex_unlock(&r->layout_mu);
+    return 0;
+}
+
 void drm_renderer_free(struct drm_renderer* r) {
     if (!r) return;
 
@@ -443,6 +471,7 @@ void drm_renderer_free(struct drm_renderer* r) {
     bg_destroy(r);
     drmModeFreeConnector(r->conn);
     if (r->fd >= 0) close(r->fd);
+    pthread_mutex_destroy(&r->layout_mu);
     free(r);
 }
 
@@ -518,22 +547,25 @@ int drm_renderer_display_layers(struct drm_renderer* r,
             continue;
 
         int li = fr->layer_idx;
-        const display_layer* lay = &r->layout.layers[li];
-        uint32_t plane_id = lay->plane_id;
+        display_layer lay;
+        pthread_mutex_lock(&r->layout_mu);
+        lay = r->layout.layers[li];
+        pthread_mutex_unlock(&r->layout_mu);
+        uint32_t plane_id = lay.plane_id;
         if (!plane_id)
             continue;
 
         uint32_t fb_id = 0;
-        int cw = fr->content_w > 0 ? fr->content_w : (int)lay->dst_w;
-        int ch = fr->content_h > 0 ? fr->content_h : (int)lay->dst_h;
+        int cw = fr->content_w > 0 ? fr->content_w : (int)lay.dst_w;
+        int ch = fr->content_h > 0 ? fr->content_h : (int)lay.dst_h;
         if (import_nv12_fb(r, fr->dma_fd, fr->hor_stride, fr->ver_stride, cw, ch,
                            &fb_id) < 0) {
             perror("ADDFB2 layer");
             continue;
         }
 
-        if (set_plane_rect(r, plane_id, fb_id, lay->dst_x, lay->dst_y, lay->dst_w,
-                           lay->dst_h, cw, ch) < 0) {
+        if (set_plane_rect(r, plane_id, fb_id, lay.dst_x, lay.dst_y, lay.dst_w,
+                           lay.dst_h, cw, ch) < 0) {
             perror("SetPlane layer");
             drmModeRmFB(r->fd, fb_id);
             continue;

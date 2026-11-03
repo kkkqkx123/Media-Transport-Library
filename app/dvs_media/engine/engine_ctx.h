@@ -49,6 +49,14 @@ int  dvs_engine_start(dvs_engine* e);
 int  dvs_engine_apply_layout(dvs_engine* e,
                              const mp4_dist_pip_stream* streams, int count);
 
+/* Apply with a target TAI time in nanoseconds (0 = immediate). Geometry-only
+ * changes reuse the running compositor without decoder rebuild; other
+ * changes fall back to recreation. A future target is honored on the fast
+ * path by waiting for the TAI clock before swapping the layout. */
+int  dvs_engine_apply_layout_at(dvs_engine* e,
+                                const mp4_dist_pip_stream* streams, int count,
+                                uint64_t apply_at_ns);
+
 /* Set the desired audio owner/volume; applied on the next layout commit. */
 void dvs_engine_set_audio(dvs_engine* e, const char* owner, int volume);
 

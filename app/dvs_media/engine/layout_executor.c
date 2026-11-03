@@ -19,6 +19,7 @@
  * commit failure, instead of full compositor recreation. */
 
 static mp4_dist_pip_stream g_pending[MP4_PIP_MAX_LANES];
+static uint64_t g_pending_apply_at_ns = 0;
 static int g_pending_count = 0;
 static char g_pending_audio_owner[64];
 static int g_pending_audio_volume = 0;
@@ -68,13 +69,31 @@ int dvs_layout_from_json(struct json_object* req, mp4_dist_pip_stream* out,
     return 0;
 }
 
+static uint64_t json_u64(struct json_object* o, const char* a, const char* b) {
+    struct json_object* v = NULL;
+    if (o && json_object_object_get_ex(o, a, &v) && v)
+        return (uint64_t)json_object_get_int64(v);
+    if (o && b && json_object_object_get_ex(o, b, &v) && v)
+        return (uint64_t)json_object_get_int64(v);
+    return 0;
+}
+
 int dvs_layout_prepare(const mp4_dist_pip_stream* streams, int count) {
     if (count < 0 || count > MP4_PIP_MAX_LANES) return -1;
     pthread_mutex_lock(&g_pending_mu);
     memcpy(g_pending, streams, (size_t)count * sizeof(*streams));
     g_pending_count = count;
+    g_pending_apply_at_ns = 0;
     pthread_mutex_unlock(&g_pending_mu);
     return 0;
+}
+
+uint64_t dvs_layout_pending_apply_at_ns(void) {
+    uint64_t v;
+    pthread_mutex_lock(&g_pending_mu);
+    v = g_pending_apply_at_ns;
+    pthread_mutex_unlock(&g_pending_mu);
+    return v;
 }
 
 int dvs_layout_prepare_from_json(struct json_object* req) {
@@ -94,6 +113,7 @@ int dvs_layout_prepare_from_json(struct json_object* req) {
     pthread_mutex_lock(&g_pending_mu);
     memcpy(g_pending, buf, (size_t)n * sizeof(*buf));
     g_pending_count = n;
+    g_pending_apply_at_ns = json_u64(req, "applyAt", "apply_at");
     strncpy(g_pending_audio_owner, owner, sizeof(g_pending_audio_owner) - 1);
     g_pending_audio_owner[sizeof(g_pending_audio_owner) - 1] = '\0';
     g_pending_audio_volume = volume;
@@ -106,19 +126,22 @@ int dvs_layout_commit(dvs_engine* e) {
     int n = 0;
     char owner[64];
     int volume;
+    uint64_t apply_at;
     pthread_mutex_lock(&g_pending_mu);
     n = g_pending_count;
     memcpy(buf, g_pending, (size_t)n * sizeof(*buf));
     memcpy(owner, g_pending_audio_owner, sizeof(owner));
     volume = g_pending_audio_volume;
+    apply_at = g_pending_apply_at_ns;
     pthread_mutex_unlock(&g_pending_mu);
 
     /* push audio routing to the engine before (re)building the compositor */
     dvs_engine_set_audio(e, owner, volume);
-    int rc = dvs_engine_apply_layout(e, buf, n);
+    int rc = dvs_engine_apply_layout_at(e, buf, n, apply_at);
     if (rc == 0) {
         pthread_mutex_lock(&g_pending_mu);
         g_pending_count = 0;
+        g_pending_apply_at_ns = 0;
         pthread_mutex_unlock(&g_pending_mu);
     }
     return rc;
@@ -128,6 +151,7 @@ void dvs_layout_clear(dvs_engine* e) {
     dvs_engine_apply_layout(e, NULL, 0);
     pthread_mutex_lock(&g_pending_mu);
     g_pending_count = 0;
+    g_pending_apply_at_ns = 0;
     g_pending_audio_owner[0] = '\0';
     g_pending_audio_volume = 0;
     pthread_mutex_unlock(&g_pending_mu);
@@ -136,6 +160,7 @@ void dvs_layout_clear(dvs_engine* e) {
 void dvs_layout_abort(void) {
     pthread_mutex_lock(&g_pending_mu);
     g_pending_count = 0;
+    g_pending_apply_at_ns = 0;
     g_pending_audio_owner[0] = '\0';
     g_pending_audio_volume = 0;
     pthread_mutex_unlock(&g_pending_mu);

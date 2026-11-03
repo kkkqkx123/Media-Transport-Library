@@ -4,12 +4,15 @@
 #include "shared/display_layout.h" /* mp4_dist_pip_validate, MP4_PIP_MAX_LANES */
 #include "session_admit.h"         /* whitelist + LRU admission (S4) */
 #include "audio_arbiter.h"         /* ALSA audio routing (S4) */
+#include "capability.h"
 
 #include <mtl_api.h> /* mtl_ptp_read_time, mtl_stop, mtl_uninit */
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 static void* engine_loop(void* arg) {
@@ -59,6 +62,47 @@ void dvs_engine_destroy(dvs_engine* e) {
     free(e);
 }
 
+void dvs_capability_refresh_mtl(dvs_capability* cap, void* mtl_handle) {
+    if (!cap) return;
+    const char* v = mtl_version();
+    if (v && v[0]) {
+        snprintf(cap->mtl_version, sizeof(cap->mtl_version), "%s", v);
+        snprintf(cap->mtl_backend, sizeof(cap->mtl_backend), "dpdk");
+    }
+    if (mtl_handle) {
+        uint64_t t = mtl_ptp_read_time(mtl_handle);
+        if (t != 0) {
+            snprintf(cap->ptp_state, sizeof(cap->ptp_state), "synced");
+            cap->ptp_offset_us = 0;
+        }
+    }
+}
+
+static uint64_t engine_now_ns(dvs_engine* e) {
+    if (e->st && e->cfg.ptp_mode != MP4_DIST_PTP_MONOTONIC)
+        return mtl_ptp_read_time(e->st);
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
+static void engine_wait_until(dvs_engine* e, uint64_t target_ns) {
+    while (atomic_load(&e->running)) {
+        uint64_t now = engine_now_ns(e);
+        if (now >= target_ns) break;
+        uint64_t left = target_ns - now;
+        struct timespec ts;
+        if (left > 2000000ULL) {
+            ts.tv_sec = 0;
+            ts.tv_nsec = 2000000L;
+        } else {
+            ts.tv_sec = 0;
+            ts.tv_nsec = (long)left;
+        }
+        nanosleep(&ts, NULL);
+    }
+}
+
 int dvs_engine_init_mtl(dvs_engine* e) {
     if (!e) return -1;
     pthread_mutex_lock(&e->mu);
@@ -70,6 +114,7 @@ int dvs_engine_init_mtl(dvs_engine* e) {
             fprintf(stderr, "dvs_engine: MTL init failed\n");
             return -1;
         }
+        fprintf(stderr, "dvs_engine: MTL %s up\n", mtl_version());
     }
     pthread_mutex_unlock(&e->mu);
     return 0;
@@ -136,16 +181,16 @@ static rx_compositor* build_compositor(dvs_engine* e,
 
 int dvs_engine_apply_layout(dvs_engine* e, const mp4_dist_pip_stream* streams,
                             int count) {
+    return dvs_engine_apply_layout_at(e, streams, count, 0);
+}
+
+int dvs_engine_apply_layout_at(dvs_engine* e,
+                               const mp4_dist_pip_stream* streams, int count,
+                               uint64_t apply_at_ns) {
     if (!e) return -1;
     if (count < 0 || count > MP4_PIP_MAX_LANES) return -1;
 
     pthread_mutex_lock(&e->mu);
-
-    if (e->comp) {
-        rx_compositor_stop(e->comp);
-        rx_compositor_free(e->comp);
-        e->comp = NULL;
-    }
 
     if (e->st == NULL) {
         e->st = mp4_dist_mtl_init(&e->cfg, e->cfg.rx_port, e->cfg.rx_lip, 0, 1,
@@ -155,15 +200,83 @@ int dvs_engine_apply_layout(dvs_engine* e, const mp4_dist_pip_stream* streams,
             fprintf(stderr, "dvs_engine: MTL init failed\n");
             return -1;
         }
+        fprintf(stderr, "dvs_engine: MTL %s up\n", mtl_version());
     }
 
     if (count <= 0) {
         /* clear: media off, keep MTL up for fast future commits */
+        mp4_dist_pip_stream old[MP4_PIP_MAX_LANES];
+        int old_n = e->cfg.pip_stream_count;
+        if (old_n > MP4_PIP_MAX_LANES) old_n = MP4_PIP_MAX_LANES;
+        memcpy(old, e->cfg.pip_streams, (size_t)old_n * sizeof(*old));
+        if (e->comp) {
+            rx_compositor_stop(e->comp);
+            rx_compositor_free(e->comp);
+            e->comp = NULL;
+        }
+        e->cfg.pip_stream_count = 0;
+        for (int i = 0; i < old_n; i++)
+            dvs_session_release(old[i].sip, old[i].udp_port);
         atomic_store(&e->rx_sessions, 0);
         atomic_store(&e->decoding, 0);
         atomic_store(&e->layers, 0);
         pthread_mutex_unlock(&e->mu);
         return 0;
+    }
+
+    if (e->comp) {
+        int fr = rx_compositor_try_fast_apply(e->comp, streams, count);
+        if (fr == 0) {
+            mp4_dist_pip_stream old[MP4_PIP_MAX_LANES];
+            int old_n = e->cfg.pip_stream_count;
+            if (old_n > MP4_PIP_MAX_LANES) old_n = MP4_PIP_MAX_LANES;
+            memcpy(old, e->cfg.pip_streams, (size_t)old_n * sizeof(*old));
+            if (apply_at_ns != 0) {
+                pthread_mutex_unlock(&e->mu);
+                engine_wait_until(e, apply_at_ns);
+                pthread_mutex_lock(&e->mu);
+                if (!e->comp) {
+                    pthread_mutex_unlock(&e->mu);
+                    return -1;
+                }
+            }
+            memcpy(e->cfg.pip_streams, streams,
+                   (size_t)count * sizeof(*streams));
+            e->cfg.pip_stream_count = count;
+            for (int i = 0; i < old_n; i++) {
+                bool gone = true;
+                for (int j = 0; j < count; j++) {
+                    if (strcmp(old[i].sip, streams[j].sip) == 0 &&
+                        old[i].udp_port == streams[j].udp_port) {
+                        gone = false;
+                        break;
+                    }
+                }
+                if (gone) dvs_session_release(old[i].sip, old[i].udp_port);
+            }
+            atomic_store(&e->rx_sessions, count);
+            atomic_store(&e->decoding, count);
+            atomic_store(&e->layers, count);
+            pthread_mutex_unlock(&e->mu);
+            dvs_audio_set(e, e->audio_owner, e->audio_volume);
+            if (!atomic_load(&e->running)) {
+                atomic_store(&e->running, true);
+                if (pthread_create(&e->loop_tid, NULL, engine_loop, e) != 0) {
+                    atomic_store(&e->running, false);
+                    fprintf(stderr, "dvs_engine: loop thread create failed\n");
+                    return -1;
+                }
+            }
+            return 0;
+        }
+        if (fr < 0) {
+            pthread_mutex_unlock(&e->mu);
+            fprintf(stderr, "dvs_engine: layout validation failed\n");
+            return -1;
+        }
+        rx_compositor_stop(e->comp);
+        rx_compositor_free(e->comp);
+        e->comp = NULL;
     }
 
     rx_compositor* comp = build_compositor(e, streams, count);

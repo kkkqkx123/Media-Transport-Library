@@ -566,6 +566,37 @@ void rx_compositor_free(rx_compositor* comp) {
     free(comp);
 }
 
+int rx_compositor_try_fast_apply(rx_compositor* comp,
+                                 const mp4_dist_pip_stream* streams,
+                                 int count) {
+    if (!comp || !streams || count <= 0) return -1;
+    if (count != comp->lane_count) return 1;
+    for (int i = 0; i < count; i++) {
+        const mp4_dist_pip_stream* a = &comp->lanes[i].stream;
+        const mp4_dist_pip_stream* b = &streams[i];
+        if (strncmp(a->sip, b->sip, sizeof(a->sip)) != 0) return 1;
+        if (a->udp_port != b->udp_port) return 1;
+        if (a->width != b->width || a->height != b->height) return 1;
+    }
+    int mode_w = comp->layout.mode_w;
+    int mode_h = comp->layout.mode_h;
+    display_layout next;
+    if (display_layout_from_pip_streams(streams, count, mode_w, mode_h,
+                                        &next) < 0)
+        return -1;
+    if (drm_renderer_update_layout(comp->renderer, &next) != 0) return 1;
+    comp->layout = next;
+    for (int i = 0; i < count; i++) {
+        comp->lanes[i].stream.x = streams[i].x;
+        comp->lanes[i].stream.y = streams[i].y;
+        comp->lanes[i].stream.w = streams[i].w;
+        comp->lanes[i].stream.h = streams[i].h;
+        comp->lanes[i].stream.main = streams[i].main;
+        comp->lanes[i].stream.lane = streams[i].lane;
+    }
+    return 0;
+}
+
 void rx_compositor_get_latency(const rx_compositor* comp, uint64_t* min_ns,
                                uint64_t* avg_ns, uint64_t* max_ns) {
     if (!comp)

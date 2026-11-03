@@ -40,6 +40,9 @@ rx_compositor* rx_compositor_create(const rx_compositor_params* params);
 int  rx_compositor_start(rx_compositor* comp);
 void rx_compositor_stop(rx_compositor* comp);
 void rx_compositor_free(rx_compositor* comp);
+int rx_compositor_try_fast_apply(rx_compositor* comp,
+                                const mp4_dist_pip_stream* streams,
+                                int count);
 
 void rx_compositor_get_latency(const rx_compositor* comp,
                                uint64_t* min_ns, uint64_t* avg_ns, uint64_t* max_ns);

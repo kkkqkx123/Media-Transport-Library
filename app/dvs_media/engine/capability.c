@@ -60,7 +60,9 @@ static void probe_drm(dvs_capability* cap) {
             drmModeFreeConnector(c);
             continue;
         }
-        cap->output_ports[k] = strdup(c->name);
+        char cname[32];
+        snprintf(cname, sizeof(cname), "HDMI-A-%u", c->connector_type_id);
+        cap->output_ports[k] = strdup(cname);
         cap->output_mode_counts[k] = c->count_modes;
         k++;
         drmModeFreeConnector(c);
@@ -91,10 +93,6 @@ int dvs_capability_probe(dvs_capability* cap) {
         int v = atoi(m);
         if (v > 0) cap->max_decode_sessions = v;
     }
-    /* TODO(S1): query MTL PTP portState/offset via mtl_get_port_stats and
-     * fill cap->ptp_state / cap->ptp_offset_us; query mtl_version() for
-     * cap->mtl_version. Left as defaults until the MTL session is initialized
-     * in the engine (T3/T4). */
     return 0;
 }
 

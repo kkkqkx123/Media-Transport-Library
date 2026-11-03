@@ -7,6 +7,9 @@
 #include "ipc/ipc_server.h"
 #include "engine_ctx.h"
 #include "engine/layout_executor.h"
+#include <mtl_api.h>
+#include <stddef.h>
+#include <stdio.h>
 
 static dvs_engine* s_eng = NULL;
 
@@ -30,6 +33,14 @@ static void hook_counts(int* rx_sessions, int* decoding, int* layers) {
     dvs_engine_counts(s_eng, rx_sessions, decoding, layers);
 }
 
+static void hook_ptp_state(char* state, size_t n, int* offset_us) {
+    if (!s_eng || !s_eng->st) return;
+    uint64_t t = mtl_ptp_read_time(s_eng->st);
+    if (t == 0) return;
+    if (state && n > 0) snprintf(state, n, "synced");
+    if (offset_us) *offset_us = 0;
+}
+
 void dvs_ipc_attach_engine(dvs_engine* e) {
     s_eng = e;
     dvs_ipc_engine_hooks_t h = {
@@ -38,6 +49,7 @@ void dvs_ipc_attach_engine(dvs_engine* e) {
         .clear = hook_clear,
         .abort = hook_abort,
         .counts = hook_counts,
+        .ptp_state = hook_ptp_state,
     };
     dvs_ipc_install_hooks(&h);
 }

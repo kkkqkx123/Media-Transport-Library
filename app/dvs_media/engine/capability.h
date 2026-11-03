@@ -30,6 +30,7 @@ typedef struct {
 
 /* Probe all subsystems. Returns 0 on success (best-effort; never fails hard). */
 int dvs_capability_probe(dvs_capability* cap);
+void dvs_capability_refresh_mtl(dvs_capability* cap, void* mtl_handle);
 
 /* Release dynamically allocated arrays inside cap. */
 void dvs_capability_free(dvs_capability* cap);

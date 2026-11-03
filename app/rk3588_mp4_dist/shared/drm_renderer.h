@@ -45,4 +45,7 @@ int drm_renderer_display_layers(struct drm_renderer* r,
 
 const display_layout* drm_renderer_layout(const struct drm_renderer* r);
 
+int drm_renderer_update_layout(struct drm_renderer* r,
+                               const display_layout* next);
+
 #endif

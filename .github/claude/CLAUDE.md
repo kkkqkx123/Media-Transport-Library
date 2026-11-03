@@ -12,6 +12,7 @@ Two standalone apps live on the `feat/rk3588-apps` branch (commit `add rk3568 ap
 | `app/rk3588_mp4_dist/` | MP4 file distribution: TX demuxes MP4 (`tx/mp4_demux`, playlist, `tx_scheduler`) and sends video/audio over MTL; RX does playout buffering, AV sync, ALSA audio, multi-window composition (`rx/rx_compositor`) and DRM display. `shared/` duplicates MPP decode/DRM/ring/slab helpers from the other app (each app carries its own copy). Includes dual-host PTP configs (`config/ptp/`) and Python log-verification scripts in `tests/`. |
 | `app/dvs_media/` | 节点媒体引擎 (C, MTL/MPP/RGA/DRM/ALSA):由 mp4_dist 演进,支持 IPC configure/prepare/commit/abort/clear/query_state,布局热更新与能力上报。 |
 | `app/dvs_agent/` | 节点代理 (C++17):本地 HTTP + node-device-admin 静态前端,六 scope 配置状态机,注册/心跳,维护操作;依赖 json-c + SQLite amalgamation。 |
+| `app/dvs_platform/` | 平台服务 (C++17, 与代理同栈):节点注册/心跳网关,分组/墙/场景/绑定/白名单文档,布局像素拆分,跨节点 prepare/commit 屏障与回退,退役墓碑,串行批量升级;直编 SQLite,无新增运行时依赖。复用代理的 HTTP 服务与客户端源文件,不预抽公共库。 |
 
 ---
 

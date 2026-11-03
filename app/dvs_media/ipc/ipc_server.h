@@ -21,6 +21,7 @@ typedef struct {
     void (*clear)(void);                      /* remove all media */
     void (*abort)(void);                      /* discard pending layout */
     void (*counts)(int* rx_sessions, int* decoding, int* layers); /* query_state */
+    void (*ptp_state)(char* state, size_t n, int* offset_us); /* live PTP */
 } dvs_ipc_engine_hooks_t;
 
 void dvs_ipc_install_hooks(const dvs_ipc_engine_hooks_t* h);

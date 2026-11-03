@@ -41,7 +41,7 @@
     document.body.dataset.itcPage = key;
 
     var logo = shell.querySelector(".proto-side-logo-mark");
-    if (logo) logo.innerHTML = '<img src="../../assets/brand/ITC Design-logo-write.svg" alt="ITC" />';
+    if (logo) logo.innerHTML = '<img src="../../assets/brand/ITC Design-logo-write.svg" alt="DVS" />';
     var menu = shell.querySelector(".proto-side-menu");
     if (menu) {
       menu.innerHTML =
@@ -136,7 +136,7 @@
     if (content && !content.querySelector(".itc-footer")) {
       var footer = document.createElement("footer");
       footer.className = "itc-footer";
-      footer.textContent = "Copyright © 2025-2026 ITC. All Rights Reserved";
+      footer.textContent = "Copyright © 2025-2026 DVS. All Rights Reserved";
       content.appendChild(footer);
     }
   }

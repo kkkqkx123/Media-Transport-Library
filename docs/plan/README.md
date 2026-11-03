@@ -9,3 +9,4 @@
 | [`RK3588_END2END_IMPROVEMENT_PLAN.md`](./RK3588_END2END_IMPROVEMENT_PLAN.md) | rk3588_end2end 应用的改进计划 |
 | [`DVS_IPC_ASYNC_PLAN.md`](./DVS_IPC_ASYNC_PLAN.md) | DVS IPC 异步化改造方案（G1–G7，S1 前提） |
 | [`DVS_FRONTEND_INTEGRATION_PLAN.md`](./DVS_FRONTEND_INTEGRATION_PLAN.md) | DVS 前端原型(ref/)到节点媒体引擎/代理/平台的分阶段集成修改方案(S0–S5),上游设计见 `docs/app/frontend_prototype_integration.md` |
+| [`DVS_REMAINING_TASKS_DETAILED_PLAN.md`](./DVS_REMAINING_TASKS_DETAILED_PLAN.md) | DVS 剩余任务细化方案：S-A/S-B 动态部分/PTP 收尾/T7–T9 的选型与文件级修改方案 |

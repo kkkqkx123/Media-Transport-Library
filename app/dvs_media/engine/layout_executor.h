@@ -11,6 +11,7 @@ int dvs_layout_from_json(struct json_object* req, mp4_dist_pip_stream* out,
                          int* count);
 int dvs_layout_prepare(const mp4_dist_pip_stream* streams, int count);
 int dvs_layout_prepare_from_json(struct json_object* req);
+uint64_t dvs_layout_pending_apply_at_ns(void);
 int dvs_layout_commit(dvs_engine* e);
 void dvs_layout_clear(dvs_engine* e);
 void dvs_layout_abort(void);

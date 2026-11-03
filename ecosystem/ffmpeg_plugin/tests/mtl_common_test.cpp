@@ -9,9 +9,9 @@
 #include <cstring>
 #include <thread>
 
-#include "ffmpeg/mtl_common_harness.h"
+#include "mtl_common_harness.h"
 #define MTL_FFMPEG_UNIT_TEST
-#include "../../../ecosystem/ffmpeg_plugin/mtl_common.h"
+#include "../mtl_common.h"
 
 static timespec g_clock_time;
 static clockid_t g_clock_id;
@@ -520,6 +520,29 @@ TEST_F(FfmpegMtlCommonTest, PacingWayOptionTargetsBothDeviceDirections) {
     EXPECT_EQ(pacing_option->type, AV_OPT_TYPE_STRING);
     EXPECT_EQ(pacing_option->default_val.str, nullptr);
     EXPECT_EQ(pacing_option->flags, expected_flags);
+  }
+}
+
+TEST_F(FfmpegMtlCommonTest, St22QualityMapsCanonicalValues) {
+  enum st22_quality_mode quality = ST22_QUALITY_MODE_QUALITY;
+  EXPECT_EQ(ut_ffmpeg_parse_st22_quality("speed", &quality), 0);
+  EXPECT_EQ(quality, ST22_QUALITY_MODE_SPEED);
+  EXPECT_EQ(ut_ffmpeg_parse_st22_quality("quality", &quality), 0);
+  EXPECT_EQ(quality, ST22_QUALITY_MODE_QUALITY);
+}
+
+TEST_F(FfmpegMtlCommonTest, NullSt22QualityKeepsCallerValue) {
+  enum st22_quality_mode quality = ST22_QUALITY_MODE_QUALITY;
+  EXPECT_EQ(ut_ffmpeg_parse_st22_quality(nullptr, &quality), 0);
+  EXPECT_EQ(quality, ST22_QUALITY_MODE_QUALITY);
+}
+
+TEST_F(FfmpegMtlCommonTest, InvalidSt22QualityRejectsAndKeepsCallerValue) {
+  for (const char* name : {"Quality", "SPEED", "ultra", "", "speed "}) {
+    enum st22_quality_mode quality = ST22_QUALITY_MODE_MAX;
+    EXPECT_EQ(ut_ffmpeg_parse_st22_quality(name, &quality), AVERROR(EINVAL))
+        << "'" << name << "'";
+    EXPECT_EQ(quality, ST22_QUALITY_MODE_MAX) << "'" << name << "'";
   }
 }
 

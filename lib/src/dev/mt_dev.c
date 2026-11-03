@@ -317,6 +317,67 @@ static void dev_build_pci_devarg(const struct mtl_init_params* p, enum mtl_port 
     snprintf(out, len, "%s", p->port[port]);
 }
 
+#ifndef WINDOWSENV
+#include <dlfcn.h>
+#include <sys/stat.h>
+
+static bool dev_is_dir(const char* path) {
+  struct stat st;
+  return !stat(path, &st) && S_ISDIR(st.st_mode);
+}
+
+/* a dangling compiled-in PMD dir's tail after the eal_dir name, put beside eal_dir */
+static int dev_eal_pmd_dir(const char* compiled_dir, const char* eal_dir, char* out,
+                           size_t len) {
+  const char* eal_name = strrchr(eal_dir, '/');
+  size_t name_len;
+  const char* tail = NULL;
+  int ret;
+
+  if (!compiled_dir[0] || dev_is_dir(compiled_dir)) return -EEXIST;
+  eal_name = eal_name ? eal_name + 1 : eal_dir;
+  name_len = strlen(eal_name);
+  for (const char* c = strchr(compiled_dir, '/'); name_len && c; c = strchr(c + 1, '/')) {
+    if (!strncmp(c + 1, eal_name, name_len) && c[1 + name_len] == '/')
+      tail = c + 2 + name_len;
+  }
+  if (!tail) {
+    tail = compiled_dir + strlen(compiled_dir);
+    for (int slashes = 0; tail > compiled_dir; tail--) {
+      if (*(tail - 1) == '/' && ++slashes == 2) break;
+    }
+  }
+  ret = snprintf(out, len, "%s/%s", eal_dir, tail);
+  if (ret < 0 || (size_t)ret >= len) return -ENAMETOOLONG;
+  if (!dev_is_dir(out)) return -ENOENT;
+  return 0;
+}
+
+static int dev_eal_loaded_pmd_dir(char* out, size_t len) {
+  Dl_info dl_info;
+  char eal_dir[PATH_MAX];
+  int ret;
+
+  if (!dladdr((void*)rte_eal_init, &dl_info) || !dl_info.dli_fname) return -ENOENT;
+  /* a static DPDK is linked into the caller, its drivers too */
+  const char* eal_name = strrchr(dl_info.dli_fname, '/');
+  eal_name = eal_name ? eal_name + 1 : dl_info.dli_fname;
+  if (strncmp(eal_name, "librte_eal", strlen("librte_eal"))) return -ENOENT;
+  ret = snprintf(eal_dir, sizeof(eal_dir), "%s", dl_info.dli_fname);
+  if (ret < 0 || (size_t)ret >= sizeof(eal_dir)) return -ENAMETOOLONG;
+  char* slash = strrchr(eal_dir, '/');
+  if (!slash) return -ENOENT;
+  *slash = '\0';
+  return dev_eal_pmd_dir(RTE_EAL_PMD_PATH, eal_dir, out, len);
+}
+#else
+static int dev_eal_loaded_pmd_dir(char* out, size_t len) {
+  MTL_MAY_UNUSED(out);
+  MTL_MAY_UNUSED(len);
+  return -ENOTSUP;
+}
+#endif
+
 static int dev_eal_init(struct mtl_init_params* p, struct mt_kport_info* kport_info) {
   char* argv[MT_EAL_MAX_ARGS];
   int argc, ret;
@@ -490,6 +551,15 @@ static int dev_eal_init(struct mtl_init_params* p, struct mt_kport_info* kport_i
 
   if (p->flags & MTL_FLAG_RXTX_SIMD_512) {
     argv[argc] = "--force-max-simd-bitwidth=512";
+    argc++;
+  }
+
+  char pmd_dir[PATH_MAX];
+  if (!dev_eal_loaded_pmd_dir(pmd_dir, sizeof(pmd_dir))) {
+    info("%s, pmd dir: %s\n", __func__, pmd_dir);
+    argv[argc] = "-d";
+    argc++;
+    argv[argc] = pmd_dir;
     argc++;
   }
 
@@ -779,27 +849,6 @@ static int dev_tx_queue_set_rl_rate(struct mt_interface* inf, uint16_t queue,
   tx_queue->bps = bps;
 
   return 0;
-}
-
-/* the PF keeps VF queue rates after this process, the next one may not program them */
-static void dev_tx_queues_reset_line_rate(struct mt_interface* inf) {
-  enum mtl_port port = inf->port;
-  uint64_t line_bps = (uint64_t)inf->link_speed * 1000 * 1000 / 8;
-  int ret = 0;
-
-  if (!line_bps) {
-    warn("%s(%d), unknown link speed, tx queues keep their rate limit\n", __func__, port);
-    return;
-  }
-
-  for (uint16_t q = 0; q < inf->nb_tx_q && ret >= 0; q++)
-    ret = dev_tx_queue_set_rl_rate(inf, q, line_bps);
-  if (ret < 0)
-    warn("%s(%d), tx queues may keep their rate limit, reset fail %d\n", __func__, port,
-         ret);
-  else
-    info("%s(%d), tx queues reset to line rate %" PRIu64 " bytes/s\n", __func__, port,
-         line_bps);
 }
 
 static int dev_stop_port(struct mt_interface* inf) {
@@ -2113,9 +2162,7 @@ int mt_dev_set_tx_bps(struct mtl_main_impl* impl, struct mt_tx_queue* queue,
     return -ENOTSUP;
   }
 
-  dev_tx_queue_set_rl_rate(inf, queue_id, bytes_per_sec);
-
-  return 0;
+  return dev_tx_queue_set_rl_rate(inf, queue_id, bytes_per_sec);
 }
 
 int mt_dev_put_rx_queue(struct mtl_main_impl* impl, struct mt_rx_queue* queue) {
@@ -2332,10 +2379,6 @@ int mt_dev_free(struct mtl_main_impl* impl) {
       mt_rte_free(inf->dev_stats_sw);
       inf->dev_stats_sw = NULL;
     }
-    /* iavf locks TM after one commit on a stopped port (mtl_init failure), rates stay */
-    if (inf->tx_rl_root_active && inf->drv_info.drv_type == MT_DRV_IAVF &&
-        (inf->status & MT_IF_STAT_PORT_STARTED))
-      dev_tx_queues_reset_line_rate(inf);
     dev_stop_port(inf);
   }
 

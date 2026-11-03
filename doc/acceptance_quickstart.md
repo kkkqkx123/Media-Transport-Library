@@ -215,6 +215,7 @@ whether a compliance verdict is meaningful), and `allow_wide_compliance`
 | `--media`, `--build`, `--nic`, `--dma` | Override the config values |
 | `--num_sessions N`, `--sch_quota N` | Performance sweeps only |
 | `--sut_app_args='ARGS'` | Performance sweeps only: extra RxTxApp arguments for the measured app |
+| `--shard K/N` | Run only shard K of N of the selected tests; the N shards together run each test once |
 
 ### Output
 
@@ -252,7 +253,7 @@ directly. Re-run `setup --base-only` or `setup --pytest-only` to repair it.
 | `Failed to start MtlManager on host` | `.local_install` tree missing — re-run setup. A system-wide `build/` install does not count. |
 | `RxTxApp: command not found` | Same cause: build into `.local_install`, not `tests/tools/RxTxApp/build/`. |
 | `error while loading shared libraries: librte_*.so` | Stale linker cache. `sudo ldconfig`, then check `ldd .local_install/mtl/bin/RxTxApp`. |
-| `Media file not present ...` (SKIPPED) | NFS unmounted or empty. Re-run setup with the NFS source. |
+| `Media file not present ...` (ERROR) | NFS unmounted or empty. Re-run setup with the NFS source. |
 | `Incorrect format ... PCIDevice` / `sniff_pci_device ... not found` | A BDF was used where `vendor:device` is required. |
 | `SSHConnection.__init__() missing ... 'password'` | Add `password: ''` to the topology connection. |
 | `Permission denied (publickey)` for `root@127.0.0.1` | Public key not in `/root/.ssh/authorized_keys`. |

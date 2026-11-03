@@ -1,4 +1,6 @@
 #include "slice_reassembler.h"
+#include "slab_pool.h"
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -6,6 +8,8 @@ struct slice_reassembler {
     uint8_t* buf;       /* accumulated complete frame */
     size_t   buf_size;  /* allocated size */
     size_t   buf_len;   /* valid data length */
+    struct slab_pool* pool; /* optional: slab-backed accumulation, set by owner */
+    bool     buf_is_slab;   /* true when buf came from the slab pool */
 };
 
 struct slice_reassembler* slice_reasm_create(void) {
@@ -15,12 +19,48 @@ struct slice_reassembler* slice_reasm_create(void) {
 
 void slice_reasm_free(struct slice_reassembler* r) {
     if (!r) return;
-    free(r->buf);
+    if (r->buf) {
+        if (r->buf_is_slab && r->pool)
+            slab_free(r->pool, r->buf);
+        else
+            free(r->buf);
+    }
     free(r);
 }
 
 void slice_reasm_reset(struct slice_reassembler* r) {
-    if (r) r->buf_len = 0;
+    if (!r) return;
+    if (r->buf) {
+        if (r->buf_is_slab && r->pool)
+            slab_free(r->pool, r->buf);
+        else
+            free(r->buf);
+        r->buf = NULL;
+    }
+    r->buf_size = 0;
+    r->buf_len = 0;
+    r->buf_is_slab = false;
+}
+
+/* Attach an optional slab pool. With a pool, the accumulation buffer is a
+ * slab block handed to the caller zero-copy on emit; without a pool the
+ * previous malloc behaviour is kept. Must be called before the first feed. */
+void slice_reasm_set_pool(struct slice_reassembler* r, struct slab_pool* pool) {
+    if (r) r->pool = pool;
+}
+
+/* Return buffered bytes without freeing the reassembler (for flush paths). */
+size_t slice_reasm_pending(struct slice_reassembler* r) {
+    return r ? r->buf_len : 0;
+}
+
+/* Release a frame previously emitted by feed/flush. */
+void slice_reasm_free_frame(struct slice_reassembler* r, uint8_t* frame) {
+    if (!frame) return;
+    if (r && r->pool && slab_pool_owns(r->pool, frame))
+        slab_free(r->pool, frame);
+    else
+        free(frame);
 }
 
 /*
@@ -96,15 +136,37 @@ static int annex_b_first_mb_in_slice(const uint8_t* data, size_t size) {
 /* ensure buffer has room for `extra` more bytes */
 static int buf_ensure(struct slice_reassembler* r, size_t extra) {
     size_t need = r->buf_len + extra;
-    if (need > r->buf_size) {
-        size_t newsz = r->buf_size ? r->buf_size * 2 : 256 * 1024;
-        if (newsz < need) newsz = need;
-        uint8_t* nb = realloc(r->buf, newsz);
-        if (!nb) return -1;
-        r->buf = nb;
-        r->buf_size = newsz;
+    if (need <= r->buf_size) return 0;
+    if (r->pool) {
+        /* Slab-backed: one fixed block per picture, handed out zero-copy.
+         * A picture larger than a block cannot be reassembled this way. */
+        size_t blk = slab_blk_size(r->pool);
+        if (need > blk || r->buf) return -1;
+        r->buf = slab_alloc(r->pool);
+        if (!r->buf) return -1;
+        r->buf_size = blk;
+        r->buf_is_slab = true;
+        return 0;
     }
+    size_t newsz = r->buf_size ? r->buf_size * 2 : 256 * 1024;
+    if (newsz < need) newsz = need;
+    uint8_t* nb = realloc(r->buf, newsz);
+    if (!nb) return -1;
+    r->buf = nb;
+    r->buf_size = newsz;
     return 0;
+}
+
+/* Hand the accumulated buffer to the caller (zero-copy either way). */
+static void emit_buffered(struct slice_reassembler* r,
+                          uint8_t** frame_out, size_t* frame_size_out) {
+    *frame_out      = r->buf;
+    *frame_size_out = r->buf_len;
+    r->buf          = NULL;
+    r->buf_size     = 0;
+    r->buf_len      = 0;
+    r->buf_is_slab  = false;
+    /* Note: caller must release via slice_reasm_free_frame after use */
 }
 
 int slice_reasm_feed(struct slice_reassembler* r,
@@ -118,15 +180,8 @@ int slice_reasm_feed(struct slice_reassembler* r,
 
     /* first_mb == 0 means a new picture starts.
      * If we already have buffered data, that's the previous complete frame. */
-    if (first_mb == 0 && r->buf_len > 0) {
-        /* flush previous complete frame */
-        *frame_out      = r->buf;
-        *frame_size_out = r->buf_len;
-        r->buf          = NULL;
-        r->buf_size     = 0;
-        r->buf_len      = 0;
-        /* Note: caller must free(*frame_out) after use */
-    }
+    if (first_mb == 0 && r->buf_len > 0)
+        emit_buffered(r, frame_out, frame_size_out);
 
     /* append current slice to buffer */
     if (buf_ensure(r, size) < 0) return -1;
@@ -135,6 +190,17 @@ int slice_reasm_feed(struct slice_reassembler* r,
 
     /* frame ready if we just started a new picture (and had a previous one) */
     return (first_mb == 0 && *frame_out != NULL) ? 1 : 0;
+}
+
+/* Flush whatever is buffered (even an incomplete picture) to the caller.
+ * Used on reassembly timeout and on pipeline stop so the tail frame is not
+ * stuck one frame behind / lost. Returns 1 with a frame, 0 when empty. */
+int slice_reasm_flush(struct slice_reassembler* r,
+                      uint8_t** frame_out, size_t* frame_size_out) {
+    if (frame_out) *frame_out = NULL;
+    if (!r || r->buf_len == 0) return 0;
+    emit_buffered(r, frame_out, frame_size_out);
+    return 1;
 }
 
 /* ---- self-test (compile with -DREASM_TEST) ---- */
@@ -193,13 +259,32 @@ int main(void) {
            ret, (void*)frm, fsz);
     if (ret == 1 && frm) {
         int pass = (fsz >= s0sz + s1sz);
-        printf("%s\n", pass ? "=== slice_reasm PASS ===" : "FAIL: size mismatch");
-        free(frm);
+        printf("%s\n", pass ? "--- picture flush ok ---" : "FAIL: size mismatch");
+        slice_reasm_free_frame(r, frm);
         if (!pass) return 1;
     } else {
         printf("FAIL: expected complete frame\n");
         return 1;
     }
+
+    /* timeout/stop path: the slice of pic2 is still buffered (no following
+     * picture arrived). flush must emit it as the tail frame. */
+    if (slice_reasm_pending(r) != s2sz) {
+      printf("FAIL: tail slice must stay buffered\n");
+      return 1;
+    }
+    ret = slice_reasm_flush(r, &frm, &fsz);
+    printf("flush: ret=%d size=%zu (expected 1,%zu)\n", ret, fsz, s2sz);
+    if (ret != 1 || !frm || fsz != s2sz) {
+        printf("FAIL: flush must emit the tail frame\n");
+        return 1;
+    }
+    slice_reasm_free_frame(r, frm);
+    if (slice_reasm_flush(r, &frm, &fsz) != 0) {
+        printf("FAIL: flush on empty must return 0\n");
+        return 1;
+    }
+    printf("=== slice_reasm PASS ===\n");
 
     slice_reasm_free(r);
     return 0;

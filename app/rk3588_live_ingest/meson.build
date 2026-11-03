@@ -29,6 +29,12 @@ executable('test_sps_vui', 'tests/test_sps_vui.c',
   include_directories: live_ingest_inc,
 )
 
+# RX tracking logic (seq gap / latency window / SEI offset): pure C test.
+executable('test_rx_track', 'tests/test_rx_track.c',
+  'hal/sei_timestamp.c',
+  include_directories: live_ingest_inc,
+)
+
 live_ingest_hal_sources = files(
   'hal/dma_allocator.c',
   'hal/dma32_allocator.c',
@@ -46,6 +52,14 @@ live_ingest_hal = static_library('live_ingest_hal', live_ingest_hal_sources,
 executable('test_hal', 'tests/test_hal.c',
   link_with: live_ingest_hal,
   dependencies: [libdrm_dep],
+  include_directories: live_ingest_inc,
+)
+
+# Slice-reassembler self-test (flush/timeout paths), x86-runnable.
+executable('test_slice_reasm', 'pipeline/slice_reassembler.c',
+  c_args: ['-DREASM_TEST'],
+  link_with: live_ingest_hal,
+  dependencies: [libdrm_dep, libpthread_dep],
   include_directories: live_ingest_inc,
 )
 

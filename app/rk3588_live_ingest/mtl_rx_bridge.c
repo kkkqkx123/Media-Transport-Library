@@ -24,6 +24,7 @@ struct mtl_rx_bridge {
     atomic_bool                 running;
     uint64_t                    stat_bridged;
     uint32_t                    stat_drops;
+    uint64_t                    stat_bytes; /* sum of copied codestream bytes */
 };
 
 static void bridge_release_rx_pkt(struct mtl_rx_bridge* b, struct rx_pkt* mp) {
@@ -94,6 +95,7 @@ static void* bridge_thread(void* arg) {
             continue;
         }
         b->stat_bridged++;
+        b->stat_bytes += sz;
     }
     return NULL;
 }
@@ -143,4 +145,12 @@ void mtl_rx_bridge_stop(struct mtl_rx_bridge* b) {
     bridge_drain_rings(b);
     printf("mtl_rx_bridge: %llu bridged, %u drops\n",
            (unsigned long long)b->stat_bridged, b->stat_drops);
+}
+
+void mtl_rx_bridge_stats(struct mtl_rx_bridge* b,
+                         struct mtl_rx_bridge_stats* out) {
+    if (!b || !out) return;
+    out->bridged = b->stat_bridged;
+    out->drops   = b->stat_drops;
+    out->bytes   = b->stat_bytes;
 }

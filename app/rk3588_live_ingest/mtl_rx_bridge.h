@@ -21,4 +21,13 @@ void mtl_rx_bridge_free(struct mtl_rx_bridge* b);
 int  mtl_rx_bridge_start(struct mtl_rx_bridge* b);
 void mtl_rx_bridge_stop(struct mtl_rx_bridge* b);
 
+/* Snapshot for the 1s aggregation log (safe to call while running). */
+struct mtl_rx_bridge_stats {
+    uint64_t bridged;
+    uint32_t drops;
+    uint64_t bytes;
+};
+void mtl_rx_bridge_stats(struct mtl_rx_bridge* b,
+                         struct mtl_rx_bridge_stats* out);
+
 #endif

@@ -4,6 +4,7 @@
 #include <mtl_api.h>
 #include <stdatomic.h>
 #include <st20_api.h>
+#include <stdint.h>
 
 struct ring_buffer;
 struct mtl_rx;
@@ -32,5 +33,16 @@ int  mtl_rx_start(struct mtl_rx* rx);
 void mtl_rx_begin_stop(struct mtl_rx* rx); /* stop callbacks; drain via bridge first */
 void mtl_rx_stop(struct mtl_rx* rx);
 st22_rx_handle mtl_rx_handle(struct mtl_rx* rx);
+
+/* Snapshot for the 1s aggregation log (safe to call while running). */
+struct mtl_rx_stats {
+    uint64_t received;
+    uint32_t drops;
+    uint64_t bytes;
+    uint64_t pool_full;
+    int      peak;
+    int      inflight;
+};
+void mtl_rx_stats(struct mtl_rx* rx, struct mtl_rx_stats* out);
 
 #endif

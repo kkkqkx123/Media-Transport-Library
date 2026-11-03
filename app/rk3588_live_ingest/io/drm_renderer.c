@@ -1,4 +1,5 @@
 #include "drm_renderer.h"
+#include <drm.h>
 #include <drm_fourcc.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -30,6 +31,18 @@ static void page_flip_handler(int fd, unsigned int frame, unsigned int sec,
   (void)usec;
   struct drm_renderer* r = (struct drm_renderer*)user_data;
   atomic_store(&r->flip_pending, 0);
+}
+
+/* Close a GEM handle imported via drmPrimeFDToHandle. ADDFB2 takes its own
+ * reference on the underlying object, so closing right after ADDFB2 neither
+ * affects the displayed frame nor the stored fb_id. Best-effort: a failed
+ * close is harmless (handle dies with the fd) and must not fail display. */
+static void gem_close(int fd, uint32_t handle) {
+  if (!handle) return;
+  struct drm_gem_close c;
+  memset(&c, 0, sizeof(c));
+  c.handle = handle;
+  drmIoctl(fd, DRM_IOCTL_GEM_CLOSE, &c);
 }
 
 static void wait_flip_done(struct drm_renderer* r) {
@@ -168,8 +181,12 @@ int drm_renderer_display(struct drm_renderer* r, int dma_fd, uint32_t hor_stride
 
   if (drmIoctl(r->fd, DRM_IOCTL_MODE_ADDFB2, &fb) < 0) {
     perror("ADDFB2");
+    gem_close(r->fd, gem);
     return -errno;
   }
+  /* ADDFB2 pins its own reference; drop our import handle now so a long
+   * stable run does not leak one GEM handle per frame. */
+  gem_close(r->fd, gem);
 
   int ret;
   if (r->first_flip) {

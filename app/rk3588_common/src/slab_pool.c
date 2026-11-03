@@ -121,3 +121,12 @@ void slab_free(struct slab_pool* p, uint8_t* blk) {
     return;
   }
 }
+
+bool slab_pool_owns(struct slab_pool* p, const uint8_t* ptr) {
+  int i;
+  if (!p || !ptr) return false;
+  for (i = 0; i < p->n_blks; i++) {
+    if (ptr >= p->blocks[i] && ptr < p->blocks[i] + p->blk_size) return true;
+  }
+  return false;
+}

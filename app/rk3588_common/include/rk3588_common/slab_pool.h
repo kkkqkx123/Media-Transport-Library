@@ -1,6 +1,7 @@
 #ifndef _E2E_SLAB_POOL_H_
 #define _E2E_SLAB_POOL_H_
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -32,6 +33,9 @@ void slab_free_payload(struct slab_pool* p, uint8_t* payload, size_t sei_reserve
 
 /** Return a block to the pool */
 void slab_free(struct slab_pool* p, uint8_t* blk);
+
+/** True when ptr points anywhere inside a block owned by the pool. */
+bool slab_pool_owns(struct slab_pool* p, const uint8_t* ptr);
 
 /** Wake all waiters and prevent further allocations (for shutdown) */
 void slab_pool_stop(struct slab_pool* p);

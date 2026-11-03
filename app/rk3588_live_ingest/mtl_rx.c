@@ -5,10 +5,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <st_api.h>
 
 #define RX_POOL_SIZE  16  /* rx_pkt descriptors; must be >= framebuff_cnt + ring depth */
+#define RX_FULL_WARN_NS (5000000000ULL) /* pool-full warn cooldown: 5s */
+
+static inline uint64_t rx_now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
 
 struct mtl_rx {
     struct mtl_rx_params  cfg;
@@ -19,6 +27,10 @@ struct mtl_rx {
 
     uint64_t              stat_received;
     uint32_t              stat_drops;
+    uint64_t              stat_bytes;      /* sum of frame_total_size */
+    uint64_t              stat_pool_full;  /* pool-exhausted acquire fails */
+    int                   stat_peak_inflight;
+    uint64_t              last_full_warn_ns; /* lcore-side 5s warn cooldown */
 };
 
 static struct rx_pkt* rx_pool_acquire(struct mtl_rx* rx) {
@@ -35,6 +47,15 @@ static void rx_pool_release(struct rx_pkt* pkt) {
     atomic_store(&pkt->used, 0);
 }
 
+/* Count descriptors currently checked out (lcore + bridge/pipeline owned).
+ * O(POOL) scan; called once per frame and once per stats poll — trivial. */
+static int rx_inflight(struct mtl_rx* rx) {
+    int n = 0;
+    for (int i = 0; i < RX_POOL_SIZE; i++)
+        n += atomic_load(&rx->pool[i].used);
+    return n;
+}
+
 /* lcore callback: receive frame → push to ring (non-blocking).
  * ST22 RX uses st22_rx_frame_meta (not st20_rx_frame_meta). */
 static int rx_notify_frame_ready(void* priv, void* frame,
@@ -49,12 +70,27 @@ static int rx_notify_frame_ready(void* priv, void* frame,
     struct rx_pkt* pkt = rx_pool_acquire(rx);
     if (!pkt) {
         rx->stat_drops++;
+        rx->stat_pool_full++;
+        /* 5s-cooled warn: a persistent storm means the downstream (bridge
+         * or decode) no longer keeps up; each event is still counted. */
+        uint64_t now = rx_now_ns();
+        if (now - rx->last_full_warn_ns >= RX_FULL_WARN_NS) {
+            rx->last_full_warn_ns = now;
+            fprintf(stderr, "mtl_rx: descriptor pool exhausted "
+                    "(inflight=%d peak=%d, total pool-full=%llu) — "
+                    "downstream backpressure\n",
+                    rx_inflight(rx), rx->stat_peak_inflight,
+                    (unsigned long long)rx->stat_pool_full);
+        }
         st22_rx_put_framebuff(rx->handle, frame);
         return -ENOSPC;
     }
 
     pkt->frame = frame;
     pkt->size  = meta->frame_total_size;
+
+    int live = rx_inflight(rx);
+    if (live > rx->stat_peak_inflight) rx->stat_peak_inflight = live;
 
     if (ring_push(rx->cfg.output_ring, pkt) == -ENOSPC) {
         rx_pool_release(pkt);
@@ -64,6 +100,7 @@ static int rx_notify_frame_ready(void* priv, void* frame,
     }
 
     rx->stat_received++;
+    rx->stat_bytes += meta->frame_total_size;
     return 0;
 }
 
@@ -144,6 +181,17 @@ void mtl_rx_stop(struct mtl_rx* rx) {
         st22_rx_put_framebuff(rx->handle, pkt->frame);
         rx_pool_release(pkt);
     }
-    printf("mtl_rx: %llu received, %u drops\n",
-           (unsigned long long)rx->stat_received, rx->stat_drops);
+    printf("mtl_rx: %llu received, %u drops, %llu pool-full (peak inflight %d)\n",
+           (unsigned long long)rx->stat_received, rx->stat_drops,
+           (unsigned long long)rx->stat_pool_full, rx->stat_peak_inflight);
+}
+
+void mtl_rx_stats(struct mtl_rx* rx, struct mtl_rx_stats* out) {
+    if (!rx || !out) return;
+    out->received  = rx->stat_received;
+    out->drops     = rx->stat_drops;
+    out->bytes     = rx->stat_bytes;
+    out->pool_full = rx->stat_pool_full;
+    out->peak      = rx->stat_peak_inflight;
+    out->inflight  = rx_inflight(rx);
 }

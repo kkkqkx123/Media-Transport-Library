@@ -5,6 +5,9 @@
 #include <st20_api.h>
 
 struct ring_buffer;
+struct slab_pool;
+struct mtl_rx;
+struct mtl_rx_bridge;
 struct rx_pipeline;
 
 struct rx_pipeline_params {
@@ -17,6 +20,10 @@ struct rx_pipeline_params {
 
     /* input: connected to tx_pipeline output ring */
     struct ring_buffer* input_ring;
+
+    /* Optional live-MTL sources for the 1s aggregation (NULL in loopback). */
+    struct mtl_rx*        mtl_src;
+    struct mtl_rx_bridge* bridge_src;
 
     /* slab pool: shared with tx_pipeline; NULL for MTL-only RX path */
     struct slab_pool*  coded_pool;

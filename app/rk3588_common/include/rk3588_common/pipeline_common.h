@@ -8,8 +8,10 @@
 /* Raw video frame descriptor (end2end). */
 struct dmabuf_frame {
     int      fd;
+    int      fd_uv;
     uint32_t fourcc;
     int      width, height;
+    int      num_planes;
     uint32_t stride;
     uint64_t timestamp;
     uint64_t frame_seq;

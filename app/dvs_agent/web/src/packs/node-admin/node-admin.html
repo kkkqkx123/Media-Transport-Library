@@ -511,6 +511,10 @@ body[data-proto-page="node-admin"] #zone-info .info-grid .v {
     <script src="../../_shared/hardware-capabilities.js"></script>
     <script src="../../_shared/playback-tasks.js"></script>
     <script src="../../_shared/mock-api.js"></script>
+    <!-- S2: real-api.js overrides global.DvsMockApi with the live dvs-agent
+         HTTP adapter (fetch + session cookie). Loaded after mock-api.js; page
+         logic that calls DvsMockApi.request is unchanged. -->
+    <script src="../../_shared/real-api.js"></script>
     <script>
       (function () {
         var nodeId = "d1";

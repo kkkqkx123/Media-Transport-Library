@@ -20,6 +20,9 @@ dvs_agent = executable('dvs_agent',
     'http_server.cpp',
     'media_ipc.cpp',
     'maintenance.cpp',
+    'registration.cpp',
+    'http_client.cpp',
+    'sha256.cpp',
     sqlite_src,
   ),
   include_directories: inc,
@@ -28,11 +31,14 @@ dvs_agent = executable('dvs_agent',
   cpp_args: ['-D_GNU_SOURCE'],
 )
 
-# test (build only)
+# tests
 
 test_exe = executable('dvs_agent_test',
-  files('tests/test_basic.cpp', 'node_store.cpp', 'media_ipc.cpp', sqlite_src),
+  files('tests/test_basic.cpp', 'node_store.cpp', 'media_ipc.cpp',
+        'registration.cpp', 'http_client.cpp', 'sha256.cpp', sqlite_src),
   include_directories: inc,
   dependencies: [json_c_dep, threads_dep, dl_dep],
   c_args: ['-DSQLITE_THREADSAFE=1'],
 )
+
+test('dvs_agent_basic', test_exe)

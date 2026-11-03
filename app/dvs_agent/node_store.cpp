@@ -1,13 +1,17 @@
 #include "node_store.h"
 
+#include "sha256.h"
+
 #include <json-c/json.h>
 #include <sqlite3.h>
 
+#include <fcntl.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <string>
+#include <unistd.h>
 
 const char* NodeStore::SCOPES[6] = {"role", "input", "output", "network", "registration", "sip"};
 
@@ -105,7 +109,8 @@ void NodeStore::load() {
         json_object_object_add(seed, "configStates", cs);
         json_object_object_add(seed, "configRevision", json_object_new_object());
         json_object_object_add(seed, "pendingRole", json_object_new_null());
-        json_object_object_add(seed, "password_hash", json_object_new_string(hash("admin123").c_str()));
+        json_object_object_add(seed, "password_hash", json_object_new_string(make_hash("admin123").c_str()));
+        json_object_object_add(seed, "password_change_required", json_object_new_boolean(1));
         set_kv(db_, "node", json_object_to_json_string(seed));
         json_object_put(seed);
         n = get_kv(db_, "node");
@@ -348,12 +353,58 @@ json_object* NodeStore::config_revision() {
     return out;
 }
 
-std::string NodeStore::hash(const std::string& p) {
-    // simple sha256 not available without openssl; use std::hash (not crypto) for prototype
-    std::hash<std::string> h;
-    char buf[64];
-    snprintf(buf, sizeof(buf), "%zu", h("dvs-salt:" + p));
-    return std::string(buf);
+static const int kPbkdf2Iter = 100000;
+static const int kSaltBytes = 16;
+
+std::string NodeStore::make_hash(const std::string& p) {
+    uint8_t salt[kSaltBytes];
+    ssize_t total = 0;
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd >= 0) {
+        ssize_t n = 0;
+        while (total < kSaltBytes && (n = read(fd, salt + total, kSaltBytes - total)) > 0)
+            total += n;
+        close(fd);
+    }
+    if (fd < 0 || total != kSaltBytes) {
+        /* deterministic fallback (still salted) if urandom unavailable */
+        for (int i = 0; i < kSaltBytes; i++) salt[i] = (uint8_t)(i * 37 + 11);
+    }
+    uint8_t out[32];
+    dvs::pbkdf2_hmac_sha256((const uint8_t*)p.data(), p.size(), salt, kSaltBytes,
+                            kPbkdf2Iter, out);
+    return "pbkdf2$" + dvs::to_hex(salt, kSaltBytes) + "$" +
+           std::to_string(kPbkdf2Iter) + "$" + dvs::to_hex(out, 32);
+}
+
+bool NodeStore::check_hash(const std::string& stored, const std::string& p) {
+    /* Legacy dev DBs used a bare std::hash. Migrate on successful verify. */
+    if (stored.empty() || stored.rfind("pbkdf2$", 0) != 0) {
+        std::hash<std::string> h;
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%zu", h("dvs-salt:" + p));
+        return stored == std::string(buf);
+    }
+    size_t p1 = stored.find('$', 7);          // after "pbkdf2$"
+    size_t p2 = stored.find('$', p1 + 1);
+    if (p1 == std::string::npos || p2 == std::string::npos) return false;
+    std::string salt_hex = stored.substr(7, p1 - 7);
+    std::string iter_str = stored.substr(p1 + 1, p2 - p1 - 1);
+    std::string hash_hex = stored.substr(p2 + 1);
+
+    uint8_t salt[64];
+    size_t salt_len = 0;
+    if (!dvs::from_hex(salt_hex.c_str(), salt, sizeof(salt), &salt_len)) return false;
+    uint32_t iter = (uint32_t)strtoul(iter_str.c_str(), nullptr, 10);
+    uint8_t exp[32];
+    size_t exp_len = 0;
+    if (!dvs::from_hex(hash_hex.c_str(), exp, sizeof(exp), &exp_len)) return false;
+    if (exp_len != 32) return false;
+
+    uint8_t out[32];
+    dvs::pbkdf2_hmac_sha256((const uint8_t*)p.data(), p.size(), salt, salt_len,
+                            iter, out);
+    return memcmp(out, exp, 32) == 0;
 }
 
 bool NodeStore::verify_password(const std::string& user, const std::string& pass) {
@@ -362,14 +413,64 @@ bool NodeStore::verify_password(const std::string& user, const std::string& pass
     json_object* ph = nullptr;
     json_object_object_get_ex(node_, "password_hash", &ph);
     std::string stored = ph ? json_object_get_string(ph) : "";
-    return stored == hash(pass);
+    bool ok = check_hash(stored, pass);
+    /* Migrate legacy hash to pbkdf2 on first successful login. */
+    if (ok && stored.rfind("pbkdf2$", 0) != 0) {
+        json_object_object_del(node_, "password_hash");
+        json_object_object_add(node_, "password_hash",
+                               json_object_new_string(make_hash(pass).c_str()));
+        save_node();
+    }
+    return ok;
 }
 
 void NodeStore::set_password(const std::string& pass) {
     std::lock_guard<std::mutex> lk(mtx_);
     json_object_object_del(node_, "password_hash");
-    json_object_object_add(node_, "password_hash", json_object_new_string(hash(pass).c_str()));
+    json_object_object_add(node_, "password_hash",
+                           json_object_new_string(make_hash(pass).c_str()));
+    json_object_object_del(node_, "password_change_required");
+    json_object_object_add(node_, "password_change_required",
+                           json_object_new_boolean(0));
     save_node();
+}
+
+void NodeStore::set_node_id(const std::string& id) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    json_object_object_del(node_, "id");
+    json_object_object_add(node_, "id", json_object_new_string(id.c_str()));
+    save_node();
+}
+
+bool NodeStore::password_change_required() const {
+    std::lock_guard<std::mutex> lk(mtx_);
+    json_object* v = nullptr;
+    if (json_object_object_get_ex(node_, "password_change_required", &v) && v)
+        return json_object_get_boolean(v) ? true : false;
+    return false;
+}
+
+void NodeStore::clear_password_change_required() {
+    std::lock_guard<std::mutex> lk(mtx_);
+    json_object_object_del(node_, "password_change_required");
+    json_object_object_add(node_, "password_change_required",
+                           json_object_new_boolean(0));
+    save_node();
+}
+
+bool NodeStore::apply_pending_role() {
+    std::lock_guard<std::mutex> lk(mtx_);
+    json_object* pr = nullptr;
+    if (!json_object_object_get_ex(node_, "pendingRole", &pr) || pr == nullptr ||
+        json_object_get_type(pr) == json_type_null) {
+        return false;
+    }
+    json_object_object_del(node_, "role");
+    json_object_object_add(node_, "role", json_object_get(pr));
+    json_object_object_del(node_, "pendingRole");
+    json_object_object_add(node_, "pendingRole", json_object_new_null());
+    save_node();
+    return true;
 }
 
 void NodeStore::save_config() {

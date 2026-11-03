@@ -27,15 +27,27 @@ public:
     bool verify_password(const std::string& user, const std::string& pass);
     void set_password(const std::string& pass);
 
+    void set_node_id(const std::string& id);
+    bool password_change_required() const;
+    void clear_password_change_required();
+
+    /* If pendingRole is set, promote it to role and clear pendingRole.
+     * Returns true if a role change was applied (used by maintenance reboot). */
+    bool apply_pending_role();
+
     static const char* SCOPES[6];
 
 private:
     void ensure_schema();
     void load();
     void save_config();
-    std::string hash(const std::string& p);
+    /* PBKDF2-HMAC-SHA256(password) with a random per-user salt, stored as
+     * "pbkdf2$<salthex>$<iter>$<hashhex>". Backward-compatible with the legacy
+     * std::hash format used by early dev DBs. */
+    std::string make_hash(const std::string& p);
+    bool check_hash(const std::string& stored, const std::string& p);
     sqlite3* db_;
-    std::mutex mtx_;
+    mutable std::mutex mtx_;
     json_object* node_;
     json_object* config_;
 };

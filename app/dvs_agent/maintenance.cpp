@@ -1,29 +1,183 @@
 #include "maintenance.h"
-#include <json-c/json.h>
-#include <unistd.h>
-#include <cstdio>
-#include <string>
 
-Maintenance::Maintenance(void* store, void* media_ipc) : store_(store), media_ipc_(media_ipc) {}
+#include "node_store.h"
+#include "media_ipc.h"
+#include "sha256.h"
+
+#include <json-c/json.h>
+
+#include <cctype>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <string>
+#include <unistd.h>
+
+static std::string str_of(json_object* o, const char* key, const std::string& def = "") {
+    json_object* v = nullptr;
+    if (o && json_object_object_get_ex(o, key, &v) && v) return json_object_get_string(v);
+    return def;
+}
+
+static std::string slurp_file(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return "";
+    return std::string((std::istreambuf_iterator<char>(f)),
+                       std::istreambuf_iterator<char>());
+}
+
+static std::string file_sha256(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return "";
+    std::string data((std::istreambuf_iterator<char>(f)),
+                     std::istreambuf_iterator<char>());
+    uint8_t out[32];
+    dvs::sha256((const uint8_t*)data.data(), data.size(), out);
+    return dvs::to_hex(out, 32);
+}
+
+static std::string derive_version(const std::string& filename) {
+    /* Look for a d.d.d token in the filename; else suffix "-upgraded". */
+    size_t i = 0;
+    while (i < filename.size()) {
+        if (isdigit((unsigned char)filename[i])) {
+            size_t j = i;
+            int dots = 0;
+            while (j < filename.size() &&
+                   (isdigit((unsigned char)filename[j]) || filename[j] == '.')) {
+                if (filename[j] == '.') dots++;
+                j++;
+            }
+            if (dots >= 2) return filename.substr(i, j - i);
+            i = j;
+        } else {
+            i++;
+        }
+    }
+    return "upgraded";
+}
+
+Maintenance::Maintenance(NodeStore* store, MediaIpcClient* media)
+    : store_(store), media_(media) {}
 
 json_object* Maintenance::reboot() {
+    /* Apply any pending role so it takes effect after restart. */
+    store_->apply_pending_role();
+
     json_object* o = json_object_new_object();
     json_object_object_add(o, "ok", json_object_new_boolean(1));
-    json_object_object_add(o, "status", json_object_new_string("rebooted"));
+    json_object_object_add(o, "status", json_object_new_string("rebooting"));
+
+    /* Only perform a real reboot on hardware when explicitly allowed, to keep
+     * CI/dev boxes safe. The status is reported regardless. */
+    if (std::getenv("DVS_ALLOW_REBOOT")) {
+        json_object* patch = json_object_new_object();
+        json_object_object_add(patch, "lifecycle", json_object_new_string("rebooting"));
+        store_->update_node(patch);
+        json_object_put(patch);
+        sync();
+        system("reboot");
+    }
     return o;
 }
 
 json_object* Maintenance::factory_reset() {
+    json_object* node = store_->node();
+    std::string network = str_of(node, "network");
+    std::string register_state = str_of(node, "registerState");
+    std::string register_mode = str_of(node, "registerMode");
+    std::string node_id = str_of(node, "id");
+
+    /* Preserve network + registration; reset role/input/output/sip/password. */
+    json_object* patch = json_object_new_object();
+    json_object_object_add(patch, "role", json_object_new_string("output"));
+    json_object_object_add(patch, "pendingRole", json_object_new_null());
+    json_object_object_add(patch, "input", json_object_new_object());
+    json_object_object_add(patch, "output", json_object_new_null());
+    json_object* sip = json_object_new_object();
+    json_object_object_add(sip, "enabled", json_object_new_boolean(0));
+    json_object_object_add(sip, "state", json_object_new_string("disabled"));
+    json_object_object_add(patch, "sip", sip);
+    json_object_object_add(patch, "network", json_object_new_string(network.c_str()));
+    json_object_object_add(patch, "registerState", json_object_new_string(register_state.c_str()));
+    json_object_object_add(patch, "registerMode", json_object_new_string(register_mode.c_str()));
+    json_object_object_add(patch, "id", json_object_new_string(node_id.c_str()));
+    /* reset password to default and force first-login change */
+    store_->set_password("admin123");
+    json_object_object_add(patch, "password_change_required", json_object_new_boolean(1));
+    store_->update_node(patch);
+    json_object_put(patch);
+
     json_object* o = json_object_new_object();
     json_object_object_add(o, "ok", json_object_new_boolean(1));
     json_object_object_add(o, "status", json_object_new_string("factory_reset"));
+    json_object_object_add(o, "preserved", json_object_new_string("network,registration"));
     return o;
 }
 
-json_object* Maintenance::upgrade(const std::string& filename, const std::string& /*sha*/) {
+json_object* Maintenance::upgrade(const std::string& filename,
+                                  const std::string& sha256_expected) {
     json_object* o = json_object_new_object();
+    if (filename.empty()) {
+        json_object_object_add(o, "ok", json_object_new_boolean(0));
+        json_object_object_add(o, "status", json_object_new_string("failed"));
+        json_object_object_add(o, "reason", json_object_new_string("missing filename"));
+        return o;
+    }
+    std::string actual = file_sha256(filename);
+    if (actual.empty()) {
+        json_object_object_add(o, "ok", json_object_new_boolean(0));
+        json_object_object_add(o, "status", json_object_new_string("failed"));
+        json_object_object_add(o, "reason", json_object_new_string("cannot read file"));
+        return o;
+    }
+    /* case-insensitive compare */
+    bool match = (actual.size() == sha256_expected.size());
+    if (match) {
+        for (size_t i = 0; i < actual.size(); i++) {
+            char a = actual[i], b = sha256_expected[i];
+            if (a >= 'a' && a <= 'f') a = (char)(a - 'a' + 'A');
+            if (b >= 'a' && b <= 'f') b = (char)(b - 'a' + 'A');
+            if (a != b) { match = false; break; }
+        }
+    }
+    if (!match) {
+        /* A/B: keep the existing version, report failure (retryable). */
+        json_object_object_add(o, "ok", json_object_new_boolean(0));
+        json_object_object_add(o, "status", json_object_new_string("failed"));
+        json_object_object_add(o, "reason", json_object_new_string("sha256 mismatch"));
+        json_object_object_add(o, "expected", json_object_new_string(sha256_expected.c_str()));
+        json_object_object_add(o, "actual", json_object_new_string(actual.c_str()));
+        return o;
+    }
+
+    /* Verified: stage the package (A/B: previous version path is untouched) and
+     * bump the reported firmware version; active switch is a platform concern. */
+    std::string ver = derive_version(filename);
+    std::string staged = std::string("/var/lib/dvs_agent/upgrade/") + ver + "/fw.bin";
+    std::string content = slurp_file(filename);
+    /* Best-effort staging write; failures still keep the old version. */
+    {
+        size_t pos = staged.find_last_of('/');
+        if (pos != std::string::npos) {
+            std::string dir = staged.substr(0, pos);
+            std::string cmd = "mkdir -p " + dir;
+            system(cmd.c_str());
+        }
+        std::ofstream out(staged, std::ios::binary);
+        if (out) out.write(content.data(), (std::streamsize)content.size());
+    }
+
+    json_object* patch = json_object_new_object();
+    json_object_object_add(patch, "fw", json_object_new_string(ver.c_str()));
+    store_->update_node(patch);
+    json_object_put(patch);
+
     json_object_object_add(o, "ok", json_object_new_boolean(1));
     json_object_object_add(o, "status", json_object_new_string("applied"));
     json_object_object_add(o, "filename", json_object_new_string(filename.c_str()));
+    json_object_object_add(o, "version", json_object_new_string(ver.c_str()));
+    json_object_object_add(o, "sha256", json_object_new_string(actual.c_str()));
     return o;
 }

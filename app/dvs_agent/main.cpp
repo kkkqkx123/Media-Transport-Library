@@ -5,6 +5,7 @@
 #include "media_ipc.h"
 #include "http_server.h"
 #include "maintenance.h"
+#include "registration.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -15,12 +16,35 @@
 #include <chrono>
 #include <fstream>
 #include <sstream>
+#include <map>
+#include <mutex>
 #include <sys/stat.h>
 
 static NodeStore* g_store = nullptr;
 static MediaIpcClient* g_media = nullptr;
 static Maintenance* g_maint = nullptr;
+static Registration* g_reg = nullptr;
 static std::string g_web_root;
+
+/* Per-source login rate limiter: 5 attempts / 60s window, then locked out. */
+struct LoginLimiter {
+    std::mutex mu;
+    std::map<std::string, std::pair<int, time_t>> attempts;  // key -> (count, windowStart)
+    bool allow(const std::string& key) {
+        std::lock_guard<std::mutex> lk(mu);
+        time_t now = time(nullptr);
+        auto& e = attempts[key];
+        if (now - e.second > 60) { e.first = 0; e.second = now; }
+        if (e.first >= 5) return false;
+        e.first++;
+        return true;
+    }
+    void clear(const std::string& key) {
+        std::lock_guard<std::mutex> lk(mu);
+        attempts.erase(key);
+    }
+};
+static LoginLimiter g_limiter;
 
 static std::string read_file(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
@@ -100,6 +124,7 @@ int main(int argc, char** argv) {
     g_store = new NodeStore(db_path);
     g_media = new MediaIpcClient(media_sock);
     g_maint = new Maintenance(g_store, g_media);
+    g_reg = new Registration(g_store, g_media, platform_url, 3000);
 
     // sync configStates into node at startup
     json_object* cs = g_store->all_states();
@@ -117,15 +142,43 @@ int main(int argc, char** argv) {
             std::string u = get_str(body, "username");
             std::string p = get_str(body, "password");
             if (body) json_object_put(body);
+            if (!g_limiter.allow(u)) {
+                send_json(res, envelope_fail("TOO_MANY_REQUESTS", 429, "登录尝试过多,请稍后再试"));
+                return;
+            }
             if (g_store->verify_password(u, p)) {
+                g_limiter.clear(u);
                 json_object* d = json_object_new_object();
                 json_object_object_add(d, "session", json_object_new_string("sess-1"));
                 json_object_object_add(d, "expiresIn", json_object_new_int(3600));
                 res.headers["Set-Cookie"] = "session=sess-1; Path=/; HttpOnly";
+                json_object* pc = json_object_new_object();
+                json_object_object_add(pc, "passwordChangeRequired",
+                                      json_object_new_boolean(g_store->password_change_required() ? 1 : 0));
+                json_object_object_add(d, "requirement", pc);
                 send_json(res, envelope_ok(d, "登录成功"));
             } else {
                 send_json(res, envelope_fail("UNAUTHORIZED", 401, "账号或密码错误"));
             }
+            return;
+        }
+
+        // password change
+        if (req.method == "POST" && req.path == "/api/v1/node/password") {
+            json_object* body = json_tokener_parse(req.body.c_str());
+            std::string oldp = get_str(body, "oldPassword");
+            std::string newp = get_str(body, "newPassword");
+            if (body) json_object_put(body);
+            if (!g_store->verify_password("admin", oldp)) {
+                send_json(res, envelope_fail("UNAUTHORIZED", 401, "原密码错误"));
+                return;
+            }
+            if (newp.size() < 6) {
+                send_json(res, envelope_fail("INVALID_ARGUMENT", 400, "新密码至少 6 位"));
+                return;
+            }
+            g_store->set_password(newp);
+            send_json(res, envelope_ok(json_object_new_object(), "密码已修改"));
             return;
         }
 
@@ -207,6 +260,21 @@ int main(int argc, char** argv) {
                     }
                     g_store->update_node(patch);
                     json_object_put(patch);
+                    // IPC bridge: forward role/input/output changes to the media
+                    // engine. Best-effort; failures surface via /node/media/* and
+                    // never block config persistence.
+                    if (scope == "input" || scope == "output" || scope == "role") {
+                        json_object* fwd = json_object_new_object();
+                        if (scope == "input") {
+                            json_object_object_add(fwd, "whitelist", json_object_get(val));
+                            g_media->request("set_sources", fwd);
+                        } else {
+                            json_object_object_add(fwd, "scope", json_object_new_string(scope.c_str()));
+                            json_object_object_add(fwd, "value", json_object_get(val));
+                            g_media->request("configure", fwd);
+                        }
+                        json_object_put(fwd);
+                    }
                     json_object* cfg = g_store->get_config(scope, node_id);
                     if (body) json_object_put(body);
                     send_json(res, envelope_ok(cfg, "配置已提交"));
@@ -246,7 +314,6 @@ int main(int argc, char** argv) {
                 if (!json_object_object_get_ex(body, "patch", &patch)) patch = body;
             }
             // update lastHeartbeat
-            json_object* n = g_store->node();
             json_object* hp = json_object_new_object();
             json_object_object_add(hp, "lastHeartbeat", json_object_new_string("now"));
             if (patch) {
@@ -423,16 +490,9 @@ int main(int argc, char** argv) {
     printf("dvs-agent listening on 0.0.0.0:%d\n", port);
     fflush(stdout);
 
-    // heartbeat thread
-    std::thread hb([&]() {
-        while (true) {
-            std::this_thread::sleep_for(std::chrono::seconds(3));
-            if (!platform_url.empty()) {
-                // minimal: skip actual HTTP client for brevity
-            }
-        }
-    });
-    hb.detach();
+    // registration + heartbeat loop (no-op / local-autonomous when platform URL
+    // is empty; never disturbs media output on transport failure)
+    g_reg->start();
 
     while (true) std::this_thread::sleep_for(std::chrono::seconds(3600));
     return 0;

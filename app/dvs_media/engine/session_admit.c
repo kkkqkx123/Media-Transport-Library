@@ -36,6 +36,24 @@ static void make_key(char* out, const char* ip, uint16_t port) {
     snprintf(out, DVS_SESSION_KEY_LEN, "%s:%u", ip, (unsigned)port);
 }
 
+static int valid_ip4_str(const char* s) {
+    if (!s || !s[0]) return 0;
+    int parts = 0;
+    const char* p = s;
+    while (1) {
+        if (*p < '0' || *p > '9') return 0;
+        int v = 0, digits = 0;
+        while (*p >= '0' && *p <= '9') { v = v * 10 + (*p - '0'); digits++; p++; if (digits > 3) return 0; }
+        if (v > 255) return 0;
+        parts++;
+        if (*p == '\0') break;
+        if (*p != '.') return 0;
+        p++;
+        if (*p == '\0') return 0;
+    }
+    return parts == 4;
+}
+
 void dvs_session_whitelist_set(const char* csv) {
     ensure_init();
     g_wl_n = 0;
@@ -50,12 +68,25 @@ void dvs_session_whitelist_set(const char* csv) {
          tok = strtok_r(NULL, ",", &save)) {
         while (*tok == ' ') tok++; /* trim leading spaces */
         if (!*tok) continue;
+        char* end = tok + strlen(tok);
+        while (end > tok && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r')) end--;
+        *end = '\0';
+        if (!*tok) continue;
         char* colon = strchr(tok, ':');
         uint16_t p = 0;
         if (colon) {
+            if (strchr(colon + 1, ':')) continue; /* skip malformed */
             *colon = '\0';
-            p = (uint16_t)atoi(colon + 1);
+            const char* ps = colon + 1;
+            if (!ps[0]) continue;
+            int ok = 1;
+            for (const char* q = ps; *q; q++) if (*q < '0' || *q > '9') ok = 0;
+            if (!ok) continue;
+            long v = atol(ps);
+            if (v < 1 || v > 65535) continue;
+            p = (uint16_t)v;
         }
+        if (!valid_ip4_str(tok)) continue; /* WL-1: drop malformed entries */
         if (g_wl_n < DVS_MAX_SESSIONS) {
             snprintf(g_wl_ip[g_wl_n], sizeof(g_wl_ip[g_wl_n]), "%s", tok);
             g_wl_port[g_wl_n] = p;

@@ -112,17 +112,29 @@ static void probe_drm(dvs_capability* cap) {
 }
 
 static void probe_input(dvs_capability* cap) {
-    int found = 0;
+    /* CAP-1: enumerate each present /dev/videoN as its own input port instead
+     * of collapsing to a single HDMI1. IDs stay stable (HDMI1..HDMI8) so the
+     * agent capability check keeps working when only one device exists. */
+    char* names[8];
+    int n = 0;
     for (int i = 0; i < 8; i++) {
         char path[32];
         snprintf(path, sizeof(path), "/dev/video%d", i);
-        if (access(path, F_OK) == 0) { found = 1; break; }
+        if (access(path, F_OK) != 0) continue;
+        char id[16];
+        snprintf(id, sizeof(id), "HDMI%d", n + 1);
+        names[n] = strdup(id);
+        if (!names[n]) break;
+        n++;
     }
-    if (!found) return;
-    cap->input_ports = calloc(1, sizeof(char*));
-    if (!cap->input_ports) return;
-    cap->input_ports[0] = strdup("HDMI1");
-    cap->input_port_count = cap->input_ports[0] ? 1 : 0;
+    if (n == 0) return;
+    cap->input_ports = calloc((size_t)n, sizeof(char*));
+    if (!cap->input_ports) {
+        for (int i = 0; i < n; i++) free(names[i]);
+        return;
+    }
+    for (int i = 0; i < n; i++) cap->input_ports[i] = names[i];
+    cap->input_port_count = n;
 }
 
 int dvs_capability_probe(dvs_capability* cap) {

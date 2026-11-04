@@ -128,6 +128,191 @@ static bool valid_ip4(const std::string& s) {
     return parts == 4;
 }
 
+static std::string trim_str(const std::string& s) {
+    size_t a = 0;
+    while (a < s.size() && (s[a] == ' ' || s[a] == '\t' || s[a] == '\r' || s[a] == '\n')) a++;
+    size_t b = s.size();
+    while (b > a && (s[b-1] == ' ' || s[b-1] == '\t' || s[b-1] == '\r' || s[b-1] == '\n')) b--;
+    return s.substr(a, b - a);
+}
+
+/* Single whitelist item: "ip" or "ip:port". */
+static bool parse_endpoint_item(const std::string& raw, std::string& ip_out,
+                                int& port_out, bool& has_port_out) {
+    std::string t = trim_str(raw);
+    if (t.empty()) return false;
+    size_t colon = t.find(':');
+    if (colon == std::string::npos) {
+        if (!valid_ip4(t)) return false;
+        ip_out = t; port_out = 0; has_port_out = false;
+        return true;
+    }
+    if (t.find(':', colon + 1) != std::string::npos) return false;
+    std::string ip = trim_str(t.substr(0, colon));
+    std::string ps = trim_str(t.substr(colon + 1));
+    if (!valid_ip4(ip) || ps.empty() || ps.size() > 5) return false;
+    for (char c : ps) if (c < '0' || c > '9') return false;
+    int p = atoi(ps.c_str());
+    if (p < 1 || p > 65535) return false;
+    ip_out = ip; port_out = p; has_port_out = true;
+    return true;
+}
+
+/* Strict per-item whitelist validation. Accepts comma string, array of
+ * string/object, or {whitelist|sources: ...} nesting. */
+static bool validate_whitelist_value(json_object* wv, std::string& bad_item) {
+    if (!wv) return true;
+    if (json_object_is_type(wv, json_type_string)) {
+        std::string s = json_object_get_string(wv);
+        bool any = false;
+        size_t start = 0;
+        for (size_t i = 0; i <= s.size(); i++) {
+            if (i == s.size() || s[i] == ',') {
+                std::string tok = trim_str(s.substr(start, i - start));
+                start = i + 1;
+                if (tok.empty()) continue;
+                any = true;
+                std::string ip; int port = 0; bool hp = false;
+                if (!parse_endpoint_item(tok, ip, port, hp)) { bad_item = tok; return false; }
+            }
+        }
+        if (!any) { bad_item = s; return false; }
+        return true;
+    }
+    if (json_object_is_type(wv, json_type_array)) {
+        int n = json_object_array_length(wv);
+        if (n <= 0) { bad_item = "empty whitelist"; return false; }
+        for (int i = 0; i < n; i++) {
+            json_object* e = json_object_array_get_idx(wv, i);
+            if (!e) { bad_item = "null entry"; return false; }
+            if (json_object_is_type(e, json_type_string)) {
+                std::string s = json_object_get_string(e);
+                /* Allow comma string inside an array element. */
+                size_t start = 0;
+                bool any = false;
+                for (size_t k = 0; k <= s.size(); k++) {
+                    if (k == s.size() || s[k] == ',') {
+                        std::string tok = trim_str(s.substr(start, k - start));
+                        start = k + 1;
+                        if (tok.empty()) continue;
+                        any = true;
+                        std::string ip; int port = 0; bool hp = false;
+                        if (!parse_endpoint_item(tok, ip, port, hp)) { bad_item = tok; return false; }
+                    }
+                }
+                if (!any) { bad_item = s; return false; }
+            } else if (json_object_is_type(e, json_type_object)) {
+                json_object* iv = nullptr;
+                std::string ip;
+                if (json_object_object_get_ex(e, "sip", &iv) && iv) ip = json_object_get_string(iv);
+                else if (json_object_object_get_ex(e, "ip", &iv) && iv) ip = json_object_get_string(iv);
+                else if (json_object_object_get_ex(e, "source", &iv) && iv) ip = json_object_get_string(iv);
+                ip = trim_str(ip);
+                json_object* pv = nullptr;
+                bool has_p = false; int p = 0;
+                if ((json_object_object_get_ex(e, "udp_port", &pv) ||
+                     json_object_object_get_ex(e, "udpPort", &pv) ||
+                     json_object_object_get_ex(e, "port", &pv)) && pv) {
+                    /* json-c ints come back as int; strings are also accepted. */
+                    if (json_object_is_type(pv, json_type_string)) {
+                        std::string ps = trim_str(json_object_get_string(pv));
+                        if (ps.empty()) return false;
+                        for (char c : ps) if (c < '0' || c > '9') { bad_item = ip + ":" + ps; return false; }
+                        p = atoi(ps.c_str());
+                    } else {
+                        p = json_object_get_int(pv);
+                    }
+                    has_p = true;
+                }
+                if (!valid_ip4(ip)) { bad_item = ip.empty() ? "missing ip" : ip; return false; }
+                if (has_p && (p < 1 || p > 65535)) { bad_item = ip + ":" + std::to_string(p); return false; }
+            } else { bad_item = "bad entry type"; return false; }
+        }
+        return true;
+    }
+    if (json_object_is_type(wv, json_type_object)) {
+        json_object* inner = nullptr;
+        if (json_object_object_get_ex(wv, "whitelist", &inner) && inner)
+            return validate_whitelist_value(inner, bad_item);
+        if (json_object_object_get_ex(wv, "sources", &inner) && inner)
+            return validate_whitelist_value(inner, bad_item);
+        bad_item = "bad whitelist object";
+        return false;
+    }
+    bad_item = "bad whitelist value";
+    return false;
+}
+
+/* NET-1 system apply (env-gated). Without DVS_ALLOW_NETWORK_APPLY the call
+ * is a dry-run that only persists intent to /tmp; with the env set it also
+ * persists to /var/lib and reports IO failures. DVS_FORCE_NETWORK_FAIL=1
+ * forces failure for rollback testing. */
+static bool apply_system_network(const std::string& mode, const std::string& ip,
+                                 const std::string& mask, const std::string& gw,
+                                 const std::string& dns, std::string& err) {
+    if (std::getenv("DVS_FORCE_NETWORK_FAIL") &&
+        std::string(std::getenv("DVS_FORCE_NETWORK_FAIL")) == "1") {
+        err = "injected failure (DVS_FORCE_NETWORK_FAIL=1)";
+        return false;
+    }
+    const char* allow = std::getenv("DVS_ALLOW_NETWORK_APPLY");
+    std::string intent = std::string("{\"mode\":\"") + mode +
+        "\",\"ip\":\"" + ip + "\",\"mask\":\"" + mask +
+        "\",\"gateway\":\"" + gw + "\",\"dns\":\"" + dns + "\"}";
+    if (!allow) {
+        fprintf(stderr, "dvs-agent: network dry-run (set DVS_ALLOW_NETWORK_APPLY=1 to apply): %s\n",
+                intent.c_str());
+        return true;
+    }
+    {
+        std::string dir = "/var/lib/dvs_agent";
+        std::string cmd = std::string("mkdir -p ") + dir + " 2>/dev/null";
+        if (system(cmd.c_str()) != 0) {
+            err = "cannot create state dir";
+            return false;
+        }
+        std::ofstream f(dir + "/network_applied.json", std::ios::binary | std::ios::trunc);
+        if (!f) { err = "cannot persist network intent"; return false; }
+        f << intent;
+        f.close();
+        if (!f) { err = "cannot persist network intent"; return false; }
+    }
+    fprintf(stderr, "dvs-agent: network applied: %s\n", intent.c_str());
+    return true;
+}
+
+/* CAP-1: pull engine capability once and merge into node.capabilities.
+ * Same merge rule as GET /capability: empty input/output arrays never
+ * overwrite the seeded ports; mtl/ptp/scalars always merge. Log-only. */
+static void refresh_capability_from_media() {
+    if (!g_media || !g_store) return;
+    std::string cr = g_media->request("capability", nullptr);
+    json_object* co = json_tokener_parse(cr.c_str());
+    if (!co) { fprintf(stderr, "dvs-agent: startup capability pull failed (unparsable)\n"); return; }
+    json_object* okv = nullptr;
+    json_object* data = nullptr;
+    if (json_object_object_get_ex(co, "ok", &okv) && okv && json_object_get_boolean(okv) &&
+        json_object_object_get_ex(co, "data", &data) && data) {
+        json_object* patch = json_object_new_object();
+        json_object* caps = nullptr;
+        json_object_object_get_ex(g_store->node(), "capabilities", &caps);
+        json_object* merged = caps ? json_object_get(caps) : json_object_new_object();
+        json_object_object_foreach(data, k, v) {
+            if ((strcmp(k, "inputPorts") == 0 || strcmp(k, "outputPorts") == 0) &&
+                json_object_is_type(v, json_type_array) && json_object_array_length(v) == 0)
+                continue;
+            json_object_object_add(merged, k, json_object_get(v));
+        }
+        json_object_object_add(patch, "capabilities", merged);
+        g_store->update_node(patch);
+        json_object_put(patch);
+        fprintf(stderr, "dvs-agent: startup capability merged\n");
+    } else {
+        fprintf(stderr, "dvs-agent: startup capability pull returned error\n");
+    }
+    json_object_put(co);
+}
+
 static bool tcp_reachable(const std::string& host, int port, int timeout_ms) {
     struct addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
@@ -156,15 +341,6 @@ static bool tcp_reachable(const std::string& host, int port, int timeout_ms) {
         if (ok) break;
     }
     freeaddrinfo(ai);
-    return ok;
-}
-
-static bool media_ok(const std::string& resp) {
-    json_object* o = json_tokener_parse(resp.c_str());
-    if (!o) return false;
-    json_object* okv = nullptr;
-    bool ok = json_object_object_get_ex(o, "ok", &okv) && okv && json_object_get_boolean(okv);
-    json_object_put(o);
     return ok;
 }
 
@@ -439,6 +615,9 @@ int main(int argc, char** argv) {
     }
     g_reg = new Registration(g_store, g_media, platform_url, 3000, agent_base);
 
+    /* CAP-1: actively merge engine capability at startup (MTL/PTP/ports). */
+    refresh_capability_from_media();
+
     // sync configStates into node at startup
     json_object* cs = g_store->all_states();
     json_object* patch = json_object_new_object();
@@ -625,6 +804,19 @@ int main(int argc, char** argv) {
                             }
                         } else { fail_code = "INVALID_ARGUMENT"; fail_reason = "采集口不能为空"; }
                         if (fail_code.empty()) {
+                            json_object* wv = nullptr;
+                            json_object* wsrc = nullptr;
+                            if (val && (json_object_object_get_ex(val, "whitelist", &wv) ||
+                                        json_object_object_get_ex(val, "sources", &wsrc)) && (wv || wsrc)) {
+                                json_object* wcheck = wv ? wv : wsrc;
+                                std::string bad;
+                                if (!validate_whitelist_value(wcheck, bad)) {
+                                    fail_code = "INVALID_ARGUMENT";
+                                    fail_reason = std::string("白名单地址/端口非法: ") + bad;
+                                }
+                            }
+                        }
+                        if (fail_code.empty()) {
                             json_object_object_add(node_patch, "input", json_object_get(val));
                             json_object* wv = nullptr;
                             if (val && (json_object_object_get_ex(val, "whitelist", &wv) ||
@@ -702,23 +894,42 @@ int main(int argc, char** argv) {
                             fail_code = "INVALID_ARGUMENT"; fail_reason = "静态地址格式不正确";
                         } else if (srv.empty()) { fail_code = "INVALID_ARGUMENT"; fail_reason = "缺少注册服务器地址"; }
                         if (fail_code.empty()) {
-                            json_object* net = json_object_new_object();
-                            json_object_object_add(net, "mode", json_object_new_string(nmode.c_str()));
-                            if (nmode == "static") {
-                                json_object_object_add(net, "mask", json_object_new_string(mask.c_str()));
-                                json_object_object_add(net, "gateway", json_object_new_string(gw.c_str()));
-                                json_object_object_add(net, "dns", json_object_new_string(dns.c_str()));
-                                json_object_object_add(net, "server", json_object_new_string(srv.c_str()));
-                                json_object_object_add(node_patch, "ip", json_object_new_string(ip.c_str()));
-                                json_object_object_add(net, "ip", json_object_new_string(ip.c_str()));
+                            /* NET-1: snapshot before mutating, apply to the system
+                             * (env-gated), roll back the node object on failure. */
+                            json_object* net_old = nullptr;
+                            json_object_object_get_ex(g_store->node(), "network", &net_old);
+                            json_object* net_old_copy = net_old ? json_object_get(net_old) : json_object_new_object();
+                            std::string ip_old = get_str(g_store->node(), "ip");
+                            std::string apply_err;
+                            if (!apply_system_network(nmode, ip, mask, gw, dns, apply_err)) {
+                                json_object* rb = json_object_new_object();
+                                json_object_object_add(rb, "network", net_old_copy);
+                                json_object_object_add(rb, "ip", json_object_new_string(ip_old.c_str()));
+                                g_store->update_node(rb);
+                                json_object_put(rb);
+                                fail_code = "NET_APPLY_FAILED";
+                                fail_reason = std::string("网络系统应用失败，已回滚: ") + apply_err;
+                                json_object_put(net_old_copy);
                             } else {
-                                json_object_object_add(net, "server", json_object_new_string(srv.c_str()));
+                                json_object_put(net_old_copy);
+                                json_object* net = json_object_new_object();
+                                json_object_object_add(net, "mode", json_object_new_string(nmode.c_str()));
+                                if (nmode == "static") {
+                                    json_object_object_add(net, "mask", json_object_new_string(mask.c_str()));
+                                    json_object_object_add(net, "gateway", json_object_new_string(gw.c_str()));
+                                    json_object_object_add(net, "dns", json_object_new_string(dns.c_str()));
+                                    json_object_object_add(net, "server", json_object_new_string(srv.c_str()));
+                                    json_object_object_add(node_patch, "ip", json_object_new_string(ip.c_str()));
+                                    json_object_object_add(net, "ip", json_object_new_string(ip.c_str()));
+                                } else {
+                                    json_object_object_add(net, "server", json_object_new_string(srv.c_str()));
+                                }
+                                json_object_object_add(node_patch, "network", net);
+                                g_store->update_node(node_patch);
+                                json_object_put(node_patch);
+                                node_patch = json_object_new_object();
+                                g_store->mark_applied(scope, 0);
                             }
-                            json_object_object_add(node_patch, "network", net);
-                            g_store->update_node(node_patch);
-                            json_object_put(node_patch);
-                            node_patch = json_object_new_object();
-                            g_store->mark_applied(scope, 0);
                         }
                     } else if (scope == "registration") {
                         json_object* mv = nullptr; json_object* sv = nullptr;
@@ -787,23 +998,63 @@ int main(int argc, char** argv) {
                         }
                     }
                     if (!fail_code.empty()) g_store->mark_failed(scope, fail_code.c_str(), fail_reason.c_str());
+                    /* FWD-1: media forward failure is log-only, never flips the
+                     * applied/failed decision. OUT-1: output scope forwards in
+                     * the background so compositor rebuild never blocks HTTP;
+                     * no-picture case is save-only on the engine side. */
                     if (forward_media && fwd) {
-                        std::string fr = g_media->request("configure", fwd);
-                        json_object* fo = json_tokener_parse(fr.c_str());
-                        if (fo) {
-                            json_object* codev = nullptr;
-                            std::string code;
-                            if (json_object_object_get_ex(fo, "code", &codev) && codev) code = json_object_get_string(codev);
-                            json_object* okv = nullptr;
-                            bool ok = json_object_object_get_ex(fo, "ok", &okv) && okv && json_object_get_boolean(okv);
-                            if (!ok && code == "INVALID_ARGUMENT" && fail_code.empty()) {
-                                json_object* mv2 = nullptr;
-                                std::string msg = json_object_object_get_ex(fo, "msg", &mv2) && mv2 ? json_object_get_string(mv2) : "媒体拒绝配置";
-                                g_store->mark_failed(scope, "INVALID_ARGUMENT", msg.c_str());
+                        if (scope == "output") {
+                            json_object* fwd_bg = json_object_get(fwd);
+                            std::string sc = scope;
+                            std::thread([fwd_bg, sc]() {
+                                std::string fr = g_media->request("configure", fwd_bg);
+                                json_object* fo = json_tokener_parse(fr.c_str());
+                                bool ok = false;
+                                std::string code, msg;
+                                if (fo) {
+                                    json_object* okv = nullptr;
+                                    json_object* codev = nullptr;
+                                    json_object* msgv = nullptr;
+                                    if (json_object_object_get_ex(fo, "ok", &okv) && okv)
+                                        ok = json_object_get_boolean(okv) != 0;
+                                    if (json_object_object_get_ex(fo, "code", &codev) && codev)
+                                        code = json_object_get_string(codev);
+                                    if (json_object_object_get_ex(fo, "msg", &msgv) && msgv)
+                                        msg = json_object_get_string(msgv);
+                                    json_object_put(fo);
+                                }
+                                if (!ok)
+                                    fprintf(stderr, "dvs-agent: media configure (%s) failed (log-only) code=%s msg=%s\n",
+                                            sc.c_str(), code.c_str(), msg.c_str());
+                                else
+                                    fprintf(stderr, "dvs-agent: media configure (%s) ok (background)\n", sc.c_str());
+                                json_object_put(fwd_bg);
+                            }).detach();
+                            json_object_put(fwd);
+                        } else {
+                            std::string fr = g_media->request("configure", fwd);
+                            json_object* fo = json_tokener_parse(fr.c_str());
+                            if (fo) {
+                                json_object* okv = nullptr;
+                                bool ok = false;
+                                std::string code, msg;
+                                if (json_object_object_get_ex(fo, "ok", &okv) && okv)
+                                    ok = json_object_get_boolean(okv) != 0;
+                                json_object* codev = nullptr;
+                                if (json_object_object_get_ex(fo, "code", &codev) && codev)
+                                    code = json_object_get_string(codev);
+                                json_object* msgv = nullptr;
+                                if (json_object_object_get_ex(fo, "msg", &msgv) && msgv)
+                                    msg = json_object_get_string(msgv);
+                                if (!ok)
+                                    fprintf(stderr, "dvs-agent: media configure (%s) failed (log-only) code=%s msg=%s\n",
+                                            scope.c_str(), code.c_str(), msg.c_str());
+                                json_object_put(fo);
+                            } else {
+                                fprintf(stderr, "dvs-agent: media configure (%s) unparsable (log-only)\n", scope.c_str());
                             }
-                            json_object_put(fo);
+                            json_object_put(fwd);
                         }
-                        json_object_put(fwd);
                     } else if (fwd) { json_object_put(fwd); }
                     json_object* patch = json_object_new_object();
                     json_object_object_add(patch, "configStates", g_store->all_states());

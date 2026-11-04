@@ -21,32 +21,153 @@ static const char* json_str(struct json_object* o, const char* key) {
     return NULL;
 }
 
+static int valid_ip4(const char* s) {
+    if (!s || !s[0]) return 0;
+    int parts = 0;
+    const char* p = s;
+    while (1) {
+        if (*p < '0' || *p > '9') return 0;
+        int v = 0, digits = 0;
+        while (*p >= '0' && *p <= '9') { v = v * 10 + (*p - '0'); digits++; p++; if (digits > 3) return 0; }
+        if (v > 255) return 0;
+        parts++;
+        if (*p == '\0') break;
+        if (*p != '.') return 0;
+        p++;
+        if (*p == '\0') return 0;
+    }
+    return parts == 4;
+}
+
+/* Trim in place; returns pointer to first non-space. */
+static const char* trim_l(const char* s, const char** end_out) {
+    while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n') s++;
+    const char* e = s + strlen(s);
+    while (e > s && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r' || e[-1] == '\n')) e--;
+    if (end_out) *end_out = e;
+    return s;
+}
+
+/* Validate one "ip" or "ip:port" item. */
+static int valid_endpoint_item(const char* raw, char* err, size_t errlen) {
+    const char* e = NULL;
+    const char* s = trim_l(raw ? raw : "", &e);
+    size_t len = (size_t)(e - s);
+    if (len == 0 || len >= 64) { snprintf(err, errlen, "bad whitelist entry"); return -1; }
+    char tmp[64];
+    memcpy(tmp, s, len);
+    tmp[len] = '\0';
+    char* colon = strchr(tmp, ':');
+    if (!colon) {
+        if (!valid_ip4(tmp)) { snprintf(err, errlen, "bad whitelist entry '%s'", tmp); return -1; }
+        return 0;
+    }
+    if (strchr(colon + 1, ':')) { snprintf(err, errlen, "bad whitelist entry '%s'", tmp); return -1; }
+    *colon = '\0';
+    const char* ips = trim_l(tmp, NULL);
+    const char* ps = trim_l(colon + 1, NULL);
+    if (!valid_ip4(ips)) { snprintf(err, errlen, "bad whitelist entry '%s'", raw); return -1; }
+    if (!ps[0]) { snprintf(err, errlen, "bad whitelist entry '%s'", raw); return -1; }
+    for (const char* q = ps; *q; q++) if (*q < '0' || *q > '9') {
+        snprintf(err, errlen, "bad whitelist entry '%s'", raw); return -1;
+    }
+    int p = atoi(ps);
+    if (p < 1 || p > 65535) { snprintf(err, errlen, "bad whitelist entry '%s'", raw); return -1; }
+    return 0;
+}
+
 static int apply_whitelist(struct json_object* wv, char* err, size_t errlen) {
     char csv[512] = {0};
     if (!wv) { dvs_session_mgr_set_whitelist(NULL); return 0; }
     if (json_object_is_type(wv, json_type_string)) {
-        snprintf(csv, sizeof(csv), "%s", json_object_get_string(wv));
+        const char* s = json_object_get_string(wv);
+        if (!s) { snprintf(err, errlen, "empty whitelist"); return -1; }
+        /* WL-1: per-item validation before accepting. */
+        const char* p = s;
+        int any = 0;
+        while (1) {
+            const char* comma = strchr(p, ',');
+            size_t n = comma ? (size_t)(comma - p) : strlen(p);
+            char tok[64];
+            if (n >= sizeof(tok)) { snprintf(err, errlen, "bad whitelist entry"); return -1; }
+            memcpy(tok, p, n);
+            tok[n] = '\0';
+            const char* e = NULL;
+            const char* t = trim_l(tok, &e);
+            if ((size_t)(e - t) > 0) {
+                char one[64];
+                size_t k = (size_t)(e - t);
+                if (k >= sizeof(one)) { snprintf(err, errlen, "bad whitelist entry"); return -1; }
+                memcpy(one, t, k);
+                one[k] = '\0';
+                if (valid_endpoint_item(one, err, errlen) != 0) return -1;
+                any = 1;
+            }
+            if (!comma) break;
+            p = comma + 1;
+        }
+        if (!any) { snprintf(err, errlen, "empty whitelist"); return -1; }
+        snprintf(csv, sizeof(csv), "%s", s);
     } else if (json_object_is_type(wv, json_type_array)) {
         size_t pos = 0;
         int n = json_object_array_length(wv);
+        if (n <= 0) { snprintf(err, errlen, "empty whitelist"); return -1; }
         for (int i = 0; i < n; i++) {
             struct json_object* e = json_object_array_get_idx(wv, i);
-            if (!e) continue;
+            if (!e) { snprintf(err, errlen, "bad whitelist entry"); return -1; }
             const char* s = json_object_is_type(e, json_type_string) ? json_object_get_string(e) : NULL;
             char tmp[96] = {0};
             if (s) {
+                /* Element may itself be a comma list; validate each item. */
+                const char* p = s;
+                while (1) {
+                    const char* comma = strchr(p, ',');
+                    size_t nn = comma ? (size_t)(comma - p) : strlen(p);
+                    char tok[64];
+                    if (nn >= sizeof(tok)) { snprintf(err, errlen, "bad whitelist entry"); return -1; }
+                    memcpy(tok, p, nn);
+                    tok[nn] = '\0';
+                    const char* ee = NULL;
+                    const char* t = trim_l(tok, &ee);
+                    if ((size_t)(ee - t) > 0) {
+                        char one[64];
+                        size_t k = (size_t)(ee - t);
+                        if (k >= sizeof(one)) { snprintf(err, errlen, "bad whitelist entry"); return -1; }
+                        memcpy(one, t, k);
+                        one[k] = '\0';
+                        if (valid_endpoint_item(one, err, errlen) != 0) return -1;
+                    }
+                    if (!comma) break;
+                    p = comma + 1;
+                }
                 snprintf(tmp, sizeof(tmp), "%s", s);
-            } else {
+            } else if (json_object_is_type(e, json_type_object)) {
                 const char* ip = json_str(e, "sip");
                 if (!ip) ip = json_str(e, "ip");
+                if (!ip) ip = json_str(e, "source");
                 struct json_object* pv = NULL;
-                int port = 0;
-                if (json_object_object_get_ex(e, "udp_port", &pv) && pv) port = json_object_get_int(pv);
-                else if (json_object_object_get_ex(e, "udpPort", &pv) && pv) port = json_object_get_int(pv);
-                if (!ip || !ip[0]) continue;
-                if (port > 0) snprintf(tmp, sizeof(tmp), "%s:%d", ip, port);
+                int has_p = 0, port = 0;
+                if (json_object_object_get_ex(e, "udp_port", &pv) && pv) { port = json_object_get_int(pv); has_p = 1; }
+                else if (json_object_object_get_ex(e, "udpPort", &pv) && pv) { port = json_object_get_int(pv); has_p = 1; }
+                else if (json_object_object_get_ex(e, "port", &pv) && pv) {
+                    if (json_object_is_type(pv, json_type_string)) {
+                        const char* ps = json_object_get_string(pv);
+                        for (const char* q = ps; *q; q++) if (*q < '0' || *q > '9') {
+                            snprintf(err, errlen, "bad whitelist entry '%s'", ps); return -1;
+                        }
+                        port = atoi(ps);
+                    } else port = json_object_get_int(pv);
+                    has_p = 1;
+                }
+                if (!ip || !ip[0] || !valid_ip4(ip)) {
+                    snprintf(err, errlen, "bad whitelist entry '%s'", ip ? ip : ""); return -1;
+                }
+                if (has_p && (port < 1 || port > 65535)) {
+                    snprintf(err, errlen, "bad whitelist entry '%s:%d'", ip, port); return -1;
+                }
+                if (has_p) snprintf(tmp, sizeof(tmp), "%s:%d", ip, port);
                 else snprintf(tmp, sizeof(tmp), "%s", ip);
-            }
+            } else { snprintf(err, errlen, "bad whitelist entry type"); return -1; }
             if (!tmp[0]) continue;
             if (pos > 0 && pos + 1 < sizeof(csv)) csv[pos++] = ',';
             size_t k = strlen(tmp);
@@ -140,6 +261,8 @@ static json_object* hook_lane_stats(void) {
     return a ? a : json_object_new_array();
 }
 
+static const char* hook_mtl_version(void) { return mtl_version(); }
+
 void dvs_ipc_attach_engine(dvs_engine* e) {
     s_eng = e;
     dvs_ipc_engine_hooks_t h = {
@@ -149,6 +272,7 @@ void dvs_ipc_attach_engine(dvs_engine* e) {
         .abort = hook_abort,
         .counts = hook_counts,
         .ptp_state = hook_ptp_state,
+        .mtl_version = hook_mtl_version,
         .lane_stats = hook_lane_stats,
     };
     dvs_ipc_install_hooks(&h);

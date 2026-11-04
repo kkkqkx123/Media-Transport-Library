@@ -313,7 +313,9 @@ static int handle_line(dvs_client_t* c, char* line) {
     send_envelope(c, rid, 200, "OK", "", data_s);
     json_object_put(data);
   } else if (strcmp(type, "capability") == 0) {
-    char* cs = dvs_capability_to_json(&g_cap);
+    /* CAP-1: refresh live PTP and MTL version before serializing. The hooks
+     * are NULL in the no-MTL unit test, which then keeps probed values. */
+    int refreshed = 0;
     if (g_hooks.ptp_state) {
       char ps[32];
       int off = 0;
@@ -321,9 +323,17 @@ static int handle_line(dvs_client_t* c, char* line) {
       g_hooks.ptp_state(ps, sizeof(ps), &off);
       snprintf(g_cap.ptp_state, sizeof(g_cap.ptp_state), "%s", ps);
       g_cap.ptp_offset_us = off;
-      free(cs);
-      cs = dvs_capability_to_json(&g_cap);
+      refreshed = 1;
     }
+    if (g_hooks.mtl_version) {
+      const char* v = g_hooks.mtl_version();
+      if (v && v[0]) {
+        snprintf(g_cap.mtl_version, sizeof(g_cap.mtl_version), "%s", v);
+        refreshed = 1;
+      }
+    }
+    char* cs = dvs_capability_to_json(&g_cap);
+    (void)refreshed;
     send_envelope(c, rid, 200, "OK", "", cs ? cs : "{}");
     free(cs);
   } else if (strcmp(type, "event") == 0) {

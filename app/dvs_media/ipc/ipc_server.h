@@ -22,6 +22,9 @@ typedef struct {
     void (*abort)(void);                      /* discard pending layout */
     void (*counts)(int* rx_sessions, int* decoding, int* layers); /* query_state */
     void (*ptp_state)(char* state, size_t n, int* offset_us); /* live PTP */
+    /* MTL version string (e.g. from mtl_version()). May be NULL; the
+     * capability reply then keeps the last probed value. */
+    const char* (*mtl_version)(void);
     /* Per-lane readiness stats for the barrier. May be NULL; query_state
      * then reports an empty lanes array. */
     struct json_object* (*lane_stats)(void);

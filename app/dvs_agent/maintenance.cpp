@@ -128,7 +128,26 @@ json_object* Maintenance::upgrade(const std::string& filename,
         json_object_object_add(o, "reason", json_object_new_string("missing filename"));
         return o;
     }
-    std::string actual = file_sha256(filename);
+    /* UPG-1: accept a bare basename staged by /upgrade/upload (in /tmp).
+     * Absolute or tmp-relative paths are used as-is; anything else is first
+     * resolved against /tmp so the frontend upload->upgrade link works. */
+    std::string path = filename;
+    bool has_slash = (path.find('/') != std::string::npos);
+    if (!has_slash) {
+        std::string base = path;
+        size_t bs = base.find_last_of("\\");
+        if (bs != std::string::npos) base = base.substr(bs + 1);
+        if (base.empty() || base.size() > 128 || base.find("..") != std::string::npos) {
+            json_object_object_add(o, "ok", json_object_new_boolean(0));
+            json_object_object_add(o, "status", json_object_new_string("failed"));
+            json_object_object_add(o, "reason", json_object_new_string("bad filename"));
+            return o;
+        }
+        std::string cand = std::string("/tmp/") + base;
+        std::ifstream probe(cand, std::ios::binary);
+        if (probe) path = cand;
+    }
+    std::string actual = file_sha256(path);
     if (actual.empty()) {
         json_object_object_add(o, "ok", json_object_new_boolean(0));
         json_object_object_add(o, "status", json_object_new_string("failed"));
@@ -155,11 +174,13 @@ json_object* Maintenance::upgrade(const std::string& filename,
         return o;
     }
 
-    /* Verified: stage the package (A/B: previous version path is untouched) and
-     * bump the reported firmware version; active switch is a platform concern. */
-    std::string ver = derive_version(filename);
+    /* Verified: stage the package (A/B: previous version path is untouched).
+     * UPG-1: the active switch is env-gated. Without DVS_ALLOW_UPGRADE_SWITCH
+     * the package is staged and reported as "staged" with the version kept
+     * on the old value; with the env set the fw version is bumped. */
+    std::string ver = derive_version(path);
     std::string staged = std::string("/var/lib/dvs_agent/upgrade/") + ver + "/fw.bin";
-    std::string content = slurp_file(filename);
+    std::string content = slurp_file(path);
     /* Best-effort staging write; failures still keep the old version. */
     {
         size_t pos = staged.find_last_of('/');
@@ -172,6 +193,19 @@ json_object* Maintenance::upgrade(const std::string& filename,
         if (out) out.write(content.data(), (std::streamsize)content.size());
     }
 
+    if (!std::getenv("DVS_ALLOW_UPGRADE_SWITCH")) {
+        fprintf(stderr, "dvs-agent: firmware staged (switch gated): %s version %s\n",
+                staged.c_str(), ver.c_str());
+        json_object_object_add(o, "ok", json_object_new_boolean(1));
+        json_object_object_add(o, "status", json_object_new_string("staged"));
+        json_object_object_add(o, "filename", json_object_new_string(path.c_str()));
+        json_object_object_add(o, "version", json_object_new_string(ver.c_str()));
+        json_object_object_add(o, "sha256", json_object_new_string(actual.c_str()));
+        json_object_object_add(o, "staged", json_object_new_string(staged.c_str()));
+        json_object_object_add(o, "reason", json_object_new_string("switch gated (set DVS_ALLOW_UPGRADE_SWITCH=1 to apply)"));
+        return o;
+    }
+
     json_object* patch = json_object_new_object();
     json_object_object_add(patch, "fw", json_object_new_string(ver.c_str()));
     store_->update_node(patch);
@@ -179,8 +213,9 @@ json_object* Maintenance::upgrade(const std::string& filename,
 
     json_object_object_add(o, "ok", json_object_new_boolean(1));
     json_object_object_add(o, "status", json_object_new_string("applied"));
-    json_object_object_add(o, "filename", json_object_new_string(filename.c_str()));
+    json_object_object_add(o, "filename", json_object_new_string(path.c_str()));
     json_object_object_add(o, "version", json_object_new_string(ver.c_str()));
     json_object_object_add(o, "sha256", json_object_new_string(actual.c_str()));
+    json_object_object_add(o, "staged", json_object_new_string(staged.c_str()));
     return o;
 }

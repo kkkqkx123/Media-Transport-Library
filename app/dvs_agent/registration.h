@@ -7,7 +7,7 @@
 class NodeStore;
 class MediaIpcClient;
 
-/* Registration + heartbeat against the (S2 stub) platform over HTTP polling.
+/* Registration + heartbeat against the platform over HTTP polling.
  * - Empty platform URL => local autonomous mode: node stays online and
  *   functional, no network egress.
  * - Non-empty URL => register once (with retry/backoff), then heartbeat every

@@ -842,27 +842,56 @@
               setOpsRunning(true, "升级开始");
               $("fw-prog").hidden = false;
               $("fw-status").hidden = false;
-              $("fw-status").textContent = "升级中，请勿关闭页面…";
-              apiAsync("POST", "/api/v1/node/upgrade", { filename: pendingFwFile ? pendingFwFile.name : "fw.bin", sha256: pendingFwSha }).then(function (r) {
-                setOpsRunning(false);
-                if (!r || !r.ok) {
-                  $("fw-status").textContent = "升级失败：节点已回到旧版本，可重新选择固件包重试。";
-                  protoToast("升级失败");
-                  setLastOps("固件升级", "失败");
-                  return;
-                }
-                $("fw-status").hidden = true;
-                fwReady = false;
-                pendingFwFile = null;
-                pendingFwSha = "";
-                $("btn-upgrade").disabled = true;
-                protoToast("升级完成");
-                setLastOps("固件升级", "成功");
-                setTimeout(function () { window.location.reload(); }, 1500);
-              }).catch(function () {
-                setOpsRunning(false);
-                protoToast("升级请求失败");
-              });
+              $("fw-status").textContent = "正在上传固件包，请勿关闭页面…";
+              var file = pendingFwFile;
+              /* UPG-1:先上传二进制拿到暂存 path,再用该 path 调升级接口;后端对裸文件名也会回退到 /tmp 查找。 */
+              function finishUpgrade(stagedPath, sha) {
+                $("fw-status").textContent = "升级中，请勿关闭页面…";
+                return apiAsync("POST", "/api/v1/node/upgrade", { filename: stagedPath, sha256: sha }).then(function (r) {
+                  setOpsRunning(false);
+                  var inner = r && r.data ? r.data : null;
+                  var st = inner && inner.status ? inner.status : "";
+                  if (!r || !r.ok || !inner || inner.ok === false) {
+                    $("fw-status").textContent = "升级失败：节点已回到旧版本，可重新选择固件包重试。";
+                    protoToast("升级失败");
+                    setLastOps("固件升级", "失败");
+                    return;
+                  }
+                  $("fw-status").hidden = true;
+                  fwReady = false;
+                  pendingFwFile = null;
+                  pendingFwSha = "";
+                  $("btn-upgrade").disabled = true;
+                  if (st === "staged") {
+                    protoToast("固件已暂存，未切换（需服务端开门）");
+                    setLastOps("固件升级", "已暂存待切换");
+                  } else {
+                    protoToast("升级完成");
+                    setLastOps("固件升级", "成功");
+                  }
+                  setTimeout(function () { window.location.reload(); }, 1500);
+                });
+              }
+              if (!file) {
+                finishUpgrade("fw.bin", pendingFwSha).catch(function () {
+                  setOpsRunning(false);
+                  protoToast("升级请求失败");
+                });
+                return;
+              }
+              fetch("/api/v1/node/upgrade/upload?filename=" + encodeURIComponent(file.name),
+                { method: "POST", headers: { "X-Filename": file.name }, body: file, credentials: "same-origin" })
+                .then(function (resp) { return resp.json().catch(function () { return null; }); })
+                .then(function (ur) {
+                  var stagedPath = (ur && ur.ok && ur.data && ur.data.path) ? ur.data.path : file.name;
+                  return finishUpgrade(stagedPath, pendingFwSha);
+                })
+                .catch(function () {
+                  setOpsRunning(false);
+                  $("fw-status").textContent = "固件上传失败，可重试。";
+                  protoToast("固件上传失败");
+                  setLastOps("固件升级", "上传失败");
+                });
             }
           });
         };

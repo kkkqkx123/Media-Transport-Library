@@ -24,6 +24,14 @@ test_session_admit = executable('test_session_admit',
   include_directories: include_directories('..'),
 )
 
+test_tx_session = executable('test_tx_session',
+  files('test_tx_session.c', '../engine/tx_session.c'),
+  c_args: common_c_args,
+  dependencies: [libjson_c_dep],
+  include_directories: include_directories('..'),
+)
+
 test('dvs_state_machine', test_state_machine)
 test('dvs_ipc', test_ipc, timeout: 30)
 test('dvs_session_admit', test_session_admit)
+test('dvs_tx_session', test_tx_session)

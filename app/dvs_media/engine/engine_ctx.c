@@ -49,6 +49,8 @@ dvs_engine* dvs_engine_create(const file_playout_cfg* base_cfg) {
     e->cfg = *base_cfg;
     e->st = NULL;
     e->comp = NULL;
+    snprintf(e->role, sizeof(e->role), "output");
+    dvs_tx_init(&e->tx);
     atomic_store(&e->running, false);
     atomic_store(&e->rx_sessions, 0);
     atomic_store(&e->decoding, 0);
@@ -207,6 +209,7 @@ int dvs_engine_apply_layout_at(dvs_engine* e,
 
     if (count <= 0) {
         /* clear: media off, keep MTL up for fast future commits */
+        dvs_tx_stop(&e->tx);
         file_playout_pip_stream old[MP4_PIP_MAX_LANES];
         int old_n = e->cfg.pip_stream_count;
         if (old_n > MP4_PIP_MAX_LANES) old_n = MP4_PIP_MAX_LANES;
@@ -348,9 +351,52 @@ int dvs_engine_set_output(dvs_engine* e, const char* connector, int width,
 
 int dvs_engine_set_role(dvs_engine* e, const char* role) {
     if (!e || !role) return -1;
-    if (strcmp(role, "input") == 0) return dvs_engine_apply_layout(e, NULL, 0);
-    if (strcmp(role, "output") == 0) return 0;
+    if (strcmp(role, "input") == 0) {
+        snprintf(e->role, sizeof(e->role), "input");
+        return dvs_engine_apply_layout(e, NULL, 0);
+    }
+    if (strcmp(role, "output") == 0) {
+        snprintf(e->role, sizeof(e->role), "output");
+        pthread_mutex_lock(&e->mu);
+        dvs_tx_stop(&e->tx);
+        pthread_mutex_unlock(&e->mu);
+        return 0;
+    }
     return -1;
+}
+
+int dvs_engine_tx_start(dvs_engine* e, const dvs_tx_params_t* params,
+                        char* err, size_t errlen) {
+    if (!e || !params) {
+        if (err && errlen > 0) snprintf(err, errlen, "missing tx params");
+        return -1;
+    }
+    pthread_mutex_lock(&e->mu);
+    /* Role mutual exclusion: an input box never runs the RX compositor. */
+    if (e->comp) {
+        rx_compositor_stop(e->comp);
+        rx_compositor_free(e->comp);
+        e->comp = NULL;
+    }
+    e->cfg.pip_stream_count = 0;
+    int rc = dvs_tx_start(&e->tx, params, e->role, err, errlen);
+    pthread_mutex_unlock(&e->mu);
+    return rc;
+}
+
+void dvs_engine_tx_stop(dvs_engine* e) {
+    if (!e) return;
+    pthread_mutex_lock(&e->mu);
+    dvs_tx_stop(&e->tx);
+    pthread_mutex_unlock(&e->mu);
+}
+
+struct json_object* dvs_engine_tx_status(dvs_engine* e) {
+    if (!e) return dvs_tx_status_json(NULL);
+    pthread_mutex_lock(&e->mu);
+    struct json_object* o = dvs_tx_status_json(&e->tx);
+    pthread_mutex_unlock(&e->mu);
+    return o ? o : dvs_tx_status_json(NULL);
 }
 
 void dvs_engine_request_stop(dvs_engine* e) {
@@ -370,6 +416,7 @@ void dvs_engine_stop(dvs_engine* e) {
         rx_compositor_free(e->comp);
         e->comp = NULL;
     }
+    dvs_tx_stop(&e->tx);
     if (e->st) {
         mtl_stop(e->st);
         mtl_uninit(e->st);

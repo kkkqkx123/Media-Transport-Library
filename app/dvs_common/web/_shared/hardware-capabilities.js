@@ -61,6 +61,20 @@
     };
   }
 
+  function normalizeTx(reported) {
+    var base = clone(TX_SPEC);
+    if (!reported) return base;
+    var out = {
+      codecs: Array.isArray(reported.codecs) && reported.codecs.length ? reported.codecs.slice() : base.codecs,
+      maxWidth: Number(reported.maxWidth) > 0 ? Number(reported.maxWidth) : base.maxWidth,
+      maxHeight: Number(reported.maxHeight) > 0 ? Number(reported.maxHeight) : base.maxHeight,
+      maxFps: Number(reported.maxFps) > 0 ? Number(reported.maxFps) : base.maxFps,
+      maxBitrateKbps: Number(reported.maxBitrateKbps) > 0 ? Number(reported.maxBitrateKbps) : base.maxBitrateKbps
+    };
+    if (typeof reported.codecs === "string" && reported.codecs) out.codecs = reported.codecs.split(",");
+    return out;
+  }
+
   function enrichPorts(ports, fallback) {
     return (ports || []).map(function (port) {
       var limit = portLimit(port, fallback);
@@ -104,6 +118,8 @@
       hasReportedInput: hasReportedInput,
       hasReportedOutput: hasReportedOutput,
       reported: hasReportedInput && hasReportedOutput,
+      tx: normalizeTx(reported.tx || null),
+      hasReportedTx: !!reported.tx,
       selectedOutput: selectedOutput,
       outputLimit: outputLimit,
       safeModes: safeModes,
@@ -123,6 +139,7 @@
   global.DvsHardwareCapabilities = {
     officialSource: OFFICIAL_SOURCE,
     profiles: PROFILES,
+    txSpec: TX_SPEC,
     getProfile: getProfile,
     resolve: resolve
   };

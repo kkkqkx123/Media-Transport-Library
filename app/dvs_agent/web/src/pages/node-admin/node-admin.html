@@ -96,6 +96,25 @@
                 <select id="sel-inputport" class="proto-select"></select>
                 <div class="hint" style="margin-top: 8px">信号状态：<b style="color: var(--proto-success)">有信号 · 1080p60</b></div>
               </div>
+              <div class="proto-field" style="margin-top: 16px">
+                <label>发送编码（输入盒出流参数）</label>
+                <div class="proto-form-grid" style="max-width: 680px">
+                  <div class="proto-field"><label for="in-codec">编码</label><select id="in-codec" class="proto-select"><option value="h264">H.264</option><option value="h265">H.265</option></select></div>
+                  <div class="proto-field"><label for="in-enc-w">宽（px）</label><input id="in-enc-w" class="proto-input" type="number" value="1920" /></div>
+                  <div class="proto-field"><label for="in-enc-h">高（px）</label><input id="in-enc-h" class="proto-input" type="number" value="1080" /></div>
+                  <div class="proto-field"><label for="in-enc-fps">帧率（fps）</label><input id="in-enc-fps" class="proto-input" type="number" value="30" /></div>
+                  <div class="proto-field"><label for="in-enc-br">码率（kbps）</label><input id="in-enc-br" class="proto-input" type="number" value="4000" /></div>
+                </div>
+              </div>
+              <div class="proto-field" style="margin-top: 16px">
+                <label>发送目标</label>
+                <div class="proto-form-grid" style="max-width: 680px">
+                  <div class="proto-field"><label for="in-tgt-ip">目标 IP</label><input id="in-tgt-ip" class="proto-input" placeholder="例如 239.0.0.1" /></div>
+                  <div class="proto-field"><label for="in-tgt-port">目标端口</label><input id="in-tgt-port" class="proto-input" type="number" placeholder="5000" /></div>
+                </div>
+                <div class="hint">编码与目标同时填写才启动发送；只保存采集口则不启动发送。</div>
+              </div>
+              <div class="hint" style="margin-top: 8px">发送状态：<span class="tag-pending" id="tx-state">未查询</span></div>
               <div class="config-state-line"><span class="config-state-label">配置状态</span><span class="tag-state state-applied" id="input-config-state">已生效</span><span class="config-state-detail" id="input-config-state-detail">当前采集口：HDMI1</span></div>
               <div class="proto-form-actions">
                 <button type="button" class="proto-btn proto-btn-primary btn-save-zone" data-zone="input">保存</button>
@@ -160,6 +179,15 @@
                 <input id="in-server" class="proto-input" value="192.168.10.200:8080" />
                 <div class="hint">平台服务地址（端口以平台部署为准）</div>
               </div>
+              <div class="proto-field" style="max-width: 420px; margin-top: 16px">
+                <label for="in-iface">网卡</label>
+                <input id="in-iface" class="proto-input" value="eth0" />
+                <div class="hint">系统执行经 systemd-networkd 下发到该网卡</div>
+              </div>
+              <div class="proto-field" style="margin-top: 8px">
+                <label class="opt"><input type="checkbox" id="net-confirm" /> 隔离环境已确认，真实切换系统网络</label>
+                <div class="hint">默认仅意图落库，不切换系统网络</div>
+              </div>
               <div class="proto-form-actions">
                 <button type="button" class="proto-btn proto-btn-primary" id="btn-save-net">保存</button>
               </div>
@@ -187,7 +215,7 @@
               </div>
 
               <div class="node-config-block">
-              <div class="node-section-title">SIP 接入 <span class="tag-info">可选</span></div>
+              <div class="node-section-title">SIP 接入 <span class="tag-info">可选 · 连通性探测（非完整会话）</span></div>
               <div class="proto-field">
                 <label class="opt"><input type="checkbox" id="sip-enabled" /> 启用 SIP 接入</label>
               </div>

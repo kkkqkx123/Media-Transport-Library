@@ -277,6 +277,30 @@ static int handle_line(dvs_client_t* c, char* line) {
     if (g_hooks.clear) g_hooks.clear();
     dvs_state_clear();
     send_envelope(c, rid, 200, "OK", "cleared", NULL);
+  } else if (strcmp(type, "tx_start") == 0) {
+    if (!g_hooks.tx_start) {
+      send_envelope(c, rid, 501, "NOT_IMPLEMENTED",
+                    "tx backend not attached", NULL);
+      goto done;
+    }
+    if (g_hooks.tx_start(req, err, sizeof(err)) != 0) {
+      send_envelope(c, rid, 400, "INVALID_ARGUMENT", err[0] ? err : "bad tx params",
+                    NULL);
+      goto done;
+    }
+    /* Report the resulting session state so the caller can tell running
+     * apart from configured (backend pending). */
+    if (g_hooks.tx_status) {
+      json_object* tx = g_hooks.tx_status();
+      const char* tx_s = json_object_to_json_string(tx);
+      send_envelope(c, rid, 200, "OK", "tx started", tx_s ? tx_s : "{}");
+      if (tx) json_object_put(tx);
+    } else {
+      send_envelope(c, rid, 200, "OK", "tx started", NULL);
+    }
+  } else if (strcmp(type, "tx_stop") == 0) {
+    if (g_hooks.tx_stop) g_hooks.tx_stop();
+    send_envelope(c, rid, 200, "OK", "tx stopped", NULL);
   } else if (strcmp(type, "query_state") == 0) {
     dvs_state_t snap;
     dvs_state_snapshot(&snap);
@@ -309,6 +333,13 @@ static int handle_line(dvs_client_t* c, char* line) {
     json_object* lanes = (g_hooks.lane_stats) ? g_hooks.lane_stats() : NULL;
     if (!lanes) lanes = json_object_new_array();
     json_object_object_add(data, "lanes", lanes);
+    /* TX session snapshot. NULL hook (unit test) means idle. */
+    json_object* tx = (g_hooks.tx_status) ? g_hooks.tx_status() : NULL;
+    if (!tx) {
+      tx = json_object_new_object();
+      json_object_object_add(tx, "state", json_object_new_string("idle"));
+    }
+    json_object_object_add(data, "tx", tx);
     const char* data_s = json_object_to_json_string(data);
     send_envelope(c, rid, 200, "OK", "", data_s);
     json_object_put(data);

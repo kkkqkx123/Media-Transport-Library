@@ -111,6 +111,18 @@ void NodeStore::load() {
         json_object_object_add(outp, "outputPorts", out_ports);
         json_object_object_add(outp, "maxDecodeSessions", json_object_new_int(4));
         json_object_object_add(outp, "maxLayers", json_object_new_int(4));
+        /* TX static ceiling (SoC limits, not probed). The engine reports the
+         * same shape live; agent merge prefers the engine value per-field. */
+        json_object* txp = json_object_new_object();
+        json_object* codecs = json_object_new_array();
+        json_object_array_add(codecs, json_object_new_string("h264"));
+        json_object_array_add(codecs, json_object_new_string("h265"));
+        json_object_object_add(txp, "codecs", codecs);
+        json_object_object_add(txp, "maxWidth", json_object_new_int(3840));
+        json_object_object_add(txp, "maxHeight", json_object_new_int(2160));
+        json_object_object_add(txp, "maxFps", json_object_new_int(60));
+        json_object_object_add(txp, "maxBitrateKbps", json_object_new_int(20000));
+        json_object_object_add(outp, "tx", txp);
         json_object* cap_ptp = json_object_new_object();
         json_object_object_add(cap_ptp, "state", json_object_new_string("unknown"));
         json_object_object_add(cap_ptp, "offsetUs", json_object_new_int(0));

@@ -307,6 +307,53 @@ json_object* Registration::build_heartbeat() {
     json_object_object_add(digest, "lostFrames", json_object_new_int64(lane_lost));
     json_object_object_add(o, "lanesDigest", digest);
 
+    /* TX session digest (input role). Unknown when the engine is silent. */
+    json_object* txd = json_object_new_object();
+    {
+        std::string qs2 = media_->query_state();
+        json_object* st2 = json_tokener_parse(qs2.c_str());
+        json_object* dd = nullptr;
+        json_object* tx = nullptr;
+        if (st2 && json_object_object_get_ex(st2, "data", &dd) && dd)
+            json_object_object_get_ex(dd, "tx", &tx);
+        if (tx) {
+            json_object_object_add(txd, "state",
+                                   json_object_new_string(str_of(tx, "state", "unknown").c_str()));
+            json_object_object_add(txd, "port",
+                                   json_object_new_string(str_of(tx, "port", "").c_str()));
+            json_object* tgt = nullptr;
+            if (json_object_object_get_ex(tx, "target", &tgt) && tgt) {
+                json_object_object_add(txd, "targetSip",
+                                       json_object_new_string(str_of(tgt, "sip", "").c_str()));
+                json_object_object_add(txd, "targetPort",
+                                       json_object_new_int(int_of(tgt, "udpPort")));
+            }
+        } else {
+            json_object_object_add(txd, "state", json_object_new_string("unknown"));
+        }
+        if (st2) json_object_put(st2);
+    }
+    json_object_object_add(o, "txDigest", txd);
+
+    /* SIP connectivity-probe summary (never touches media state). */
+    {
+        json_object* sip = nullptr;
+        json_object_object_get_ex(node, "sip", &sip);
+        bool en = false;
+        if (sip) {
+            json_object* ev = nullptr;
+            if (json_object_object_get_ex(sip, "enabled", &ev) && ev)
+                en = json_object_get_boolean(ev) != 0;
+        }
+        json_object* so = json_object_new_object();
+        json_object_object_add(so, "enabled", json_object_new_boolean(en ? 1 : 0));
+        json_object_object_add(so, "state",
+                               json_object_new_string(sip ? str_of(sip, "state", "disabled").c_str() : "disabled"));
+        json_object_object_add(so, "server",
+                               json_object_new_string(sip ? str_of(sip, "server", "").c_str() : ""));
+        json_object_object_add(o, "sip", so);
+    }
+
     /* resources (best effort) */
     json_object* res = json_object_new_object();
     long mem_kb = read_long_file("/proc/meminfo", 0);

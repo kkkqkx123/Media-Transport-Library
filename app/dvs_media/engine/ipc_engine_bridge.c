@@ -261,6 +261,62 @@ static json_object* hook_lane_stats(void) {
     return a ? a : json_object_new_array();
 }
 
+static int hook_tx_start(struct json_object* req, char* err, size_t errlen) {
+    if (!s_eng) {
+        if (err && errlen > 0) snprintf(err, errlen, "engine not attached");
+        return -1;
+    }
+    dvs_tx_params_t p;
+    memset(&p, 0, sizeof(p));
+    const char* port = json_str(req, "port");
+    struct json_object* enc = NULL;
+    struct json_object* tgt = NULL;
+    json_object_object_get_ex(req, "encode", &enc);
+    json_object_object_get_ex(req, "target", &tgt);
+    const char* codec = enc ? json_str(enc, "codec") : json_str(req, "codec");
+    if (port) snprintf(p.port, sizeof(p.port), "%s", port);
+    if (codec) snprintf(p.codec, sizeof(p.codec), "%s", codec);
+    struct json_object* v = NULL;
+    if (enc && json_object_object_get_ex(enc, "width", &v) && v)
+        p.width = json_object_get_int(v);
+    else if (json_object_object_get_ex(req, "width", &v) && v)
+        p.width = json_object_get_int(v);
+    if (enc && json_object_object_get_ex(enc, "height", &v) && v)
+        p.height = json_object_get_int(v);
+    else if (json_object_object_get_ex(req, "height", &v) && v)
+        p.height = json_object_get_int(v);
+    if (enc && json_object_object_get_ex(enc, "fps", &v) && v)
+        p.fps = json_object_get_int(v);
+    else if (json_object_object_get_ex(req, "fps", &v) && v)
+        p.fps = json_object_get_int(v);
+    if ((enc && json_object_object_get_ex(enc, "bitrateKbps", &v) && v) ||
+        (json_object_object_get_ex(req, "bitrateKbps", &v) && v))
+        p.bitrate_kbps = json_object_get_int(v);
+    const char* sip = tgt ? json_str(tgt, "sip") : json_str(req, "targetSip");
+    if (!sip && tgt) sip = json_str(tgt, "targetSip");
+    if (sip) snprintf(p.target_sip, sizeof(p.target_sip), "%s", sip);
+    if ((tgt && json_object_object_get_ex(tgt, "udpPort", &v) && v) ||
+        (json_object_object_get_ex(req, "udpPort", &v) && v) ||
+        (json_object_object_get_ex(req, "targetPort", &v) && v))
+        p.target_port = json_object_get_int(v);
+    if (!p.port[0] || !p.codec[0] || !p.width || !p.height || !p.fps ||
+        !p.bitrate_kbps || !p.target_sip[0] || !p.target_port) {
+        if (err && errlen > 0)
+            snprintf(err, errlen, "incomplete tx params (port+encode+target)");
+        return -1;
+    }
+    return dvs_engine_tx_start(s_eng, &p, err, errlen);
+}
+
+static void hook_tx_stop(void) {
+    if (s_eng) dvs_engine_tx_stop(s_eng);
+}
+
+static json_object* hook_tx_status(void) {
+    if (!s_eng) return NULL;
+    return dvs_engine_tx_status(s_eng);
+}
+
 static const char* hook_mtl_version(void) { return mtl_version(); }
 
 void dvs_ipc_attach_engine(dvs_engine* e) {
@@ -274,6 +330,9 @@ void dvs_ipc_attach_engine(dvs_engine* e) {
         .ptp_state = hook_ptp_state,
         .mtl_version = hook_mtl_version,
         .lane_stats = hook_lane_stats,
+        .tx_start = hook_tx_start,
+        .tx_stop = hook_tx_stop,
+        .tx_status = hook_tx_status,
     };
     dvs_ipc_install_hooks(&h);
 }

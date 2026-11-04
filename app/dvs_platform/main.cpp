@@ -287,6 +287,23 @@ int main(int argc, char** argv) {
                 json_object_object_del(curm, "lanesDigest");
                 json_object_object_add(curm, "lanesDigest", json_object_get(ld));
             }
+            /* Additive digests: TX session summary and the SIP probe
+             * summary. Stored verbatim, never branched on. */
+            json_object* txd = nullptr;
+            if (b && json_object_object_get_ex(b, "txDigest", &txd) && txd) {
+                json_object* curm = nullptr;
+                if (!json_object_object_get_ex(cur, "metrics", &curm) || !curm) {
+                    curm = json_object_new_object();
+                    json_object_object_add(cur, "metrics", curm);
+                }
+                json_object_object_del(curm, "txDigest");
+                json_object_object_add(curm, "txDigest", json_object_get(txd));
+            }
+            json_object* sipd = nullptr;
+            if (b && json_object_object_get_ex(b, "sip", &sipd) && sipd) {
+                json_object_object_del(cur, "sipDigest");
+                json_object_object_add(cur, "sipDigest", json_object_get(sipd));
+            }
             g_store->put_doc("node", id, cur);
             json_object_put(b);
             json_object* d = json_object_new_object();
@@ -343,6 +360,21 @@ int main(int argc, char** argv) {
                     }
                     json_object_object_del(curm, "lanesDigest");
                     json_object_object_add(curm, "lanesDigest", json_object_get(ld));
+                }
+                json_object* txd = nullptr;
+                if (body2 && json_object_object_get_ex(body2, "txDigest", &txd) && txd) {
+                    json_object* curm = nullptr;
+                    if (!json_object_object_get_ex(cur, "metrics", &curm) || !curm) {
+                        curm = json_object_new_object();
+                        json_object_object_add(cur, "metrics", curm);
+                    }
+                    json_object_object_del(curm, "txDigest");
+                    json_object_object_add(curm, "txDigest", json_object_get(txd));
+                }
+                json_object* sipd = nullptr;
+                if (body2 && json_object_object_get_ex(body2, "sip", &sipd) && sipd) {
+                    json_object_object_del(cur, "sipDigest");
+                    json_object_object_add(cur, "sipDigest", json_object_get(sipd));
                 }
                 g_store->put_doc("node", id, cur);
                 if (body2) json_object_put(body2);

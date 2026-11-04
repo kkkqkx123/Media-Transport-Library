@@ -33,6 +33,21 @@
             return r;
           });
         }
+        function refreshTxState() {
+          return apiAsync("GET", "/api/v1/node/media/tx").then(function (r) {
+            var el = $("tx-state");
+            if (!el) return r;
+            if (!r || !r.ok || !r.data) { el.textContent = "未查询"; el.className = "tag-pending"; return r; }
+            var t = r.data;
+            var names = { idle: "空闲", configured: "已配置（数据面待单板联调）", running: "发送中", failed: "失败" };
+            var label = names[t.state] || t.state || "未知";
+            if (t.target && t.target.sip) label += " · " + t.target.sip + ":" + t.target.udpPort;
+            if (t.state === "failed" && t.error) label += " · " + t.error;
+            el.textContent = label;
+            el.className = t.state === "running" ? "tag-ok" : "tag-pending";
+            return r;
+          });
+        }
 
         function esc(s) { return String(s == null ? "" : s).replace(/[&<>\"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" }[c]; }); }
         function renderPlaybackTasks() {
@@ -215,7 +230,7 @@
           $("info-uptime").textContent = nodeSnapshot.uptime || "—";
           $("info-regmode").textContent = nodeSnapshot.registerMode === "manual" ? "手动注册" : "自动注册";
           $("info-sipstate").textContent = nodeSnapshot.sip && nodeSnapshot.sip.enabled
-            ? (nodeSnapshot.sip.state === "connected" ? "已连接" : "连接失败") : "未启用";
+            ? (nodeSnapshot.sip.state === "connected" ? "已连接" : (nodeSnapshot.sip.state === "probing" ? "探测中…" : "连接失败")) : "未启用";
           $("info-playback").textContent = playbackText(nodeSnapshot);
           $("info-exception").textContent = nodeExceptionText(nodeSnapshot);
           $("info-temp").textContent = nodeSnapshot.metrics && nodeSnapshot.metrics.temperature || "—";
@@ -238,6 +253,21 @@
             if (outMode) outMode.checked = true;
           }
           if (nodeSnapshot.input && nodeSnapshot.input.port && nodeCapabilities.inputPorts.length) $("sel-inputport").value = nodeSnapshot.input.port;
+          if (nodeSnapshot.input) {
+            var inp = nodeSnapshot.input;
+            if (inp.encode) {
+              if ($("in-codec")) $("in-codec").value = inp.encode.codec || "h264";
+              if ($("in-enc-w")) $("in-enc-w").value = inp.encode.width || "";
+              if ($("in-enc-h")) $("in-enc-h").value = inp.encode.height || "";
+              if ($("in-enc-fps")) $("in-enc-fps").value = inp.encode.fps || "";
+              if ($("in-enc-br")) $("in-enc-br").value = inp.encode.bitrateKbps || "";
+            }
+            if (inp.target) {
+              if ($("in-tgt-ip")) $("in-tgt-ip").value = inp.target.sip || "";
+              if ($("in-tgt-port")) $("in-tgt-port").value = inp.target.udpPort || "";
+            }
+          }
+          if (nodeSnapshot.network && nodeSnapshot.network.iface && $("in-iface")) $("in-iface").value = nodeSnapshot.network.iface;
           var regLabel = nodeSnapshot.registerState === "registered" ? "已注册 · " + roleText(nodeSnapshot.role)
             : nodeSnapshot.registerState === "registering" ? "注册中…" : "连接失败 · 请检查地址";
           setRegState(regLabel, nodeSnapshot.registerState === "registered");
@@ -496,19 +526,69 @@
             var zone = btn.getAttribute("data-zone");
             if (zone === "input") {
               var inputPort = $("sel-inputport").value;
+              var txSpec = (nodeCapabilities && nodeCapabilities.tx) || {};
+              var txCodecs = txSpec.codecs || ["h264", "h265"];
+              var txMaxW = txSpec.maxWidth || 3840, txMaxH = txSpec.maxHeight || 2160;
+              var txMaxFps = txSpec.maxFps || 60, txMaxBr = txSpec.maxBitrateKbps || 20000;
+              var encDraft = {
+                codec: $("in-codec").value,
+                width: Number($("in-enc-w").value),
+                height: Number($("in-enc-h").value),
+                fps: Number($("in-enc-fps").value),
+                bitrateKbps: Number($("in-enc-br").value)
+              };
+              var tgtIp = $("in-tgt-ip").value.trim();
+              var tgtPortRaw = $("in-tgt-port").value.trim();
+              var tgtPort = Number(tgtPortRaw);
+              var wantTx = tgtIp !== "" || tgtPortRaw !== "";
+              if (wantTx) {
+                if (txCodecs.indexOf(encDraft.codec) < 0) {
+                  setConfigState("input-config-state", "failed", "编码格式超出本机能力");
+                  protoToast("编码格式超出本机能力");
+                  return;
+                }
+                if (!(encDraft.width >= 640 && encDraft.width <= txMaxW) || !(encDraft.height >= 480 && encDraft.height <= txMaxH)) {
+                  setConfigState("input-config-state", "failed", "编码分辨率超出本机能力范围");
+                  protoToast("编码分辨率超出本机能力范围");
+                  return;
+                }
+                if (!(encDraft.fps >= 24 && encDraft.fps <= txMaxFps)) {
+                  setConfigState("input-config-state", "failed", "编码帧率超出本机能力范围");
+                  protoToast("编码帧率超出本机能力范围");
+                  return;
+                }
+                if (!(encDraft.bitrateKbps >= 500 && encDraft.bitrateKbps <= txMaxBr)) {
+                  setConfigState("input-config-state", "failed", "编码码率超出本机能力范围");
+                  protoToast("编码码率超出本机能力范围");
+                  return;
+                }
+                if (!ipOk(tgtIp) || !(tgtPort >= 1 && tgtPort <= 65535)) {
+                  setConfigState("input-config-state", "failed", "发送目标地址/端口非法");
+                  protoToast("发送目标地址/端口非法");
+                  return;
+                }
+              }
+              var inputDesired = { port: inputPort };
+              if (wantTx) {
+                inputDesired.encode = encDraft;
+                inputDesired.target = { sip: tgtIp, udpPort: tgtPort };
+              }
               applyConfig("input-config-state", {
                 scope: "input",
-                desiredValue: { port: inputPort },
+                desiredValue: inputDesired,
                 button: btn,
                 pendingText: "配置已保存，等待节点应用",
                 applyingText: "正在应用采集口配置",
-                appliedText: "已生效 · 当前采集口：" + inputPort,
+                appliedText: wantTx ? "已生效 · 采集发送参数已下发" : "已生效 · 当前采集口：" + inputPort,
                 onPending: function () { patchNodeConfig("input", "pending", "配置已保存，等待节点应用"); },
                 onApplying: function () { patchNodeConfig("input", "applying", "正在应用采集口配置"); },
                 onApplied: function () {
-                  patchNode({ input: { port: inputPort }, configStates: { input: "applied" }, configMessages: { input: "已生效 · 当前采集口：" + inputPort }, exception: null });
+                  var inputPatch = { port: inputPort };
+                  if (wantTx) { inputPatch.encode = encDraft; inputPatch.target = { sip: tgtIp, udpPort: tgtPort }; }
+                  patchNode({ input: inputPatch, configStates: { input: "applied" }, configMessages: { input: "已生效 · 当前采集口：" + inputPort }, exception: null });
                   syncNodeView();
-                  protoToast("输入口配置已生效：" + inputPort);
+                  refreshTxState();
+                  protoToast(wantTx ? "输入采集发送参数已下发" : ("输入口配置已生效：" + inputPort));
                   setLastOps("输入口配置", "已生效");
                 }
               });
@@ -585,11 +665,11 @@
               onOk: function () {
                 applyConfig("network-config-state", {
                   scope: "network",
-                  desiredValue: { mode: "static", ip: newIp, mask: $("in-mask").value, gateway: $("in-gw").value, dns: $("in-dns").value, server: $("in-server").value },
+                  desiredValue: { mode: "static", ip: newIp, mask: $("in-mask").value, gateway: $("in-gw").value, dns: $("in-dns").value, server: $("in-server").value, iface: ($("in-iface").value.trim() || "eth0"), confirm: $("net-confirm").checked },
                   button: $("btn-save-net"),
                   pendingText: "配置已保存，等待网络应用",
                   applyingText: "应用中 · 正在切换网络地址",
-                  appliedText: "已生效 · 请使用新 IP 访问：" + newIp,
+                  appliedText: $("net-confirm").checked ? ("已生效 · 请使用新 IP 访问：" + newIp) : "已保存 · 意图已落库（系统网络未切换）",
                   failedText: "IP 冲突，已回滚原配置",
                   onPending: function () { patchNodeConfig("network", "pending", "配置已保存，等待网络应用"); },
                   onApplying: function () {
@@ -620,11 +700,11 @@
             onOk: function () {
               applyConfig("network-config-state", {
                 scope: "network",
-                desiredValue: { mode: "dhcp", server: $("in-server").value },
+                desiredValue: { mode: "dhcp", server: $("in-server").value, iface: ($("in-iface").value.trim() || "eth0"), confirm: $("net-confirm").checked },
                 button: $("btn-save-net"),
                 pendingText: "配置已保存，等待网络应用",
                 applyingText: "应用中 · 正在获取 DHCP 地址",
-                appliedText: "已生效 · 当前方式：DHCP",
+                appliedText: $("net-confirm").checked ? "已生效 · 当前方式：DHCP" : "已保存 · 意图已落库（系统网络未切换）",
                 onPending: function () { patchNodeConfig("network", "pending", "配置已保存，等待网络应用"); },
                 onApplying: function () {
                   patchNodeConfig("network", "applying", "正在获取 DHCP 地址");
@@ -758,7 +838,7 @@
             protoToast("请填写完整 SIP 参数（端口 1~65535）");
             return;
           }
-          $("sip-state").textContent = "连接中…";
+          $("sip-state").textContent = "探测中…";
           $("sip-state").className = "tag-pending";
           applyConfig("sip-config-state", {
             scope: "sip",
@@ -946,6 +1026,7 @@
             renderPlaybackTasks();
             showZone("role");
             loadMediaState();
+            refreshTxState();
           });
         }
         initFromBackend();
@@ -953,7 +1034,7 @@
         setInterval(function () {
           if (opsRunning || registrationBusy) return;
           loadNodeInfo().then(function (r) {
-            if (r && r.ok) { renderHardwareCapabilities(); syncNodeView(); renderRole(); }
+            if (r && r.ok) { renderHardwareCapabilities(); syncNodeView(); renderRole(); refreshTxState(); }
           });
         }, 5000);
       })();

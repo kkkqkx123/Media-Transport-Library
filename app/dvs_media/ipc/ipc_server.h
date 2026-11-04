@@ -20,6 +20,10 @@ typedef struct {
     int  (*commit)(void);                     /* apply pending layout */
     void (*clear)(void);                      /* remove all media */
     void (*abort)(void);                      /* discard pending layout */
+    /* TX orchestration (input role only). tx_start requires complete
+     * params; both may be NULL (tx verbs then report NOT_IMPLEMENTED / idle). */
+    int  (*tx_start)(struct json_object* req, char* err, size_t errlen);
+    void (*tx_stop)(void);
     void (*counts)(int* rx_sessions, int* decoding, int* layers); /* query_state */
     void (*ptp_state)(char* state, size_t n, int* offset_us); /* live PTP */
     /* MTL version string (e.g. from mtl_version()). May be NULL; the
@@ -28,6 +32,9 @@ typedef struct {
     /* Per-lane readiness stats for the barrier. May be NULL; query_state
      * then reports an empty lanes array. */
     struct json_object* (*lane_stats)(void);
+    /* TX session snapshot for query_state. May be NULL; query_state then
+     * reports {state:"idle"}. The callee returns a new reference. */
+    struct json_object* (*tx_status)(void);
 } dvs_ipc_engine_hooks_t;
 
 void dvs_ipc_install_hooks(const dvs_ipc_engine_hooks_t* h);

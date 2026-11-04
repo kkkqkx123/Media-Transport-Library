@@ -11,6 +11,7 @@
 
 #include "file_playout_app.h"
 #include "rx/rx_compositor.h"
+#include "engine/tx_session.h"
 
 /* Central media engine context for dvs_media.
  *
@@ -32,6 +33,13 @@ typedef struct dvs_engine {
     /* pending audio routing (audio arbitration; applied on layout commit) */
     char            audio_owner[64];
     int             audio_volume;
+
+    /* node role driving mutual exclusion ("input" | "output"); TX may
+     * only start in the input role, RX only composes in the output role. */
+    char            role[16];
+    /* input-box capture/send session (params + state only on this build;
+     * the data-plane backend arrives with the single-board bring-up). */
+    dvs_tx_session_t tx;
 } dvs_engine;
 
 /* Create an engine from a base config (network/DRM/MTL params). Media is not
@@ -67,8 +75,18 @@ int dvs_engine_set_output(dvs_engine* e, const char* connector, int width,
                           int height, int refresh_hz, const char* mode);
 
 /* Store a role switch. Input boxes stop display output; output boxes stay
- * idle until a layout arrives. */
+ * idle until a layout arrives. Switching to output also stops any TX
+ * session; switching to input stops the RX compositor. */
 int dvs_engine_set_role(dvs_engine* e, const char* role);
+
+/* TX orchestration (input role only). Params must be complete; without a
+ * data-plane backend the session reports configured, never running. */
+int dvs_engine_tx_start(dvs_engine* e, const dvs_tx_params_t* params,
+                        char* err, size_t errlen);
+void dvs_engine_tx_stop(dvs_engine* e);
+
+/* TX snapshot for query_state (new json ref, caller puts; never NULL). */
+struct json_object* dvs_engine_tx_status(dvs_engine* e);
 
 /* Stop the run loop, free compositor, uninit MTL. */
 void dvs_engine_stop(dvs_engine* e);

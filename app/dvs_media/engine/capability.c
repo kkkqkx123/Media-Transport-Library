@@ -26,10 +26,20 @@ static void cap_defaults(dvs_capability* cap) {
      * may be overridden via DVS_MAX_DECODE_SESSIONS for bring-up. */
     cap->max_decode_sessions = 4;
     cap->max_layers = 4; /* overridden by DRM plane probe when available */
+    dvs_capability_tx_defaults(cap);
     snprintf(cap->ptp_state, sizeof(cap->ptp_state), "unknown");
     cap->ptp_offset_us = 0;
     snprintf(cap->mtl_version, sizeof(cap->mtl_version), "unknown");
     snprintf(cap->mtl_backend, sizeof(cap->mtl_backend), "dpdk");
+}
+
+void dvs_capability_tx_defaults(dvs_capability* cap) {
+    if (!cap) return;
+    snprintf(cap->tx_codecs, sizeof(cap->tx_codecs), "h264,h265");
+    cap->tx_max_w = 3840;
+    cap->tx_max_h = 2160;
+    cap->tx_max_fps = 60;
+    cap->tx_max_br_kbps = 20000;
 }
 
 void dvs_capability_free(dvs_capability* cap) {
@@ -190,6 +200,23 @@ char* dvs_capability_to_json(const dvs_capability* cap) {
     json_object_object_add(o, "maxDecodeSessions",
                           json_object_new_int(cap->max_decode_sessions));
     json_object_object_add(o, "maxLayers", json_object_new_int(cap->max_layers));
+
+    /* TX static ceiling (SoC limits; capture ports reuse inputPorts). */
+    json_object* tx = json_object_new_object();
+    json_object* codecs = json_object_new_array();
+    {
+        char tmp[64];
+        snprintf(tmp, sizeof(tmp), "%s", cap->tx_codecs);
+        for (char* tok = strtok(tmp, ","); tok; tok = strtok(NULL, ","))
+            json_object_array_add(codecs, json_object_new_string(tok));
+    }
+    json_object_object_add(tx, "codecs", codecs);
+    json_object_object_add(tx, "maxWidth", json_object_new_int(cap->tx_max_w));
+    json_object_object_add(tx, "maxHeight", json_object_new_int(cap->tx_max_h));
+    json_object_object_add(tx, "maxFps", json_object_new_int(cap->tx_max_fps));
+    json_object_object_add(tx, "maxBitrateKbps",
+                          json_object_new_int(cap->tx_max_br_kbps));
+    json_object_object_add(o, "tx", tx);
 
     json_object* ptp = json_object_new_object();
     json_object_object_add(ptp, "state", json_object_new_string(cap->ptp_state));

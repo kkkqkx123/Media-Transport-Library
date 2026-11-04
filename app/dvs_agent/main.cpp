@@ -3,6 +3,8 @@
 
 #include "node_store.h"
 #include "media_ipc.h"
+#include "network_apply.h"
+#include "tx_config.h"
 #include "dvs_node_bundle.h"
 #include "http_server.h"
 #include "maintenance.h"
@@ -243,42 +245,28 @@ static bool validate_whitelist_value(json_object* wv, std::string& bad_item) {
     return false;
 }
 
-/* System network apply stays intent-only by default. Without
- * DVS_ALLOW_NETWORK_APPLY the call persists the intent for audit and
- * returns success; applied in the config state machine therefore means
- * the intent was stored, not that the host network was reconfigured.
- * DVS_FORCE_NETWORK_FAIL=1 forces failure for rollback testing. */
-static bool apply_system_network(const std::string& mode, const std::string& ip,
-                                 const std::string& mask, const std::string& gw,
-                                 const std::string& dns, std::string& err) {
+static std::string iso_now() {
+    char buf[64];
+    time_t t = time(nullptr);
+    struct tm* tm = gmtime(&t);
+    strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", tm);
+    return std::string(buf);
+}
+
+/* System network apply is systemd-networkd single-style (see network_apply).
+ * Without the full execution gate (env + confirm + operationId) the call
+ * persists the intent for audit and returns success; applied in the config
+ * state machine therefore means the intent was stored, not that the host
+ * network was reconfigured. DVS_FORCE_NETWORK_FAIL=1 forces failure for
+ * rollback testing. */
+static bool intent_log_network(const std::string& intent, std::string& err) {
     if (std::getenv("DVS_FORCE_NETWORK_FAIL") &&
         std::string(std::getenv("DVS_FORCE_NETWORK_FAIL")) == "1") {
         err = "injected failure (DVS_FORCE_NETWORK_FAIL=1)";
         return false;
     }
-    const char* allow = std::getenv("DVS_ALLOW_NETWORK_APPLY");
-    std::string intent = std::string("{\"mode\":\"") + mode +
-        "\",\"ip\":\"" + ip + "\",\"mask\":\"" + mask +
-        "\",\"gateway\":\"" + gw + "\",\"dns\":\"" + dns + "\"}";
-    if (!allow) {
-        fprintf(stderr, "dvs-agent: network dry-run (set DVS_ALLOW_NETWORK_APPLY=1 to apply): %s\n",
-                intent.c_str());
-        return true;
-    }
-    {
-        std::string dir = "/var/lib/dvs_agent";
-        std::string cmd = std::string("mkdir -p ") + dir + " 2>/dev/null";
-        if (system(cmd.c_str()) != 0) {
-            err = "cannot create state dir";
-            return false;
-        }
-        std::ofstream f(dir + "/network_applied.json", std::ios::binary | std::ios::trunc);
-        if (!f) { err = "cannot persist network intent"; return false; }
-        f << intent;
-        f.close();
-        if (!f) { err = "cannot persist network intent"; return false; }
-    }
-    fprintf(stderr, "dvs-agent: network applied: %s\n", intent.c_str());
+    fprintf(stderr, "dvs-agent: network intent stored (system untouched): %s\n",
+            intent.c_str());
     return true;
 }
 
@@ -761,6 +749,7 @@ int main(int argc, char** argv) {
                     g_store->set_desired(scope, val, opid);
                     std::string fail_code;
                     std::string fail_reason;
+                    std::string scope_ok_msg;  // non-empty overrides the generic ok text
                     json_object* node_patch = json_object_new_object();
                     bool forward_media = false;
                     json_object* fwd = nullptr;
@@ -819,18 +808,107 @@ int main(int argc, char** argv) {
                             }
                         }
                         if (fail_code.empty()) {
-                            json_object_object_add(node_patch, "input", json_object_get(val));
-                            json_object* wv = nullptr;
-                            if (val && (json_object_object_get_ex(val, "whitelist", &wv) ||
-                                        json_object_object_get_ex(val, "sources", &wv)) && wv) {
-                                fwd = json_object_new_object();
-                                json_object_object_add(fwd, "whitelist", json_object_get(wv));
-                                forward_media = true;
+                            TxParams txp;
+                            std::string tx_err;
+                            if (!tx_parse(val, txp, tx_err)) {
+                                fail_code = "INVALID_ARGUMENT";
+                                fail_reason = tx_err;
+                            } else {
+                                json_object* caps = nullptr;
+                                json_object_object_get_ex(g_store->node(), "capabilities", &caps);
+                                TxCaps txcaps = tx_caps_from_node(caps);
+                                if (!tx_validate(txp, txcaps, tx_err)) {
+                                    fail_code = "INVALID_ARGUMENT";
+                                    fail_reason = tx_err;
+                                }
                             }
-                            g_store->update_node(node_patch);
-                            json_object_put(node_patch);
-                            node_patch = json_object_new_object();
-                            g_store->mark_applied(scope, 0);
+                            if (fail_code.empty()) {
+                                /* Store an explicit shape, not the raw request. */
+                                json_object* in = json_object_new_object();
+                                json_object_object_add(in, "port", json_object_new_string(txp.port.c_str()));
+                                if (txp.hasEncode) {
+                                    json_object* enc = json_object_new_object();
+                                    json_object_object_add(enc, "codec", json_object_new_string(txp.enc.codec.c_str()));
+                                    json_object_object_add(enc, "width", json_object_new_int(txp.enc.width));
+                                    json_object_object_add(enc, "height", json_object_new_int(txp.enc.height));
+                                    json_object_object_add(enc, "fps", json_object_new_int(txp.enc.fps));
+                                    json_object_object_add(enc, "bitrateKbps", json_object_new_int(txp.enc.bitrate));
+                                    json_object_object_add(in, "encode", enc);
+                                }
+                                if (txp.hasTarget) {
+                                    json_object* tgt = json_object_new_object();
+                                    json_object_object_add(tgt, "sip", json_object_new_string(txp.tgt.sip.c_str()));
+                                    json_object_object_add(tgt, "udpPort", json_object_new_int(txp.tgt.udpPort));
+                                    json_object_object_add(in, "target", tgt);
+                                }
+                                json_object_object_add(node_patch, "input", in);
+                                json_object* wv = nullptr;
+                                if (val && (json_object_object_get_ex(val, "whitelist", &wv) ||
+                                            json_object_object_get_ex(val, "sources", &wv)) && wv) {
+                                    /* Whitelist stays RX admission (output role);
+                                     * harmless to forward in the input role. */
+                                    fwd = json_object_new_object();
+                                    json_object_object_add(fwd, "whitelist", json_object_get(wv));
+                                    forward_media = true;
+                                }
+                                g_store->update_node(node_patch);
+                                json_object_put(node_patch);
+                                node_patch = json_object_new_object();
+                                bool tx_requested = txp.hasEncode || txp.hasTarget;
+                                if (!tx_requested) {
+                                    g_store->mark_applied(scope, 0);
+                                } else if (!txp.hasEncode || !txp.hasTarget) {
+                                    fail_code = "INVALID_ARGUMENT";
+                                    fail_reason = "发送需同时给出编码与目标参数";
+                                } else {
+                                    /* Sync the engine role first so mutual
+                                     * exclusion (RX off in input role) holds
+                                     * before TX starts. */
+                                    json_object* rv = json_object_new_object();
+                                    json_object_object_add(rv, "scope", json_object_new_string("role"));
+                                    json_object* rval = json_object_new_object();
+                                    json_object_object_add(rval, "role", json_object_new_string(cur_role.c_str()));
+                                    json_object_object_add(rv, "value", rval);
+                                    std::string rr = g_media->request("configure", rv);
+                                    (void)rr;  // role sync is best-effort; tx_start is authoritative
+                                    json_object_put(rv);
+                                    json_object* payload = tx_start_payload(txp);
+                                    std::string tr = g_media->request("tx_start", payload);
+                                    json_object_put(payload);
+                                    json_object* to = json_tokener_parse(tr.c_str());
+                                    bool ok = false;
+                                    std::string code, msg, state;
+                                    if (to) {
+                                        json_object* okv = nullptr;
+                                        if (json_object_object_get_ex(to, "ok", &okv) && okv)
+                                            ok = json_object_get_boolean(okv) != 0;
+                                        json_object* cv = nullptr;
+                                        if (json_object_object_get_ex(to, "code", &cv) && cv)
+                                            code = json_object_get_string(cv);
+                                        json_object* mv2 = nullptr;
+                                        if (json_object_object_get_ex(to, "msg", &mv2) && mv2)
+                                            msg = json_object_get_string(mv2);
+                                        json_object* dd = nullptr;
+                                        if (json_object_object_get_ex(to, "data", &dd) && dd)
+                                            state = get_str(dd, "state");
+                                        json_object_put(to);
+                                    } else {
+                                        code = "TX_START_UNPARSABLE";
+                                        msg = "media engine response unparsable";
+                                    }
+                                    if (!ok) {
+                                        fail_code = code.empty() ? "TX_START_FAILED" : code;
+                                        fail_reason = msg.empty() ? "media engine refused tx start" : msg;
+                                        g_store->mark_failed(scope, fail_code.c_str(), fail_reason.c_str());
+                                    } else if (state == "running") {
+                                        g_store->mark_applied(scope, 0);
+                                        scope_ok_msg = "输入采集发送已启动";
+                                    } else {
+                                        g_store->mark_applied(scope, 0);
+                                        scope_ok_msg = "参数已下发，数据面待单板联调（TX_BACKEND_PENDING）";
+                                    }
+                                }
+                            }
                         }
                     } else if (scope == "output") {
                         json_object* wv = nullptr; json_object* hv = nullptr; json_object* zv = nullptr;
@@ -887,15 +965,23 @@ int main(int argc, char** argv) {
                         std::string nmode = (val && json_object_object_get_ex(val, "mode", &mv) && mv) ? json_object_get_string(mv) : "dhcp";
                         json_object* iv = nullptr; json_object* kv = nullptr;
                         json_object* gv = nullptr; json_object* dvv = nullptr; json_object* sv = nullptr;
+                        json_object* ifv = nullptr; json_object* cfv = nullptr;
                         std::string ip = (val && json_object_object_get_ex(val, "ip", &iv) && iv) ? json_object_get_string(iv) : "";
                         std::string mask = (val && json_object_object_get_ex(val, "mask", &kv) && kv) ? json_object_get_string(kv) : "";
                         std::string gw = (val && json_object_object_get_ex(val, "gateway", &gv) && gv) ? json_object_get_string(gv) : "";
                         std::string dns = (val && json_object_object_get_ex(val, "dns", &dvv) && dvv) ? json_object_get_string(dvv) : "";
                         std::string srv = (val && json_object_object_get_ex(val, "server", &sv) && sv) ? json_object_get_string(sv) : "";
+                        std::string iface = (val && json_object_object_get_ex(val, "iface", &ifv) && ifv) ? json_object_get_string(ifv) : "eth0";
+                        bool confirm = val && json_object_object_get_ex(val, "confirm", &cfv) && cfv && json_object_get_boolean(cfv);
+                        std::string srv_host;
+                        int srv_port = 0;
+                        std::string srv_err;
                         if (nmode != "dhcp" && nmode != "static") { fail_code = "INVALID_ARGUMENT"; fail_reason = "网络方式非法"; }
                         else if (nmode == "static" && (!valid_ip4(ip) || !valid_ip4(mask) || !valid_ip4(gw) || !valid_ip4(dns))) {
                             fail_code = "INVALID_ARGUMENT"; fail_reason = "静态地址格式不正确";
                         } else if (srv.empty()) { fail_code = "INVALID_ARGUMENT"; fail_reason = "缺少注册服务器地址"; }
+                        else if (!net_parse_server(srv, srv_host, srv_port, srv_err)) { fail_code = "INVALID_ARGUMENT"; fail_reason = std::string("注册服务器地址非法: ") + srv_err; }
+                        else if (!net_valid_iface(iface)) { fail_code = "INVALID_ARGUMENT"; fail_reason = "网卡名非法"; }
                         if (fail_code.empty()) {
                             /* Snapshot before mutating so a failed system apply can
                              * roll back the node object to the previous values. */
@@ -903,15 +989,42 @@ int main(int argc, char** argv) {
                             json_object_object_get_ex(g_store->node(), "network", &net_old);
                             json_object* net_old_copy = net_old ? json_object_get(net_old) : json_object_new_object();
                             std::string ip_old = get_str(g_store->node(), "ip");
-                            std::string apply_err;
-                            if (!apply_system_network(nmode, ip, mask, gw, dns, apply_err)) {
+                            NetExecParams nep;
+                            nep.mode = nmode; nep.ip = ip; nep.mask = mask;
+                            nep.gw = gw; nep.dns = dns; nep.server = srv;
+                            nep.iface = iface; nep.opid = opstr;
+                            bool executed = false;
+                            bool sys_ok = false;
+                            bool sys_rb = false;
+                            std::string sys_err;
+                            std::string method = "systemd-networkd";
+                            if (net_execution_requested(confirm, opstr)) {
+                                NetExecResult nr = net_apply_real(nep);
+                                executed = nr.executed; sys_ok = nr.ok;
+                                sys_rb = nr.rolledBack; sys_err = nr.error;
+                                method = nr.method;
+                            } else {
+                                std::string intent = std::string("{\"mode\":\"") + nmode +
+                                    "\",\"iface\":\"" + iface + "\",\"server\":\"" + srv + "\"}";
+                                sys_ok = intent_log_network(intent, sys_err);
+                            }
+                            json_object* nsys = json_object_new_object();
+                            json_object_object_add(nsys, "executed", json_object_new_boolean(executed ? 1 : 0));
+                            json_object_object_add(nsys, "method", json_object_new_string(method.c_str()));
+                            json_object_object_add(nsys, "at", json_object_new_string(iso_now().c_str()));
+                            if (!sys_err.empty())
+                                json_object_object_add(nsys, "error", json_object_new_string(sys_err.c_str()));
+                            json_object_object_add(nsys, "rolledBack", json_object_new_boolean(sys_rb ? 1 : 0));
+                            if (!sys_ok) {
                                 json_object* rb = json_object_new_object();
                                 json_object_object_add(rb, "network", net_old_copy);
                                 json_object_object_add(rb, "ip", json_object_new_string(ip_old.c_str()));
+                                json_object_object_add(rb, "networkSystem", nsys);
                                 g_store->update_node(rb);
                                 json_object_put(rb);
                                 fail_code = "NET_APPLY_FAILED";
-                                fail_reason = std::string("网络系统应用失败，已回滚: ") + apply_err;
+                                fail_reason = executed ? (std::string("网络系统应用失败，已回滚: ") + sys_err)
+                                                     : (std::string("网络意图落库失败: ") + sys_err);
                                 json_object_put(net_old_copy);
                             } else {
                                 json_object_put(net_old_copy);
@@ -922,16 +1035,21 @@ int main(int argc, char** argv) {
                                     json_object_object_add(net, "gateway", json_object_new_string(gw.c_str()));
                                     json_object_object_add(net, "dns", json_object_new_string(dns.c_str()));
                                     json_object_object_add(net, "server", json_object_new_string(srv.c_str()));
+                                    json_object_object_add(net, "iface", json_object_new_string(iface.c_str()));
                                     json_object_object_add(node_patch, "ip", json_object_new_string(ip.c_str()));
                                     json_object_object_add(net, "ip", json_object_new_string(ip.c_str()));
                                 } else {
                                     json_object_object_add(net, "server", json_object_new_string(srv.c_str()));
+                                    json_object_object_add(net, "iface", json_object_new_string(iface.c_str()));
                                 }
                                 json_object_object_add(node_patch, "network", net);
+                                json_object_object_add(node_patch, "networkSystem", nsys);
                                 g_store->update_node(node_patch);
                                 json_object_put(node_patch);
                                 node_patch = json_object_new_object();
                                 g_store->mark_applied(scope, 0);
+                                scope_ok_msg = executed ? "系统网络已切换并通过连通检查"
+                                                      : "意图已保存，系统网络未切换（需隔离环境确认执行）";
                             }
                         }
                     } else if (scope == "registration") {
@@ -975,7 +1093,20 @@ int main(int argc, char** argv) {
                             std::string usr = (val && json_object_object_get_ex(val, "user", &uv) && uv) ? json_object_get_string(uv) : "";
                             if (srv.empty() || port < 1 || port > 65535 || dev.empty() || usr.empty()) {
                                 fail_code = "INVALID_ARGUMENT"; fail_reason = "SIP 参数不完整";
-                            } else if (!tcp_reachable(srv, port, 3000)) {
+                            } else {
+                                /* Publish the probing window so polling can see
+                                 * it; the result below overwrites it. This is
+                                 * a connectivity probe, not a SIP session. */
+                                json_object* probing = json_object_new_object();
+                                json_object* sip_probe = json_object_new_object();
+                                json_object_object_add(sip_probe, "enabled", json_object_new_boolean(1));
+                                json_object_object_add(sip_probe, "state", json_object_new_string("probing"));
+                                json_object_object_add(sip_probe, "server", json_object_new_string(srv.c_str()));
+                                json_object_object_add(sip_probe, "port", json_object_new_int(port));
+                                json_object_object_add(probing, "sip", sip_probe);
+                                g_store->update_node(probing);
+                                json_object_put(probing);
+                                if (!tcp_reachable(srv, port, 3000)) {
                                 json_object* sip = json_object_new_object();
                                 json_object_object_add(sip, "enabled", json_object_new_boolean(1));
                                 json_object_object_add(sip, "state", json_object_new_string("failed"));
@@ -997,6 +1128,7 @@ int main(int argc, char** argv) {
                                 json_object_put(node_patch);
                                 node_patch = json_object_new_object();
                                 g_store->mark_applied(scope, 0);
+                            }
                             }
                         }
                     }
@@ -1100,7 +1232,8 @@ int main(int argc, char** argv) {
                     json_object* cfg = g_store->get_config(scope, node_id);
                     if (body) json_object_put(body);
                     const char* ok_msg = (scope == "output" && forward_media) ? "配置已保存，等待媒体生效" : "配置已提交";
-                    send_json(res, envelope_ok(cfg, fail_code.empty() ? ok_msg : "配置失败"));
+                    const char* ok_text = scope_ok_msg.empty() ? ok_msg : scope_ok_msg.c_str();
+                    send_json(res, envelope_ok(cfg, fail_code.empty() ? ok_text : "配置失败"));
                     return;
                 }
                 if (req.method == "POST" && action == "retry") {
@@ -1306,6 +1439,28 @@ int main(int argc, char** argv) {
                 json_object_object_get_ex(d, "lanes", &lanes);
             send_json(res, envelope_ok(lanes ? json_object_get(lanes)
                                              : json_object_new_array(), ""));
+            if (o) json_object_put(o);
+            return;
+        }
+        // TX session snapshot (input role): state is idle/configured/
+        // running/failed. An unreachable engine yields its error envelope
+        // instead of an empty object, so unknown is never misread as idle.
+        if (req.method == "GET" && req.path == "/api/v1/node/media/tx") {
+            std::string r = g_media->query_state();
+            json_object* o = json_tokener_parse(r.c_str());
+            json_object* okv = nullptr;
+            bool ok = o && json_object_object_get_ex(o, "ok", &okv) && okv &&
+                      json_object_get_boolean(okv);
+            json_object* d = nullptr;
+            json_object* tx = nullptr;
+            if (ok && json_object_object_get_ex(o, "data", &d) && d)
+                json_object_object_get_ex(d, "tx", &tx);
+            if (!ok) {
+                send_json(res, o ? o : json_object_new_object());
+                return;
+            }
+            send_json(res, envelope_ok(tx ? json_object_get(tx)
+                                           : json_object_new_object(), ""));
             if (o) json_object_put(o);
             return;
         }

@@ -64,11 +64,23 @@ Maintenance::Maintenance(NodeStore* store, MediaIpcClient* media)
 json_object* Maintenance::reboot() {
     bool switched = store_->apply_pending_role();
     if (switched) store_->mark_applied("role", 0);
-    if (media_) {
+    std::string role;
+    {
         json_object* node = store_->node();
         json_object* r = nullptr;
-        std::string role;
-        if (node && json_object_object_get_ex(node, "role", &r) && r) role = json_object_get_string(r);
+        if (node && json_object_object_get_ex(node, "role", &r) && r)
+            role = json_object_get_string(r);
+    }
+    if (media_ && !role.empty()) {
+        /* Sync the engine role so mutual exclusion holds (input stops RX,
+         * output stops TX) even when the reboot itself is gated. */
+        json_object* rv = json_object_new_object();
+        json_object_object_add(rv, "scope", json_object_new_string("role"));
+        json_object* rval = json_object_new_object();
+        json_object_object_add(rval, "role", json_object_new_string(role.c_str()));
+        json_object_object_add(rv, "value", rval);
+        media_->request("configure", rv);
+        json_object_put(rv);
         if (role == "input") media_->request("clear", nullptr);
     }
     bool allowed = (std::getenv("DVS_ALLOW_REBOOT") != nullptr);

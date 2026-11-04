@@ -25,6 +25,14 @@ typedef struct {
     /* max DRM layers (plane count) */
     int    max_layers;
 
+    /* TX/send static ceiling (SoC public limits, not probed). Per-board
+     * variance, if any, is documented by the board bring-up. */
+    char   tx_codecs[64]; /* comma list, e.g. "h264,h265" */
+    int    tx_max_w;
+    int    tx_max_h;
+    int    tx_max_fps;
+    int    tx_max_br_kbps;
+
     /* PTP */
     char   ptp_state[32];  /* "synced" | "unsynced" | "unknown" */
     int    ptp_offset_us;  /* TAI offset in microseconds */
@@ -40,6 +48,9 @@ void dvs_capability_refresh_mtl(dvs_capability* cap, void* mtl_handle);
 
 /* Release dynamically allocated arrays inside cap. */
 void dvs_capability_free(dvs_capability* cap);
+
+/* Fill the TX static ceiling (shared by probe default and seed). */
+void dvs_capability_tx_defaults(dvs_capability* cap);
 
 /* Serialize capability as a JSON string (caller json_object_put). NULL on err. */
 char* dvs_capability_to_json(const dvs_capability* cap);

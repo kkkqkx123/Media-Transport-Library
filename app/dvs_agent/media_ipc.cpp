@@ -66,6 +66,73 @@ bool MediaIpcClient::ensure_conn_locked() {
     return true;
 }
 
+static void cache_event_locked(std::string* events, size_t kRing, size_t& head,
+                               size_t& count, const std::string& full) {
+    size_t tail = (head + count) % kRing;
+    if (count == kRing) {
+        events[head].clear();
+        head = (head + 1) % kRing;
+        count--;
+        tail = (head + count) % kRing;
+    }
+    events[tail] = full;
+    count++;
+}
+
+void MediaIpcClient::drain_socket_locked() {
+    if (fd_ < 0) return;
+    for (;;) {
+        size_t pos = pending_line_.find('\n');
+        while (pos != std::string::npos) {
+            std::string full = pending_line_.substr(0, pos);
+            pending_line_.erase(0, pos + 1);
+            json_object* o = parse_line(full);
+            if (o) {
+                json_object* tv = nullptr;
+                const char* t = nullptr;
+                if (json_object_object_get_ex(o, "type", &tv) && tv)
+                    t = json_object_get_string(tv);
+                if (t && is_event_type(t))
+                    cache_event_locked(events_, kEventRing, ev_head_, ev_count_, full);
+                /* stray non-event with no waiter is discarded */
+                json_object_put(o);
+            }
+            pos = pending_line_.find('\n');
+        }
+        struct pollfd pfd = {.fd = fd_, .events = POLLIN};
+        int pr = poll(&pfd, 1, 0);
+        if (pr < 0) {
+            if (errno == EINTR) continue;
+            close_locked();
+            return;
+        }
+        if (pr == 0) return;
+        if (pfd.revents & (POLLERR | POLLNVAL)) {
+            close_locked();
+            return;
+        }
+        if (!(pfd.revents & POLLIN)) {
+            if (pfd.revents & POLLHUP) {
+                char tmp[512];
+                ssize_t n = read(fd_, tmp, sizeof(tmp));
+                if (n > 0) {
+                    pending_line_.append(tmp, (size_t)n);
+                    continue;
+                }
+                close_locked();
+            }
+            return;
+        }
+        char buf[8192];
+        ssize_t n = read(fd_, buf, sizeof(buf));
+        if (n <= 0) {
+            close_locked();
+            return;
+        }
+        pending_line_.append(buf, (size_t)n);
+    }
+}
+
 std::string MediaIpcClient::request(const std::string& type, json_object* payload,
                                     int timeout_ms) {
     if (sock_path_.empty())
@@ -75,11 +142,13 @@ std::string MediaIpcClient::request(const std::string& type, json_object* payloa
     std::lock_guard<std::mutex> lk(mtx_);
 
     /* build request line */
+    std::string expect;
     json_object* req = json_object_new_object();
     json_object_object_add(req, "type", json_object_new_string(type.c_str()));
     {
         char buf[32];
         snprintf(buf, sizeof(buf), "req-%ld", ++seq_);
+        expect = buf;
         json_object_object_add(req, "messageId", json_object_new_string(buf));
     }
     if (payload)
@@ -111,24 +180,21 @@ std::string MediaIpcClient::request(const std::string& type, json_object* payloa
                 pending_line_.erase(0, pos + 1);
                 json_object* o = parse_line(full);
                 if (!o) continue;
-                const char* rid = nullptr;
-                json_object* ridv = nullptr;
-                if (json_object_object_get_ex(o, "requestId", &ridv) && ridv)
-                    rid = json_object_get_string(ridv);
                 json_object* tv = nullptr;
                 const char* t = nullptr;
                 if (json_object_object_get_ex(o, "type", &tv) && tv)
                     t = json_object_get_string(tv);
                 if (t && is_event_type(t)) {
-                    size_t tail = (ev_head_ + ev_count_) % kEventRing;
-                    if (ev_count_ == kEventRing) {
-                        /* full: drop the oldest */
-                        events_[ev_head_].clear();
-                        ev_head_ = (ev_head_ + 1) % kEventRing;
-                        ev_count_--;
-                    }
-                    events_[tail] = full;
-                    ev_count_++;
+                    cache_event_locked(events_, kEventRing, ev_head_, ev_count_, full);
+                    json_object_put(o);
+                    continue;
+                }
+                const char* rid = nullptr;
+                json_object* ridv = nullptr;
+                if (json_object_object_get_ex(o, "requestId", &ridv) && ridv)
+                    rid = json_object_get_string(ridv);
+                if (!rid || expect != rid) {
+                    /* stray response for another waiter: discard */
                     json_object_put(o);
                     continue;
                 }
@@ -174,6 +240,7 @@ std::string MediaIpcClient::hello() {
 
 json_object* MediaIpcClient::drain_events() {
     std::lock_guard<std::mutex> lk(mtx_);
+    drain_socket_locked();
     json_object* arr = json_object_new_array();
     for (size_t i = 0; i < ev_count_; i++) {
         const std::string& line = events_[(ev_head_ + i) % kEventRing];
@@ -188,4 +255,9 @@ json_object* MediaIpcClient::drain_events() {
 size_t MediaIpcClient::pending_events() const {
     std::lock_guard<std::mutex> lk(mtx_);
     return ev_count_;
+}
+
+bool MediaIpcClient::connected() const {
+    std::lock_guard<std::mutex> lk(mtx_);
+    return fd_ >= 0;
 }

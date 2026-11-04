@@ -7,6 +7,7 @@
 #include <json-c/json.h>
 #include <poll.h>
 #include <pthread.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,20 +17,30 @@
 
 #define DVS_IPC_MAX_CLIENTS 8
 #define DVS_IPC_BUF 8192
+#define DVS_IPC_IDEM 32
 
 /* ------------------------------------------------------------------ */
 /* per-connection state                                                */
 /* ------------------------------------------------------------------ */
 
 typedef struct {
+  char id[64];
+  char* resp;
+} dvs_idem_entry_t;
+
+typedef struct {
   int fd;
   int active;
+  unsigned long gen;
   pthread_mutex_t wmu; /* guards writes from reader + worker threads */
+  dvs_idem_entry_t idem[DVS_IPC_IDEM];
+  int idem_head;
+  int idem_count;
 } dvs_client_t;
 
 static dvs_client_t g_clients[DVS_IPC_MAX_CLIENTS];
 static pthread_mutex_t g_clients_mu = PTHREAD_MUTEX_INITIALIZER;
-static pthread_mutex_t g_wmu_global = PTHREAD_MUTEX_INITIALIZER; /* sequence ids */
+static pthread_mutex_t g_seq_mu = PTHREAD_MUTEX_INITIALIZER;
 static long g_seq = 0;
 static int g_prepare_delay_ms = 50;
 
@@ -56,7 +67,7 @@ static int write_line_locked(dvs_client_t* c, const char* line) {
 
 static int send_envelope(dvs_client_t* c, const char* request_id, int status,
                          const char* code, const char* msg, const char* data_json) {
-  char buf[1024];
+  char buf[8192];
   snprintf(buf, sizeof(buf),
            "{\"ok\":%s,\"status\":%d,\"code\":\"%s\",\"msg\":\"%s\",\"data\":%s,\"requestId\":\"%s\"}",
            (status < 400) ? "true" : "false", status, code, msg,
@@ -64,8 +75,55 @@ static int send_envelope(dvs_client_t* c, const char* request_id, int status,
   return write_line_locked(c, buf);
 }
 
+/* Per-connection messageId replay cache. Only the owning reader thread
+ * touches it, so no extra lock is needed. */
+static const char* idem_lookup(dvs_client_t* c, const char* rid) {
+  for (int i = 0; i < c->idem_count; i++) {
+    int idx = (c->idem_head + DVS_IPC_IDEM - 1 - i + DVS_IPC_IDEM) % DVS_IPC_IDEM;
+    if (c->idem[idx].resp && strcmp(c->idem[idx].id, rid) == 0) return c->idem[idx].resp;
+  }
+  return NULL;
+}
+
+static void idem_store(dvs_client_t* c, const char* rid, const char* resp_line) {
+  int idx;
+  if (c->idem_count < DVS_IPC_IDEM) {
+    idx = (c->idem_head + c->idem_count) % DVS_IPC_IDEM;
+    c->idem_count++;
+  } else {
+    idx = c->idem_head;
+    free(c->idem[idx].resp);
+    c->idem[idx].resp = NULL;
+    c->idem_head = (c->idem_head + 1) % DVS_IPC_IDEM;
+  }
+  snprintf(c->idem[idx].id, sizeof(c->idem[idx].id), "%s", rid);
+  c->idem[idx].resp = strdup(resp_line);
+}
+
+static void idem_clear(dvs_client_t* c) {
+  for (int i = 0; i < DVS_IPC_IDEM; i++) {
+    free(c->idem[i].resp);
+    c->idem[i].resp = NULL;
+    c->idem[i].id[0] = '\0';
+  }
+  c->idem_head = 0;
+  c->idem_count = 0;
+}
+
+static int respond_cached(dvs_client_t* c, const char* rid, int cacheable,
+                          int status, const char* code, const char* msg,
+                          const char* data_json) {
+  char buf[8192];
+  snprintf(buf, sizeof(buf),
+           "{\"ok\":%s,\"status\":%d,\"code\":\"%s\",\"msg\":\"%s\",\"data\":%s,\"requestId\":\"%s\"}",
+           (status < 400) ? "true" : "false", status, code, msg,
+           data_json ? data_json : "{}", rid ? rid : "ipc");
+  if (cacheable && rid && rid[0]) idem_store(c, rid, buf);
+  return write_line_locked(c, buf);
+}
+
 static void broadcast_event(const char* type, const char* data_json) {
-  char buf[1024];
+  char buf[8192];
   snprintf(buf, sizeof(buf), "{\"type\":\"%s\",\"data\":%s}", type,
            data_json ? data_json : "{}");
   pthread_mutex_lock(&g_clients_mu);
@@ -74,6 +132,22 @@ static void broadcast_event(const char* type, const char* data_json) {
       write_line_locked(&g_clients[i], buf);
   }
   pthread_mutex_unlock(&g_clients_mu);
+}
+
+static void broadcast_state_changed(void) {
+  dvs_state_t snap;
+  dvs_state_snapshot(&snap);
+  const char* name = "idle";
+  switch (snap.op_state) {
+    case DVS_OP_PREPARING: name = "preparing"; break;
+    case DVS_OP_PREPARED: name = "prepared"; break;
+    default: break;
+  }
+  char ev[256];
+  snprintf(ev, sizeof(ev),
+           "{\"operationId\":\"%s\",\"revision\":%d,\"state\":\"%s\",\"opState\":%d}",
+           snap.operation_id, snap.revision, name, (int)snap.op_state);
+  broadcast_event("media.state_changed", ev);
 }
 
 /* ------------------------------------------------------------------ */
@@ -94,12 +168,24 @@ static int int_field(struct json_object* o, const char* key, int def) {
   return def;
 }
 
+/* Business body: agent nests fields under payload, older callers use the top
+ * level. type/messageId stay top-level; everything else reads from the body. */
+static struct json_object* body_of(struct json_object* req) {
+  struct json_object* p = NULL;
+  if (req && json_object_object_get_ex(req, "payload", &p) && p &&
+      json_object_is_type(p, json_type_object))
+    return p;
+  return req;
+}
+
 /* ------------------------------------------------------------------ */
 /* async prepare worker                                                */
 /* ------------------------------------------------------------------ */
 
 typedef struct {
-  dvs_client_t* client;
+  int slot;
+  unsigned long gen;
+  int fd;
   char request_id[64];
   char opid[64];
   int revision;
@@ -120,21 +206,36 @@ static void* prepare_worker(void* arg) {
            "\"data\":{\"operationId\":\"%s\",\"revision\":%d,\"status\":\"%s\"}}",
            job->request_id, job->opid, job->revision,
            (rc == 0) ? "ready" : "blocked");
-  write_line_locked(job->client, ev);
+
+  pthread_mutex_lock(&g_clients_mu);
+  int ok = (job->slot >= 0 && job->slot < DVS_IPC_MAX_CLIENTS &&
+            g_clients[job->slot].active && g_clients[job->slot].gen == job->gen &&
+            g_clients[job->slot].fd == job->fd);
+  dvs_client_t* c = ok ? &g_clients[job->slot] : NULL;
+  if (c) pthread_mutex_lock(&c->wmu);
+  pthread_mutex_unlock(&g_clients_mu);
+  if (c) {
+    ssize_t n = write(c->fd, ev, strlen(ev));
+    ssize_t r = (n > 0) ? write(c->fd, "\n", 1) : -1;
+    (void)r;
+    pthread_mutex_unlock(&c->wmu);
+  }
 
   free(job);
   return NULL;
 }
 
-static void spawn_prepare(dvs_client_t* c, const char* request_id,
-                          const char* opid, int revision) {
+static void spawn_prepare(dvs_client_t* c, int slot, unsigned long gen, int fd,
+                          const char* request_id, const char* opid, int revision) {
   prepare_job_t* job = calloc(1, sizeof(*job));
   if (!job) {
     dvs_state_fail_prepare(opid);
     send_envelope(c, request_id, 500, "INTERNAL", "out of memory", NULL);
     return;
   }
-  job->client = c;
+  job->slot = slot;
+  job->gen = gen;
+  job->fd = fd;
   snprintf(job->request_id, sizeof(job->request_id), "%s", request_id);
   snprintf(job->opid, sizeof(job->opid), "%s", opid);
   job->revision = revision;
@@ -163,20 +264,28 @@ static int handle_line(dvs_client_t* c, char* line) {
   const char* msg_id = str_field(req, "messageId");
 
   char rid[64];
-  if (msg_id && msg_id[0]) {
+  int cacheable = (msg_id && msg_id[0]) ? 1 : 0;
+  if (cacheable) {
     snprintf(rid, sizeof(rid), "%s", msg_id);
+    const char* hit = idem_lookup(c, rid);
+    if (hit) {
+      write_line_locked(c, hit);
+      json_object_put(req);
+      return 0;
+    }
   } else {
-    pthread_mutex_lock(&g_wmu_global);
+    pthread_mutex_lock(&g_seq_mu);
     long s = ++g_seq;
-    pthread_mutex_unlock(&g_wmu_global);
+    pthread_mutex_unlock(&g_seq_mu);
     snprintf(rid, sizeof(rid), "req-%ld", s);
   }
 
+  struct json_object* body = body_of(req);
   char err[128] = {0};
   char data[512];
 
   if (!type || !type[0]) {
-    send_envelope(c, rid, 400, "INVALID_ARGUMENT", "missing type", NULL);
+    respond_cached(c, rid, cacheable, 400, "INVALID_ARGUMENT", "missing type", NULL);
     goto done;
   }
 
@@ -194,20 +303,31 @@ static int handle_line(dvs_client_t* c, char* line) {
     snprintf(data, sizeof(data),
              "{\"ipcVersion\":%d,\"bundleVersion\":\"%s\",\"state\":\"%s\",\"revision\":%d}",
              DVS_MEDIA_IPC_VERSION, DVS_NODE_BUNDLE_VERSION, name, snap.revision);
-    send_envelope(c, rid, 200, "OK", "hello", data);
+    respond_cached(c, rid, cacheable, 200, "OK", "hello", data);
   } else if (strcmp(type, "configure") == 0) {
     if (g_hooks.prepare) {
-      if (g_hooks.prepare(req, err, sizeof(err)) != 0) {
-        send_envelope(c, rid, 400, "INVALID_ARGUMENT", err[0] ? err : "bad configure", NULL);
+      if (g_hooks.prepare(body, err, sizeof(err)) != 0) {
+        respond_cached(c, rid, cacheable, 400, "INVALID_ARGUMENT",
+                       err[0] ? err : "bad configure", NULL);
         goto done;
       }
     }
-    send_envelope(c, rid, 200, "OK", "configured", NULL);
+    respond_cached(c, rid, cacheable, 200, "OK", "configured", NULL);
+  } else if (strcmp(type, "set_sources") == 0) {
+    if (g_hooks.prepare) {
+      if (g_hooks.prepare(body, err, sizeof(err)) != 0) {
+        respond_cached(c, rid, cacheable, 400, "INVALID_ARGUMENT",
+                       err[0] ? err : "bad sources", NULL);
+        goto done;
+      }
+    }
+    respond_cached(c, rid, cacheable, 200, "OK", "sources set", NULL);
   } else if (strcmp(type, "prepare") == 0) {
-    const char* opid = str_field(req, "operationId");
-    int revision = int_field(req, "revision", -1);
+    const char* opid = str_field(body, "operationId");
+    int revision = int_field(body, "revision", -1);
     if (!opid || !opid[0]) {
-      send_envelope(c, rid, 400, "INVALID_ARGUMENT", "missing operationId", NULL);
+      respond_cached(c, rid, cacheable, 400, "INVALID_ARGUMENT",
+                     "missing operationId", NULL);
       goto done;
     }
     if (revision < 0) {
@@ -215,21 +335,44 @@ static int handle_line(dvs_client_t* c, char* line) {
       dvs_state_snapshot(&snap);
       revision = snap.revision + 1;
     }
+    /* idempotent replay must not re-validate nor re-spawn the worker */
+    {
+      dvs_state_t snap;
+      dvs_state_snapshot(&snap);
+      if (snap.op_state != DVS_OP_IDLE && strcmp(snap.operation_id, opid) == 0 &&
+          revision == snap.prepared_revision) {
+        respond_cached(c, rid, cacheable, 202, "ACCEPTED", "preparing", NULL);
+        goto done;
+      }
+    }
+    if (g_hooks.prepare) {
+      if (g_hooks.prepare(body, err, sizeof(err)) != 0) {
+        respond_cached(c, rid, cacheable, 400, "INVALID_ARGUMENT",
+                       err[0] ? err : "bad prepare", NULL);
+        goto done;
+      }
+    }
     int rc = dvs_state_begin_prepare(opid, revision, err, sizeof(err));
     if (rc != 0) {
       int status = (rc == DVS_ERR_STALE_REVISION) ? 409 : 400;
       const char* code =
           (rc == DVS_ERR_STALE_REVISION) ? "STALE_REVISION" : "INVALID_ARGUMENT";
-      send_envelope(c, rid, status, code, err, NULL);
+      if (rc == DVS_ERR_INVALID_STATE) {
+        status = 409;
+        code = "INVALID_STATE";
+      }
+      respond_cached(c, rid, cacheable, status, code, err, NULL);
       goto done;
     }
-    spawn_prepare(c, rid, opid, revision);
-    send_envelope(c, rid, 202, "ACCEPTED", "preparing", NULL);
+    int slot = (int)(c - g_clients);
+    spawn_prepare(c, slot, c->gen, c->fd, rid, opid, revision);
+    respond_cached(c, rid, cacheable, 202, "ACCEPTED", "preparing", NULL);
   } else if (strcmp(type, "commit") == 0) {
-    const char* opid = str_field(req, "operationId");
-    int revision = int_field(req, "revision", -1);
+    const char* opid = str_field(body, "operationId");
+    int revision = int_field(body, "revision", -1);
     if (!opid || !opid[0]) {
-      send_envelope(c, rid, 400, "INVALID_ARGUMENT", "missing operationId", NULL);
+      respond_cached(c, rid, cacheable, 400, "INVALID_ARGUMENT",
+                     "missing operationId", NULL);
       goto done;
     }
     if (revision < 0) {
@@ -245,47 +388,56 @@ static int handle_line(dvs_client_t* c, char* line) {
       const char* code = (rc == DVS_ERR_STALE_REVISION) ? "STALE_REVISION"
                          : (rc == DVS_ERR_INVALID_STATE) ? "INVALID_STATE"
                                                          : "INVALID_ARGUMENT";
-      send_envelope(c, rid, status, code, err, NULL);
+      if (rc == DVS_ERR_INVALID_ARG) status = 400;
+      respond_cached(c, rid, cacheable, status, code, err, NULL);
       goto done;
     }
     snprintf(data, sizeof(data), "{\"revision\":%d}", applied);
     /* apply the pending layout to the real engine, if hooks installed */
     if (g_hooks.commit) {
       if (g_hooks.commit() != 0) {
-        send_envelope(c, rid, 500, "INTERNAL", "layout apply failed", NULL);
+        respond_cached(c, rid, cacheable, 500, "INTERNAL", "layout apply failed",
+                       NULL);
         goto done;
       }
     }
-    send_envelope(c, rid, 200, "OK", "committed", data);
+    respond_cached(c, rid, cacheable, 200, "OK", "committed", data);
     char ev[256];
     snprintf(ev, sizeof(ev),
              "{\"operationId\":\"%s\",\"revision\":%d,\"status\":\"applied\"}", opid,
              applied);
     broadcast_event("media.layout_applied", ev);
+    broadcast_state_changed();
   } else if (strcmp(type, "abort") == 0) {
-    const char* opid = str_field(req, "operationId");
-    dvs_state_t snap;
-    dvs_state_snapshot(&snap);
-    if (snap.op_state == DVS_OP_IDLE && (!opid || !opid[0] || !snap.operation_id[0])) {
-      send_envelope(c, rid, 409, "INVALID_STATE", "nothing to abort", NULL);
+    const char* opid = str_field(body, "operationId");
+    int rc = dvs_state_abort(opid);
+    if (rc != 0) {
+      if (rc == DVS_ERR_INVALID_ARG) {
+        respond_cached(c, rid, cacheable, 400, "INVALID_ARGUMENT",
+                       "operation mismatch", NULL);
+      } else {
+        respond_cached(c, rid, cacheable, 409, "INVALID_STATE",
+                       "nothing to abort", NULL);
+      }
       goto done;
     }
-    dvs_state_abort(opid);
     if (g_hooks.abort) g_hooks.abort();
-    send_envelope(c, rid, 200, "OK", "aborted", NULL);
+    respond_cached(c, rid, cacheable, 200, "OK", "aborted", NULL);
+    broadcast_state_changed();
   } else if (strcmp(type, "clear") == 0) {
     if (g_hooks.clear) g_hooks.clear();
     dvs_state_clear();
-    send_envelope(c, rid, 200, "OK", "cleared", NULL);
+    respond_cached(c, rid, cacheable, 200, "OK", "cleared", NULL);
+    broadcast_state_changed();
   } else if (strcmp(type, "tx_start") == 0) {
     if (!g_hooks.tx_start) {
-      send_envelope(c, rid, 501, "NOT_IMPLEMENTED",
-                    "tx backend not attached", NULL);
+      respond_cached(c, rid, cacheable, 501, "NOT_IMPLEMENTED",
+                     "tx backend not attached", NULL);
       goto done;
     }
-    if (g_hooks.tx_start(req, err, sizeof(err)) != 0) {
-      send_envelope(c, rid, 400, "INVALID_ARGUMENT", err[0] ? err : "bad tx params",
-                    NULL);
+    if (g_hooks.tx_start(body, err, sizeof(err)) != 0) {
+      respond_cached(c, rid, cacheable, 400, "INVALID_ARGUMENT",
+                     err[0] ? err : "bad tx params", NULL);
       goto done;
     }
     /* Report the resulting session state so the caller can tell running
@@ -293,14 +445,14 @@ static int handle_line(dvs_client_t* c, char* line) {
     if (g_hooks.tx_status) {
       json_object* tx = g_hooks.tx_status();
       const char* tx_s = json_object_to_json_string(tx);
-      send_envelope(c, rid, 200, "OK", "tx started", tx_s ? tx_s : "{}");
+      respond_cached(c, rid, cacheable, 200, "OK", "tx started", tx_s ? tx_s : "{}");
       if (tx) json_object_put(tx);
     } else {
-      send_envelope(c, rid, 200, "OK", "tx started", NULL);
+      respond_cached(c, rid, cacheable, 200, "OK", "tx started", NULL);
     }
   } else if (strcmp(type, "tx_stop") == 0) {
     if (g_hooks.tx_stop) g_hooks.tx_stop();
-    send_envelope(c, rid, 200, "OK", "tx stopped", NULL);
+    respond_cached(c, rid, cacheable, 200, "OK", "tx stopped", NULL);
   } else if (strcmp(type, "query_state") == 0) {
     dvs_state_t snap;
     dvs_state_snapshot(&snap);
@@ -318,31 +470,31 @@ static int handle_line(dvs_client_t* c, char* line) {
     ptp_off = g_cap.ptp_offset_us;
     if (g_hooks.ptp_state) g_hooks.ptp_state(ptp_state, sizeof(ptp_state), &ptp_off);
     /* Build the data object so the per-lane array can be embedded. */
-    json_object* data = json_object_new_object();
-    json_object_object_add(data, "state", json_object_new_string(name));
-    json_object_object_add(data, "revision", json_object_new_int(snap.revision));
-    json_object_object_add(data, "operationId", json_object_new_string(snap.operation_id));
-    json_object_object_add(data, "opState", json_object_new_int((int)snap.op_state));
-    json_object_object_add(data, "rxSessions", json_object_new_int(rx_sessions));
-    json_object_object_add(data, "decoding", json_object_new_int(decoding));
-    json_object_object_add(data, "layers", json_object_new_int(layers));
+    json_object* datao = json_object_new_object();
+    json_object_object_add(datao, "state", json_object_new_string(name));
+    json_object_object_add(datao, "revision", json_object_new_int(snap.revision));
+    json_object_object_add(datao, "operationId", json_object_new_string(snap.operation_id));
+    json_object_object_add(datao, "opState", json_object_new_int((int)snap.op_state));
+    json_object_object_add(datao, "rxSessions", json_object_new_int(rx_sessions));
+    json_object_object_add(datao, "decoding", json_object_new_int(decoding));
+    json_object_object_add(datao, "layers", json_object_new_int(layers));
     json_object* ptp = json_object_new_object();
     json_object_object_add(ptp, "state", json_object_new_string(ptp_state));
     json_object_object_add(ptp, "offsetUs", json_object_new_int(ptp_off));
-    json_object_object_add(data, "ptp", ptp);
+    json_object_object_add(datao, "ptp", ptp);
     json_object* lanes = (g_hooks.lane_stats) ? g_hooks.lane_stats() : NULL;
     if (!lanes) lanes = json_object_new_array();
-    json_object_object_add(data, "lanes", lanes);
+    json_object_object_add(datao, "lanes", lanes);
     /* TX session snapshot. NULL hook (unit test) means idle. */
     json_object* tx = (g_hooks.tx_status) ? g_hooks.tx_status() : NULL;
     if (!tx) {
       tx = json_object_new_object();
       json_object_object_add(tx, "state", json_object_new_string("idle"));
     }
-    json_object_object_add(data, "tx", tx);
-    const char* data_s = json_object_to_json_string(data);
-    send_envelope(c, rid, 200, "OK", "", data_s);
-    json_object_put(data);
+    json_object_object_add(datao, "tx", tx);
+    const char* data_s = json_object_to_json_string(datao);
+    respond_cached(c, rid, cacheable, 200, "OK", "", data_s);
+    json_object_put(datao);
   } else if (strcmp(type, "capability") == 0) {
     /* CAP-1: refresh live PTP and MTL version before serializing. The hooks
      * are NULL in the no-MTL unit test, which then keeps probed values. */
@@ -365,12 +517,12 @@ static int handle_line(dvs_client_t* c, char* line) {
     }
     char* cs = dvs_capability_to_json(&g_cap);
     (void)refreshed;
-    send_envelope(c, rid, 200, "OK", "", cs ? cs : "{}");
+    respond_cached(c, rid, cacheable, 200, "OK", "", cs ? cs : "{}");
     free(cs);
   } else if (strcmp(type, "event") == 0) {
-    send_envelope(c, rid, 200, "OK", "event", NULL);
+    respond_cached(c, rid, cacheable, 200, "OK", "event", NULL);
   } else {
-    send_envelope(c, rid, 400, "INVALID_ARGUMENT", "unknown type", NULL);
+    respond_cached(c, rid, cacheable, 400, "INVALID_ARGUMENT", "unknown type", NULL);
   }
 
 done:
@@ -381,6 +533,60 @@ done:
 /* ------------------------------------------------------------------ */
 /* server loop                                                         */
 /* ------------------------------------------------------------------ */
+
+static void* client_thread(void* arg) {
+  int idx = (int)(intptr_t)arg;
+  dvs_client_t* c = &g_clients[idx];
+  unsigned long gen;
+  int fd;
+  pthread_mutex_lock(&g_clients_mu);
+  gen = c->gen;
+  fd = c->fd;
+  pthread_mutex_unlock(&g_clients_mu);
+
+  char buf[DVS_IPC_BUF];
+  size_t used = 0;
+  for (;;) {
+    struct pollfd pfd = {.fd = fd, .events = POLLIN};
+    int pr = poll(&pfd, 1, -1);
+    if (pr < 0) {
+      if (errno == EINTR) continue;
+      break;
+    }
+    if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL)) break;
+    if (!(pfd.revents & POLLIN)) break;
+
+    ssize_t n = read(fd, buf + used, sizeof(buf) - 1 - used);
+    if (n <= 0) break;
+    used += (size_t)n;
+    buf[used] = '\0';
+
+    char* start = buf;
+    char* nl;
+    while ((nl = strchr(start, '\n')) != NULL) {
+      *nl = '\0';
+      if (start[0] != '\0') handle_line(c, start);
+      start = nl + 1;
+    }
+    /* keep the trailing partial line */
+    used -= (size_t)(start - buf);
+    memmove(buf, start, used);
+    if (used == sizeof(buf) - 1) {
+      /* oversized garbage line: drop it */
+      used = 0;
+    }
+  }
+
+  pthread_mutex_lock(&g_clients_mu);
+  if (g_clients[idx].gen == gen && g_clients[idx].fd == fd) {
+    g_clients[idx].active = 0;
+    close(fd);
+  } else {
+    close(fd);
+  }
+  pthread_mutex_unlock(&g_clients_mu);
+  return NULL;
+}
 
 int dvs_ipc_server_run(const char* sock_path) {
   int listen_fd;
@@ -409,6 +615,10 @@ int dvs_ipc_server_run(const char* sock_path) {
   dvs_state_init();
   dvs_capability_probe(&g_cap);
   memset(g_clients, 0, sizeof(g_clients));
+  for (int i = 0; i < DVS_IPC_MAX_CLIENTS; i++) {
+    pthread_mutex_init(&g_clients[i].wmu, NULL);
+    g_clients[i].fd = -1;
+  }
 
   for (;;) {
     int client = accept(listen_fd, NULL, NULL);
@@ -418,22 +628,23 @@ int dvs_ipc_server_run(const char* sock_path) {
       continue;
     }
 
-    dvs_client_t* c = NULL;
+    int idx = -1;
     pthread_mutex_lock(&g_clients_mu);
     for (int i = 0; i < DVS_IPC_MAX_CLIENTS; i++) {
       if (!g_clients[i].active) {
-        c = &g_clients[i];
+        idx = i;
         break;
       }
     }
-    if (c) {
-      c->fd = client;
-      c->active = 1;
-      pthread_mutex_init(&c->wmu, NULL);
+    if (idx >= 0) {
+      g_clients[idx].fd = client;
+      g_clients[idx].active = 1;
+      g_clients[idx].gen++;
+      idem_clear(&g_clients[idx]);
     }
     pthread_mutex_unlock(&g_clients_mu);
 
-    if (!c) {
+    if (idx < 0) {
       /* too many clients: reply inline without registering the slot */
       const char* busy =
           "{\"ok\":false,\"status\":503,\"code\":\"BUSY\",\"msg\":\"too many "
@@ -443,45 +654,15 @@ int dvs_ipc_server_run(const char* sock_path) {
       continue;
     }
 
-    /* long-lived connection: read lines until EOF */
-    char buf[DVS_IPC_BUF];
-    size_t used = 0;
-    for (;;) {
-      struct pollfd pfd = {.fd = client, .events = POLLIN};
-      int pr = poll(&pfd, 1, -1);
-      if (pr < 0) {
-        if (errno == EINTR) continue;
-        break;
-      }
-      if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL)) break;
-      if (!(pfd.revents & POLLIN)) break;
-
-      ssize_t n = read(client, buf + used, sizeof(buf) - 1 - used);
-      if (n <= 0) break;
-      used += (size_t)n;
-      buf[used] = '\0';
-
-      char* start = buf;
-      char* nl;
-      while ((nl = strchr(start, '\n')) != NULL) {
-        *nl = '\0';
-        if (start[0] != '\0') handle_line(c, start);
-        start = nl + 1;
-      }
-      /* keep the trailing partial line */
-      used -= (size_t)(start - buf);
-      memmove(buf, start, used);
-      if (used == sizeof(buf) - 1) {
-        /* oversized garbage line: drop it */
-        used = 0;
-      }
+    pthread_t tid;
+    if (pthread_create(&tid, NULL, client_thread, (void*)(intptr_t)idx) != 0) {
+      pthread_mutex_lock(&g_clients_mu);
+      g_clients[idx].active = 0;
+      pthread_mutex_unlock(&g_clients_mu);
+      close(client);
+      continue;
     }
-
-    pthread_mutex_lock(&g_clients_mu);
-    c->active = 0;
-    pthread_mutex_unlock(&g_clients_mu);
-    pthread_mutex_destroy(&c->wmu);
-    close(client);
+    pthread_detach(tid);
   }
 
   close(listen_fd);

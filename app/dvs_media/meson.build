@@ -98,6 +98,7 @@ dvs_media = executable('dvs_media',
   files(
     'dvs_media_main.c',
     'engine/engine_ctx.c',
+    'engine/tx_session.c',
     'engine/session_mgr.c',
     'engine/session_admit.c',
     'engine/layout_executor.c',

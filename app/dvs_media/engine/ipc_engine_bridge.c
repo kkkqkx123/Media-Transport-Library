@@ -194,9 +194,19 @@ static int apply_whitelist(struct json_object* wv, char* err, size_t errlen) {
     return 0;
 }
 
+static struct json_object* effective_body(struct json_object* req) {
+    struct json_object* p = NULL;
+    if (req && json_object_object_get_ex(req, "payload", &p) && p &&
+        json_object_is_type(p, json_type_object))
+        return p;
+    return req;
+}
+
 static int hook_prepare(struct json_object* req, char* err, size_t errlen) {
+    req = effective_body(req);
     struct json_object* wv = NULL;
     if (req && json_object_object_get_ex(req, "whitelist", &wv)) return apply_whitelist(wv, err, errlen);
+    if (req && json_object_object_get_ex(req, "sources", &wv)) return apply_whitelist(wv, err, errlen);
     struct json_object* scopev = NULL;
     if (req && json_object_object_get_ex(req, "scope", &scopev) && scopev) {
         const char* scope = json_object_get_string(scopev);
@@ -225,7 +235,20 @@ static int hook_prepare(struct json_object* req, char* err, size_t errlen) {
             return 0;
         }
     }
-    if (dvs_layout_prepare_from_json(req) != 0) { snprintf(err, errlen, "bad layout"); return -1; }
+    /* Layout staging: only validate when a recognizable layout body is present.
+     * Pure operation frames (operationId/revision/applyAtNs) and the platform
+     * windows/geometry shape are accepted without engine validation in V1. */
+    {
+        struct json_object* t = NULL;
+        if (req && (json_object_object_get_ex(req, "streams", &t) ||
+                     json_object_object_get_ex(req, "layout", &t))) {
+            if (dvs_layout_prepare_from_json(req) != 0) {
+                snprintf(err, errlen, "bad layout");
+                return -1;
+            }
+            return 0;
+        }
+    }
     return 0;
 }
 
@@ -262,6 +285,7 @@ static json_object* hook_lane_stats(void) {
 }
 
 static int hook_tx_start(struct json_object* req, char* err, size_t errlen) {
+    req = effective_body(req);
     if (!s_eng) {
         if (err && errlen > 0) snprintf(err, errlen, "engine not attached");
         return -1;

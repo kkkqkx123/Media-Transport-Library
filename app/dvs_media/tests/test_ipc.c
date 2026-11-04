@@ -66,8 +66,8 @@ static struct json_object* read_line(int fd, int timeout_ms) {
   }
 }
 
-static struct json_object* request(const char* type, const char* msg_id,
-                                   const char* extra_json) {
+static struct json_object* request_on(int fd, const char* type, const char* msg_id,
+                                      const char* extra_json) {
   char line[2048];
   if (extra_json)
     snprintf(line, sizeof(line), "{\"type\":\"%s\",\"messageId\":\"%s\",%s", type,
@@ -76,6 +76,22 @@ static struct json_object* request(const char* type, const char* msg_id,
     snprintf(line, sizeof(line), "{\"type\":\"%s\",\"messageId\":\"%s\"}", type,
              msg_id);
   /* note: extra_json must include its own trailing '}' */
+  (void)write(fd, line, strlen(line));
+  (void)write(fd, "\n", 1);
+  return read_line(fd, 3000);
+}
+
+static struct json_object* request(const char* type, const char* msg_id,
+                                   const char* extra_json) {
+  return request_on(conn_fd, type, msg_id, extra_json);
+}
+
+static struct json_object* request_payload(const char* type, const char* msg_id,
+                                           const char* payload_json) {
+  char line[2048];
+  snprintf(line, sizeof(line),
+           "{\"type\":\"%s\",\"messageId\":\"%s\",\"payload\":%s}", type, msg_id,
+           payload_json);
   (void)write(conn_fd, line, strlen(line));
   (void)write(conn_fd, "\n", 1);
   return read_line(conn_fd, 3000);
@@ -93,6 +109,14 @@ static int jint(struct json_object* o, const char* k) {
   if (o && json_object_object_get_ex(o, k, &v) && v)
     return json_object_get_int(v);
   return -1;
+}
+
+static void drain_pending(int fd) {
+  for (;;) {
+    struct json_object* o = read_line(fd, 200);
+    if (!o) break;
+    json_object_put(o);
+  }
 }
 
 static void* server_thread(void* arg) {
@@ -118,6 +142,26 @@ int main(void) {
         "response echoes messageId");
   json_object_put(r);
 
+  /* 1b. duplicate messageId replays the cached response */
+  r = request("query_state", "m-1dup", NULL);
+  CHECK(r && jint(r, "status") == 200, "first query ok");
+  json_object_put(r);
+  r = request("query_state", "m-1dup", NULL);
+  CHECK(r && jint(r, "status") == 200 && jstr(r, "requestId") &&
+        strcmp(jstr(r, "requestId"), "m-1dup") == 0,
+        "duplicate messageId replayed");
+  json_object_put(r);
+
+  /* 1c. second connection is served while the first stays open */
+  {
+    int fd2 = connect_sock();
+    CHECK(fd2 >= 0, "second client connected");
+    struct json_object* r2 = request_on(fd2, "query_state", "m-2conn", NULL);
+    CHECK(r2 && jint(r2, "status") == 200, "second connection served concurrently");
+    if (r2) json_object_put(r2);
+    close(fd2);
+  }
+
   /* 2. hello handshake reports the bundle contract versions */
   r = request("hello", "m-hello", NULL);
   {
@@ -136,13 +180,19 @@ int main(void) {
   CHECK(r && jint(r, "status") == 202, "prepare returns 202 accepted");
   json_object_put(r);
 
+  /* 3b. idempotent replay does not spawn a second worker: one event only */
+  r = request("prepare", "m-2", "\"operationId\":\"op1\",\"revision\":1}");
+  CHECK(r && jint(r, "status") == 202, "prepare replay returns 202");
+  json_object_put(r);
+
   struct json_object* ev = read_line(conn_fd, 3000);
   const char* ev_type = ev ? jstr(ev, "type") : NULL;
   CHECK(ev && ev_type && strcmp(ev_type, "media.prepare.result") == 0,
         "prepare result event pushed");
   json_object_put(ev);
-  ev = read_line(conn_fd, 500);
-  if (ev) json_object_put(ev); /* consume duplicate event line if any */
+  ev = read_line(conn_fd, 400);
+  CHECK(ev == NULL, "no duplicate prepare event");
+  if (ev) json_object_put(ev);
 
   /* 4. commit */
   r = request("commit", "m-3", "\"operationId\":\"op1\",\"revision\":1}");
@@ -153,6 +203,45 @@ int main(void) {
   CHECK(ev && jstr(ev, "type") && strcmp(jstr(ev, "type"), "media.layout_applied") == 0,
         "layout applied event broadcast");
   json_object_put(ev);
+  ev = read_line(conn_fd, 2000);
+  CHECK(ev && jstr(ev, "type") && strcmp(jstr(ev, "type"), "media.state_changed") == 0,
+        "state changed event broadcast");
+  json_object_put(ev);
+
+  /* 4b. payload-nested prepare/commit works */
+  r = request_payload("prepare", "m-p1", "{\"operationId\":\"opPay\",\"revision\":2}");
+  CHECK(r && jint(r, "status") == 202, "payload prepare accepted");
+  json_object_put(r);
+  ev = read_line(conn_fd, 3000);
+  CHECK(ev && jstr(ev, "type") && strcmp(jstr(ev, "type"), "media.prepare.result") == 0,
+        "payload prepare event pushed");
+  json_object_put(ev);
+  r = request_payload("commit", "m-p2", "{\"operationId\":\"opPay\",\"revision\":2}");
+  CHECK(r && jint(r, "status") == 200, "payload commit ok");
+  json_object_put(r);
+  ev = read_line(conn_fd, 2000);
+  CHECK(ev && jstr(ev, "type") && strcmp(jstr(ev, "type"), "media.layout_applied") == 0,
+        "payload commit broadcasts");
+  json_object_put(ev);
+  ev = read_line(conn_fd, 2000);
+  if (ev) json_object_put(ev); /* state_changed */
+
+  /* 4c. abort matrix: idle refused, happy path clears */
+  r = request("prepare", "m-a1", "\"operationId\":\"opA\",\"revision\":3}");
+  CHECK(r && jint(r, "status") == 202, "abort setup prepare accepted");
+  json_object_put(r);
+  ev = read_line(conn_fd, 3000);
+  if (ev) json_object_put(ev);
+  r = request("abort", "m-a2", "\"operationId\":\"opWrong\"}");
+  CHECK(r && jint(r, "status") == 400, "abort mismatch rejected");
+  json_object_put(r);
+  r = request("abort", "m-a3", "\"operationId\":\"opA\"}");
+  CHECK(r && jint(r, "status") == 200, "abort prepared op ok");
+  json_object_put(r);
+  drain_pending(conn_fd);
+  r = request("abort", "m-a4", NULL);
+  CHECK(r && jint(r, "status") == 409, "abort on idle rejected");
+  json_object_put(r);
 
   /* 5. stale revision rejected */
   r = request("prepare", "m-4", "\"operationId\":\"op2\",\"revision\":0}");
@@ -170,6 +259,7 @@ int main(void) {
   r = request("clear", "m-6", NULL);
   CHECK(r && jint(r, "status") == 200, "clear ok");
   json_object_put(r);
+  drain_pending(conn_fd);
   r = request("bogus", "m-7", NULL);
   CHECK(r && jint(r, "status") == 400, "unknown type rejected");
   json_object_put(r);
@@ -178,7 +268,7 @@ int main(void) {
   r = request("query_state", "m-8", NULL);
   struct json_object* data = NULL;
   if (r) json_object_object_get_ex(r, "data", &data);
-  CHECK(data && jint(data, "revision") == 1, "revision persisted after commit");
+  CHECK(data && jint(data, "revision") == 2, "revision persisted after commit");
   json_object_put(r);
 
   close(conn_fd);

@@ -147,6 +147,26 @@ static void test_bundle_contract() {
   CHECK(codev && std::string(json_object_get_string(codev)) == "MEDIA_ENGINE_UNCONFIGURED",
         "hello without socket reports UNCONFIGURED");
   if (ho) json_object_put(ho);
+  CHECK(!media.connected(), "unconfigured client is not connected");
+  MediaIpcClient bad("/tmp/dvs_agent_test_nonexistent.sock");
+  std::string br = bad.hello();
+  json_object* bo = json_tokener_parse(br.c_str());
+  json_object* bokv = nullptr;
+  json_object* bcodev = nullptr;
+  if (bo) {
+    json_object_object_get_ex(bo, "ok", &bokv);
+    json_object_object_get_ex(bo, "code", &bcodev);
+  }
+  CHECK(bo && bokv && !json_object_get_boolean(bokv), "hello to bad path is not ok");
+  CHECK(bcodev && std::string(json_object_get_string(bcodev)) == "MEDIA_ENGINE_UNREACHABLE",
+        "hello to bad path reports UNREACHABLE");
+  if (bo) json_object_put(bo);
+  CHECK(!bad.connected(), "unreachable client is not connected");
+  json_object* evs = bad.drain_events();
+  CHECK(evs && json_object_is_type(evs, json_type_array) &&
+        json_object_array_length(evs) == 0,
+        "drain on unreachable returns empty array");
+  if (evs) json_object_put(evs);
 }
 
 static void test_http_client_empty_url() {

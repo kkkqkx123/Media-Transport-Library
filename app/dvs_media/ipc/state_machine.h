@@ -18,19 +18,12 @@ typedef enum {
 
 typedef struct {
   int revision;            /* last applied (committed) revision */
-  int state;               /* legacy coarse state: 0 idle, 1 prepared, 2 committed */
   char operation_id[64];   /* current / most recent operation */
   dvs_op_state_t op_state;
   int prepared_revision;   /* revision accepted by the last successful prepare */
 } dvs_state_t;
 
 void dvs_state_init(void);
-
-/* legacy accessors kept for compatibility */
-int dvs_state_get_revision(void);
-void dvs_state_set_revision(int r);
-const char* dvs_state_get_name(void);
-void dvs_state_set_name(const char* name);
 
 /* Thread-safe transition helpers. On success return 0; on failure return a
  * negative DVS_ERR_* code and fill err (when provided) with a short reason. */
@@ -39,7 +32,7 @@ int dvs_state_finish_prepare(const char* opid);
 void dvs_state_fail_prepare(const char* opid);
 int dvs_state_commit(const char* opid, int revision, int* applied_rev,
                      char* err, size_t errlen);
-void dvs_state_abort(const char* opid);
+int dvs_state_abort(const char* opid);
 void dvs_state_clear(void);
 void dvs_state_snapshot(dvs_state_t* out);
 

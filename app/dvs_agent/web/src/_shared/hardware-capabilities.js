@@ -61,6 +61,14 @@
     };
   }
 
+  var TX_SPEC = {
+    codecs: ["h264", "h265"],
+    maxWidth: 3840,
+    maxHeight: 2160,
+    maxFps: 60,
+    maxBitrateKbps: 20000
+  };
+
   function normalizeTx(reported) {
     var base = clone(TX_SPEC);
     if (!reported) return base;

@@ -37,10 +37,12 @@ public:
     json_object* drain_events();
 
     size_t pending_events() const;
+    bool connected() const;
 
 private:
     bool ensure_conn_locked();
     void close_locked();
+    void drain_socket_locked();
 
     std::string sock_path_;
     int fd_ = -1;

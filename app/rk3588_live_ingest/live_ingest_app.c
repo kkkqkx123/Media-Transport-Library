@@ -95,12 +95,24 @@ static void apply_log_level(mtl_handle st, const char* level) {
         mtl_set_log_level(st, MTL_LOG_LEVEL_INFO); /* default */
 }
 
+static enum mtl_pmd_type mtl_pmd_from_port(const char* port_name) {
+    if (!port_name || !port_name[0]) return MTL_PMD_NATIVE_AF_XDP;
+    if (strncmp(port_name, "kernel:", 7) == 0) return MTL_PMD_KERNEL_SOCKET;
+    if (strncmp(port_name, "native_af_xdp:", 14) == 0)
+        return MTL_PMD_NATIVE_AF_XDP;
+    if (strncmp(port_name, "dpdk_af_xdp:", 12) == 0)
+        return MTL_PMD_DPDK_AF_XDP;
+    if (strncmp(port_name, "dpdk_af_packet:", 15) == 0)
+        return MTL_PMD_DPDK_AF_PACKET;
+    return MTL_PMD_DPDK_USER;
+}
+
 static mtl_handle mtl_setup_single(const char* port_name, const char* lip,
                                    uint16_t tx_q, uint16_t rx_q) {
     struct mtl_init_params mtp = {0};
     mtp.num_ports = 1;
     strncpy(mtp.port[MTL_PORT_P], port_name, MTL_PORT_MAX_LEN - 1);
-    mtp.pmd[MTL_PORT_P] = MTL_PMD_NATIVE_AF_XDP;
+    mtp.pmd[MTL_PORT_P] = mtl_pmd_from_port(port_name);
     mtp.net_proto[MTL_PORT_P] = MTL_PROTO_STATIC;
     strncpy((char*)mtp.sip_addr[MTL_PORT_P], lip, MTL_IP_ADDR_LEN - 1);
     /* r8168 single-queue: native_af_xdp needs rx_queues_cnt==1 to select 1q path
@@ -108,6 +120,8 @@ static mtl_handle mtl_setup_single(const char* port_name, const char* lip,
     mtp.tx_queues_cnt[MTL_PORT_P] = tx_q ? tx_q : 1;
     mtp.rx_queues_cnt[MTL_PORT_P] = rx_q ? rx_q : 1;
     mtl_set_common_flags(&mtp);
+    if (mtp.rx_queues_cnt[MTL_PORT_P] == 1) mtp.flags |= MTL_FLAG_SHARED_RX_QUEUE;
+    if (mtp.tx_queues_cnt[MTL_PORT_P] == 1) mtp.flags |= MTL_FLAG_SHARED_TX_QUEUE;
 
     mtl_handle st = mtl_init(&mtp);
     if (!st) return NULL;

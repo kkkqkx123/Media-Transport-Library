@@ -128,7 +128,7 @@ if librockchip_mpp_dep.found() and librga_dep.found()
     test_pipeline_deps += mtl_dep
   endif
 
-  executable('test_pipeline', 'tests/test_pipeline.c',
+  executable('test_pipeline', ['tests/test_pipeline.c', 'mtl_rx.c', 'mtl_rx_bridge.c'],
     link_with: [live_ingest_hal, live_ingest_codec, live_ingest_io, live_ingest_pipe],
     dependencies: test_pipeline_deps,
     include_directories: live_ingest_inc,

@@ -794,8 +794,8 @@ mtl_handle file_playout_mtl_init(const file_playout_cfg* cfg,
     strncpy((char*)mtp.sip_addr[MTL_PORT_P], lip, MTL_IP_ADDR_LEN - 1);
     mtp.log_level = log_level;
 
-    mtp.tx_queues_cnt[MTL_PORT_P] = tx_q ? tx_q : 1;
-    mtp.rx_queues_cnt[MTL_PORT_P] = rx_q ? rx_q : 1;
+    mtp.tx_queues_cnt[MTL_PORT_P] = tx_q;
+    mtp.rx_queues_cnt[MTL_PORT_P] = rx_q;
 
     mtp.flags |= MTL_FLAG_BIND_NUMA;
     switch (ptp_mode) {

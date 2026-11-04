@@ -126,12 +126,16 @@ mtl_rx_mp4* mtl_rx_mp4_create(const mtl_rx_mp4_params* params) {
 
     if (params->sip_addr) {
         unsigned int a, b, c, d;
-        if (sscanf(params->sip_addr, "%u.%u.%u.%u", &a, &b, &c, &d) == 4) {
-            ops.ip_addr[0][0] = (uint8_t)a;
-            ops.ip_addr[0][1] = (uint8_t)b;
-            ops.ip_addr[0][2] = (uint8_t)c;
-            ops.ip_addr[0][3] = (uint8_t)d;
+        if (sscanf(params->sip_addr, "%u.%u.%u.%u", &a, &b, &c, &d) != 4 ||
+            a > 255 || b > 255 || c > 255 || d > 255) {
+            fprintf(stderr, "mtl_rx: invalid sip_addr\n");
+            free(rx);
+            return NULL;
         }
+        ops.ip_addr[0][0] = (uint8_t)a;
+        ops.ip_addr[0][1] = (uint8_t)b;
+        ops.ip_addr[0][2] = (uint8_t)c;
+        ops.ip_addr[0][3] = (uint8_t)d;
     }
     strncpy(ops.port[0], params->port_name, MTL_PORT_MAX_LEN - 1);
 

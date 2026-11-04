@@ -7,6 +7,7 @@
 #define ALIGN(x, a) (((x) + (a) - 1) & ~((a) - 1))
 #endif
 #include <stdatomic.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

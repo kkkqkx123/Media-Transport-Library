@@ -1,4 +1,5 @@
 #include "codec_plugin.h"
+#include "mpp_decoder.h"
 #include <drm_fourcc.h>
 #include <errno.h>
 #include <rockchip/mpp_buffer.h>

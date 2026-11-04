@@ -3,10 +3,9 @@
 
 /* session_mgr — media engine lifecycle owner.
  *
- * Each ST22 lane in the current layout maps 1:1 to a "session" (a compositor
- * lane). Per-session MTL session management with whitelist/LRU admission
- * is a future refinement; here the engine owns the compositor and
- * this module is the lifecycle entry point used by the IPC layer. */
+ * Each ST22 lane in the current layout maps 1:1 to a compositor lane.
+ * The engine owns the MTL instance and the compositor; this module is the
+ * lifecycle entry point used by the IPC layer. */
 
 dvs_engine* dvs_session_mgr_create(const file_playout_cfg* base_cfg) {
     return dvs_engine_create(base_cfg);

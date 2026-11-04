@@ -146,12 +146,16 @@ mtl_rx_audio* mtl_rx_audio_create(const mtl_rx_audio_params* p) {
         strncpy(ops.port[0], p->rx_port, MTL_PORT_MAX_LEN - 1);
     if (p->rx_sip) {
         unsigned int a, b, c, d;
-        if (sscanf(p->rx_sip, "%u.%u.%u.%u", &a, &b, &c, &d) == 4) {
-            ops.ip_addr[0][0] = (uint8_t)a;
-            ops.ip_addr[0][1] = (uint8_t)b;
-            ops.ip_addr[0][2] = (uint8_t)c;
-            ops.ip_addr[0][3] = (uint8_t)d;
+        if (sscanf(p->rx_sip, "%u.%u.%u.%u", &a, &b, &c, &d) != 4 ||
+            a > 255 || b > 255 || c > 255 || d > 255) {
+            fprintf(stderr, "mtl_rx_audio: invalid rx_sip\n");
+            free(rx);
+            return NULL;
         }
+        ops.ip_addr[0][0] = (uint8_t)a;
+        ops.ip_addr[0][1] = (uint8_t)b;
+        ops.ip_addr[0][2] = (uint8_t)c;
+        ops.ip_addr[0][3] = (uint8_t)d;
     }
 
     rx->handle = st30_rx_create(p->st, &ops);

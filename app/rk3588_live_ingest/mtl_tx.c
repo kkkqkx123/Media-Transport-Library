@@ -102,12 +102,16 @@ struct mtl_tx* mtl_tx_create(struct mtl_tx_params* p) {
     ops.payload_type       = 112;
     {
         unsigned int a, b, c, d;
-        if (sscanf(p->dip_addr, "%u.%u.%u.%u", &a, &b, &c, &d) == 4) {
-            ops.dip_addr[0][0] = (uint8_t)a;
-            ops.dip_addr[0][1] = (uint8_t)b;
-            ops.dip_addr[0][2] = (uint8_t)c;
-            ops.dip_addr[0][3] = (uint8_t)d;
+        if (!p->dip_addr ||
+            sscanf(p->dip_addr, "%u.%u.%u.%u", &a, &b, &c, &d) != 4 ||
+            a > 255 || b > 255 || c > 255 || d > 255) {
+            fprintf(stderr, "mtl_tx: invalid dip_addr\n");
+            goto fail;
         }
+        ops.dip_addr[0][0] = (uint8_t)a;
+        ops.dip_addr[0][1] = (uint8_t)b;
+        ops.dip_addr[0][2] = (uint8_t)c;
+        ops.dip_addr[0][3] = (uint8_t)d;
     }
     ops.udp_port[0] = p->udp_port;
     strncpy(ops.port[0], p->port_name, MTL_PORT_MAX_LEN - 1);

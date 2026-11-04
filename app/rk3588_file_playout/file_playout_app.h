@@ -9,7 +9,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/** How MTL obtains PTP/TAI time (see doc/design.md §5.4). */
+/** How MTL obtains PTP/TAI time. */
 typedef enum file_playout_ptp_mode {
     FILE_PLAYOUT_PTP_EXTERNAL = 0, /**< linuxptp + ptp_get_time_fn → CLOCK_TAI (default) */
     FILE_PLAYOUT_PTP_BUILTIN,      /**< MTL_FLAG_PTP_ENABLE (needs HW timesync) */

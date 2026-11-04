@@ -196,8 +196,12 @@ static int handle_line(dvs_client_t* c, char* line) {
              DVS_MEDIA_IPC_VERSION, DVS_NODE_BUNDLE_VERSION, name, snap.revision);
     send_envelope(c, rid, 200, "OK", "hello", data);
   } else if (strcmp(type, "configure") == 0) {
-    /* single entry for desired state (streams/layout JSON); stash as pending */
-    if (g_hooks.prepare) g_hooks.prepare(req);
+    if (g_hooks.prepare) {
+      if (g_hooks.prepare(req, err, sizeof(err)) != 0) {
+        send_envelope(c, rid, 400, "INVALID_ARGUMENT", err[0] ? err : "bad configure", NULL);
+        goto done;
+      }
+    }
     send_envelope(c, rid, 200, "OK", "configured", NULL);
   } else if (strcmp(type, "prepare") == 0) {
     const char* opid = str_field(req, "operationId");
@@ -308,6 +312,20 @@ static int handle_line(dvs_client_t* c, char* line) {
     const char* data_s = json_object_to_json_string(data);
     send_envelope(c, rid, 200, "OK", "", data_s);
     json_object_put(data);
+  } else if (strcmp(type, "capability") == 0) {
+    char* cs = dvs_capability_to_json(&g_cap);
+    if (g_hooks.ptp_state) {
+      char ps[32];
+      int off = 0;
+      snprintf(ps, sizeof(ps), "%s", g_cap.ptp_state);
+      g_hooks.ptp_state(ps, sizeof(ps), &off);
+      snprintf(g_cap.ptp_state, sizeof(g_cap.ptp_state), "%s", ps);
+      g_cap.ptp_offset_us = off;
+      free(cs);
+      cs = dvs_capability_to_json(&g_cap);
+    }
+    send_envelope(c, rid, 200, "OK", "", cs ? cs : "{}");
+    free(cs);
   } else if (strcmp(type, "event") == 0) {
     send_envelope(c, rid, 200, "OK", "event", NULL);
   } else {

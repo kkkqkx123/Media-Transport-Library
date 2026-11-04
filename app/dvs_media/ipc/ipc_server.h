@@ -16,7 +16,7 @@ void dvs_ipc_set_prepare_delay_ms(int ms);
  * engine_ctx/layout_executor symbol references so the test target links
  * without MTL/MPP. */
 typedef struct {
-    void (*prepare)(struct json_object* req); /* stash pending layout */
+    int  (*prepare)(struct json_object* req, char* err, size_t errlen); /* stash layout or apply config */
     int  (*commit)(void);                     /* apply pending layout */
     void (*clear)(void);                      /* remove all media */
     void (*abort)(void);                      /* discard pending layout */

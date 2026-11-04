@@ -21,6 +21,11 @@
 #include <sstream>
 #include <map>
 #include <mutex>
+#include <fcntl.h>
+#include <unistd.h>
+#include <poll.h>
+#include <netdb.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 
 static NodeStore* g_store = nullptr;
@@ -52,6 +57,116 @@ struct LoginLimiter {
     }
 };
 static LoginLimiter g_limiter;
+
+/* Issued browser sessions with expiry. Random hex tokens replace the fixed
+ * prototype value; logout invalidates. All access under the internal mutex. */
+struct SessionStore {
+    std::mutex mu;
+    std::map<std::string, time_t> exp_;
+    std::string issue() {
+        uint8_t rnd[16] = {0};
+        int fd = open("/dev/urandom", O_RDONLY);
+        if (fd >= 0) {
+            size_t got = 0;
+            while (got < sizeof(rnd)) {
+                ssize_t n = read(fd, rnd + got, sizeof(rnd) - got);
+                if (n <= 0) break;
+                got += (size_t)n;
+            }
+            close(fd);
+        }
+        char hex[33];
+        for (int i = 0; i < 16; i++) snprintf(hex + i * 2, 3, "%02x", rnd[i]);
+        std::string tok(hex, 32);
+        std::lock_guard<std::mutex> lk(mu);
+        exp_[tok] = time(nullptr) + 3600;
+        return tok;
+    }
+    bool valid(const std::string& tok) {
+        if (tok.empty()) return false;
+        std::lock_guard<std::mutex> lk(mu);
+        auto it = exp_.find(tok);
+        if (it == exp_.end()) return false;
+        if (time(nullptr) > it->second) { exp_.erase(it); return false; }
+        return true;
+    }
+    void invalidate(const std::string& tok) {
+        std::lock_guard<std::mutex> lk(mu);
+        exp_.erase(tok);
+    }
+};
+static SessionStore g_sessions;
+
+static std::string session_from_cookie(const std::map<std::string, std::string>& headers) {
+    auto it = headers.find("Cookie");
+    if (it == headers.end()) return "";
+    const std::string& c = it->second;
+    size_t p = c.find("session=");
+    if (p == std::string::npos) return "";
+    size_t s = p + 8;
+    size_t e = c.find(';', s);
+    std::string v = c.substr(s, e == std::string::npos ? std::string::npos : e - s);
+    while (!v.empty() && (v.front() == ' ' || v.front() == '\t')) v.erase(0, 1);
+    while (!v.empty() && (v.back() == ' ' || v.back() == '\t' || v.back() == '\r')) v.pop_back();
+    return v;
+}
+
+static bool valid_ip4(const std::string& s) {
+    if (s.empty() || s.size() > 15) return false;
+    int parts = 0;
+    size_t start = 0;
+    for (size_t i = 0; i <= s.size(); i++) {
+        if (i == s.size() || s[i] == '.') {
+            if (i == start || i - start > 3) return false;
+            for (size_t j = start; j < i; j++) if (s[j] < '0' || s[j] > '9') return false;
+            int v = atoi(s.substr(start, i - start).c_str());
+            if (v < 0 || v > 255) return false;
+            parts++;
+            start = i + 1;
+        }
+    }
+    return parts == 4;
+}
+
+static bool tcp_reachable(const std::string& host, int port, int timeout_ms) {
+    struct addrinfo hints{};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    char ps[16];
+    snprintf(ps, sizeof(ps), "%d", port);
+    struct addrinfo* ai = nullptr;
+    if (getaddrinfo(host.c_str(), ps, &hints, &ai) != 0) return false;
+    bool ok = false;
+    for (struct addrinfo* p = ai; p; p = p->ai_next) {
+        int fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+        if (fd < 0) continue;
+        int fl = fcntl(fd, F_GETFL, 0);
+        fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+        int rc = connect(fd, p->ai_addr, p->ai_addrlen);
+        if (rc == 0) { ok = true; close(fd); break; }
+        if (errno == EINPROGRESS) {
+            struct pollfd pfd{.fd = fd, .events = POLLOUT};
+            if (poll(&pfd, 1, timeout_ms) > 0 && (pfd.revents & POLLOUT)) {
+                int err = 0;
+                socklen_t n = sizeof(err);
+                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &n) == 0 && err == 0) ok = true;
+            }
+        }
+        close(fd);
+        if (ok) break;
+    }
+    freeaddrinfo(ai);
+    return ok;
+}
+
+static bool media_ok(const std::string& resp) {
+    json_object* o = json_tokener_parse(resp.c_str());
+    if (!o) return false;
+    json_object* okv = nullptr;
+    bool ok = json_object_object_get_ex(o, "ok", &okv) && okv && json_object_get_boolean(okv);
+    json_object_put(o);
+    return ok;
+}
 
 static std::string read_file(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
@@ -346,10 +461,11 @@ int main(int argc, char** argv) {
             }
             if (g_store->verify_password(u, p)) {
                 g_limiter.clear(u);
+                std::string tok = g_sessions.issue();
                 json_object* d = json_object_new_object();
-                json_object_object_add(d, "session", json_object_new_string("sess-1"));
+                json_object_object_add(d, "session", json_object_new_string(tok.c_str()));
                 json_object_object_add(d, "expiresIn", json_object_new_int(3600));
-                res.headers["Set-Cookie"] = "session=sess-1; Path=/; HttpOnly";
+                res.headers["Set-Cookie"] = "session=" + tok + "; Path=/; HttpOnly";
                 json_object* pc = json_object_new_object();
                 json_object_object_add(pc, "passwordChangeRequired",
                                       json_object_new_boolean(g_store->password_change_required() ? 1 : 0));
@@ -382,8 +498,15 @@ int main(int argc, char** argv) {
             return;
         }
 
+        if (req.method == "POST" && req.path == "/api/v1/node/logout") {
+            g_sessions.invalidate(session_from_cookie(req.headers));
+            res.headers["Set-Cookie"] = "session=; Path=/; Max-Age=0";
+            send_json(res, envelope_ok(json_object_new_object(), "已退出"));
+            return;
+        }
+
         // auth check (cookie)
-        bool authed = (req.headers.count("Cookie") && req.headers.at("Cookie").find("session=sess-1") != std::string::npos);
+        bool authed = g_sessions.valid(session_from_cookie(req.headers));
         // Strict auth is opt-in via DVS_REQUIRE_AUTH=1 (default off) so the
         // node-admin prototype keeps working without a login wall. When enabled,
         // every /api request except login must carry a valid session cookie.
@@ -456,39 +579,241 @@ int main(int argc, char** argv) {
                         json_object* o = nullptr;
                         if (json_object_object_get_ex(body, "operationId", &o) && o) { opstr = json_object_get_string(o); opid = opstr.c_str(); }
                     }
+                    std::string cur_role = get_str(g_store->node(), "role");
                     g_store->set_desired(scope, val, opid);
-                    // update node configStates/revision
+                    std::string fail_code;
+                    std::string fail_reason;
+                    json_object* node_patch = json_object_new_object();
+                    bool forward_media = false;
+                    json_object* fwd = nullptr;
+                    if (scope == "role") {
+                        json_object* r = nullptr;
+                        std::string want = (val && json_object_object_get_ex(val, "role", &r) && r) ? json_object_get_string(r) : "";
+                        if (want != "input" && want != "output") {
+                            fail_code = "INVALID_ARGUMENT";
+                            fail_reason = "角色取值非法";
+                        } else if (want == cur_role) {
+                            json_object_object_add(node_patch, "pendingRole", json_object_new_null());
+                            g_store->update_node(node_patch);
+                            json_object_put(node_patch);
+                            node_patch = json_object_new_object();
+                            g_store->mark_applied(scope, 0);
+                        } else {
+                            json_object_object_add(node_patch, "pendingRole", json_object_new_string(want.c_str()));
+                            g_store->update_node(node_patch);
+                            json_object_put(node_patch);
+                            node_patch = json_object_new_object();
+                        }
+                    } else if (scope == "input") {
+                        json_object* pv = nullptr;
+                        std::string port = (val && json_object_object_get_ex(val, "port", &pv) && pv) ? json_object_get_string(pv) : "";
+                        bool ok = !port.empty() && port.size() < 32;
+                        if (ok) {
+                            json_object* caps = nullptr;
+                            json_object_object_get_ex(g_store->node(), "capabilities", &caps);
+                            json_object* arr = nullptr;
+                            if (caps && json_object_object_get_ex(caps, "inputPorts", &arr) && arr &&
+                                json_object_is_type(arr, json_type_array) && json_object_array_length(arr) > 0) {
+                                ok = false;
+                                for (size_t i = 0; i < (size_t)json_object_array_length(arr); i++) {
+                                    json_object* e = json_object_array_get_idx(arr, (int)i);
+                                    json_object* idv = nullptr;
+                                    if (e && json_object_object_get_ex(e, "id", &idv) && idv &&
+                                        port == json_object_get_string(idv)) { ok = true; break; }
+                                }
+                                if (!ok) { fail_code = "INVALID_ARGUMENT"; fail_reason = "采集口超出本机能力"; }
+                            }
+                        } else { fail_code = "INVALID_ARGUMENT"; fail_reason = "采集口不能为空"; }
+                        if (fail_code.empty()) {
+                            json_object_object_add(node_patch, "input", json_object_get(val));
+                            json_object* wv = nullptr;
+                            if (val && (json_object_object_get_ex(val, "whitelist", &wv) ||
+                                        json_object_object_get_ex(val, "sources", &wv)) && wv) {
+                                fwd = json_object_new_object();
+                                json_object_object_add(fwd, "whitelist", json_object_get(wv));
+                                forward_media = true;
+                            }
+                            g_store->update_node(node_patch);
+                            json_object_put(node_patch);
+                            node_patch = json_object_new_object();
+                            g_store->mark_applied(scope, 0);
+                        }
+                    } else if (scope == "output") {
+                        json_object* wv = nullptr; json_object* hv = nullptr; json_object* zv = nullptr;
+                        json_object* mv = nullptr; json_object* cv = nullptr;
+                        int w = (val && json_object_object_get_ex(val, "width", &wv) && wv) ? json_object_get_int(wv) : 0;
+                        int h = (val && json_object_object_get_ex(val, "height", &hv) && hv) ? json_object_get_int(hv) : 0;
+                        int z = (val && json_object_object_get_ex(val, "refreshHz", &zv) && zv) ? json_object_get_int(zv) : 0;
+                        std::string mode = (val && json_object_object_get_ex(val, "mode", &mv) && mv) ? json_object_get_string(mv) : "force";
+                        std::string conn = (val && json_object_object_get_ex(val, "connector", &cv) && cv) ? json_object_get_string(cv) : "";
+                        int lim_w = 7680, lim_h = 4320, lim_z = 60;
+                        bool conn_known = false;
+                        json_object* caps = nullptr;
+                        json_object_object_get_ex(g_store->node(), "capabilities", &caps);
+                        json_object* arr = nullptr;
+                        if (caps && json_object_object_get_ex(caps, "outputPorts", &arr) && arr &&
+                            json_object_is_type(arr, json_type_array)) {
+                            for (size_t i = 0; i < (size_t)json_object_array_length(arr); i++) {
+                                json_object* e = json_object_array_get_idx(arr, (int)i);
+                                json_object* idv = nullptr;
+                                if (!e || !json_object_object_get_ex(e, "id", &idv) || !idv) continue;
+                                if (!conn.empty() && conn != json_object_get_string(idv)) continue;
+                                conn_known = true;
+                                json_object* q = nullptr;
+                                if (json_object_object_get_ex(e, "maxWidth", &q) && q) lim_w = json_object_get_int(q);
+                                if (json_object_object_get_ex(e, "maxHeight", &q) && q) lim_h = json_object_get_int(q);
+                                if (json_object_object_get_ex(e, "maxRefreshHz", &q) && q) lim_z = json_object_get_int(q);
+                                break;
+                            }
+                            if (!conn.empty() && !conn_known) { fail_code = "INVALID_ARGUMENT"; fail_reason = "输出口不存在"; }
+                        }
+                        if (fail_code.empty()) {
+                            if (w < 640 || w > lim_w || h < 480 || h > lim_h || z < 24 || z > lim_z) {
+                                fail_code = "INVALID_ARGUMENT";
+                                fail_reason = "输出参数超出本机能力范围";
+                            } else if (mode != "force" && mode != "hotplug") {
+                                fail_code = "INVALID_ARGUMENT";
+                                fail_reason = "输出模式取值非法";
+                            }
+                        }
+                        if (fail_code.empty()) {
+                            json_object_object_add(node_patch, "output", json_object_get(val));
+                            g_store->update_node(node_patch);
+                            json_object_put(node_patch);
+                            node_patch = json_object_new_object();
+                            fwd = json_object_new_object();
+                            json_object_object_add(fwd, "scope", json_object_new_string("output"));
+                            json_object_object_add(fwd, "value", json_object_get(val));
+                            forward_media = true;
+                            g_store->mark_applied(scope, 0);
+                        }
+                    } else if (scope == "network") {
+                        json_object* mv = nullptr;
+                        std::string nmode = (val && json_object_object_get_ex(val, "mode", &mv) && mv) ? json_object_get_string(mv) : "dhcp";
+                        json_object* iv = nullptr; json_object* kv = nullptr;
+                        json_object* gv = nullptr; json_object* dvv = nullptr; json_object* sv = nullptr;
+                        std::string ip = (val && json_object_object_get_ex(val, "ip", &iv) && iv) ? json_object_get_string(iv) : "";
+                        std::string mask = (val && json_object_object_get_ex(val, "mask", &kv) && kv) ? json_object_get_string(kv) : "";
+                        std::string gw = (val && json_object_object_get_ex(val, "gateway", &gv) && gv) ? json_object_get_string(gv) : "";
+                        std::string dns = (val && json_object_object_get_ex(val, "dns", &dvv) && dvv) ? json_object_get_string(dvv) : "";
+                        std::string srv = (val && json_object_object_get_ex(val, "server", &sv) && sv) ? json_object_get_string(sv) : "";
+                        if (nmode != "dhcp" && nmode != "static") { fail_code = "INVALID_ARGUMENT"; fail_reason = "网络方式非法"; }
+                        else if (nmode == "static" && (!valid_ip4(ip) || !valid_ip4(mask) || !valid_ip4(gw) || !valid_ip4(dns))) {
+                            fail_code = "INVALID_ARGUMENT"; fail_reason = "静态地址格式不正确";
+                        } else if (srv.empty()) { fail_code = "INVALID_ARGUMENT"; fail_reason = "缺少注册服务器地址"; }
+                        if (fail_code.empty()) {
+                            json_object* net = json_object_new_object();
+                            json_object_object_add(net, "mode", json_object_new_string(nmode.c_str()));
+                            if (nmode == "static") {
+                                json_object_object_add(net, "mask", json_object_new_string(mask.c_str()));
+                                json_object_object_add(net, "gateway", json_object_new_string(gw.c_str()));
+                                json_object_object_add(net, "dns", json_object_new_string(dns.c_str()));
+                                json_object_object_add(net, "server", json_object_new_string(srv.c_str()));
+                                json_object_object_add(node_patch, "ip", json_object_new_string(ip.c_str()));
+                                json_object_object_add(net, "ip", json_object_new_string(ip.c_str()));
+                            } else {
+                                json_object_object_add(net, "server", json_object_new_string(srv.c_str()));
+                            }
+                            json_object_object_add(node_patch, "network", net);
+                            g_store->update_node(node_patch);
+                            json_object_put(node_patch);
+                            node_patch = json_object_new_object();
+                            g_store->mark_applied(scope, 0);
+                        }
+                    } else if (scope == "registration") {
+                        json_object* mv = nullptr; json_object* sv = nullptr;
+                        std::string rm = (val && json_object_object_get_ex(val, "mode", &mv) && mv) ? json_object_get_string(mv) : "";
+                        std::string srv = (val && json_object_object_get_ex(val, "server", &sv) && sv) ? json_object_get_string(sv) : "";
+                        if ((rm != "auto" && rm != "manual") || srv.empty()) {
+                            fail_code = "INVALID_ARGUMENT"; fail_reason = "缺少注册服务器地址";
+                        } else {
+                            json_object_object_add(node_patch, "registerMode", json_object_new_string(rm.c_str()));
+                            json_object* net0 = nullptr;
+                            json_object_object_get_ex(g_store->node(), "network", &net0);
+                            json_object* net = net0 ? json_object_get(net0) : json_object_new_object();
+                            if (!json_object_is_type(net, json_type_object)) { json_object_put(net); net = json_object_new_object(); }
+                            json_object_object_add(net, "server", json_object_new_string(srv.c_str()));
+                            json_object_object_add(node_patch, "network", net);
+                            g_store->update_node(node_patch);
+                            json_object_put(node_patch);
+                            node_patch = json_object_new_object();
+                            g_store->mark_applied(scope, 0);
+                            if (rm == "auto" && g_reg) g_reg->trigger_async();
+                        }
+                    } else if (scope == "sip") {
+                        json_object* ev = nullptr;
+                        bool enabled = val && json_object_object_get_ex(val, "enabled", &ev) && ev && json_object_get_boolean(ev);
+                        if (!enabled) {
+                            json_object* sip = json_object_new_object();
+                            json_object_object_add(sip, "enabled", json_object_new_boolean(0));
+                            json_object_object_add(sip, "state", json_object_new_string("disabled"));
+                            json_object_object_add(node_patch, "sip", sip);
+                            g_store->update_node(node_patch);
+                            json_object_put(node_patch);
+                            node_patch = json_object_new_object();
+                            g_store->mark_applied(scope, 0);
+                        } else {
+                            json_object* sv = nullptr; json_object* pv = nullptr;
+                            json_object* dvv = nullptr; json_object* uv = nullptr;
+                            std::string srv = (val && json_object_object_get_ex(val, "server", &sv) && sv) ? json_object_get_string(sv) : "";
+                            int port = (val && json_object_object_get_ex(val, "port", &pv) && pv) ? json_object_get_int(pv) : 0;
+                            std::string dev = (val && json_object_object_get_ex(val, "deviceId", &dvv) && dvv) ? json_object_get_string(dvv) : "";
+                            std::string usr = (val && json_object_object_get_ex(val, "user", &uv) && uv) ? json_object_get_string(uv) : "";
+                            if (srv.empty() || port < 1 || port > 65535 || dev.empty() || usr.empty()) {
+                                fail_code = "INVALID_ARGUMENT"; fail_reason = "SIP 参数不完整";
+                            } else if (!tcp_reachable(srv, port, 3000)) {
+                                json_object* sip = json_object_new_object();
+                                json_object_object_add(sip, "enabled", json_object_new_boolean(1));
+                                json_object_object_add(sip, "state", json_object_new_string("failed"));
+                                json_object_object_add(sip, "server", json_object_new_string(srv.c_str()));
+                                json_object_object_add(sip, "port", json_object_new_int(port));
+                                json_object_object_add(node_patch, "sip", sip);
+                                g_store->update_node(node_patch);
+                                json_object_put(node_patch);
+                                node_patch = json_object_new_object();
+                                fail_code = "SIP_UNREACHABLE"; fail_reason = "SIP 服务不可达";
+                            } else {
+                                json_object* sip = json_object_new_object();
+                                json_object_object_add(sip, "enabled", json_object_new_boolean(1));
+                                json_object_object_add(sip, "state", json_object_new_string("connected"));
+                                json_object_object_add(sip, "server", json_object_new_string(srv.c_str()));
+                                json_object_object_add(sip, "port", json_object_new_int(port));
+                                json_object_object_add(node_patch, "sip", sip);
+                                g_store->update_node(node_patch);
+                                json_object_put(node_patch);
+                                node_patch = json_object_new_object();
+                                g_store->mark_applied(scope, 0);
+                            }
+                        }
+                    }
+                    if (!fail_code.empty()) g_store->mark_failed(scope, fail_code.c_str(), fail_reason.c_str());
+                    if (forward_media && fwd) {
+                        std::string fr = g_media->request("configure", fwd);
+                        json_object* fo = json_tokener_parse(fr.c_str());
+                        if (fo) {
+                            json_object* codev = nullptr;
+                            std::string code;
+                            if (json_object_object_get_ex(fo, "code", &codev) && codev) code = json_object_get_string(codev);
+                            json_object* okv = nullptr;
+                            bool ok = json_object_object_get_ex(fo, "ok", &okv) && okv && json_object_get_boolean(okv);
+                            if (!ok && code == "INVALID_ARGUMENT" && fail_code.empty()) {
+                                json_object* mv2 = nullptr;
+                                std::string msg = json_object_object_get_ex(fo, "msg", &mv2) && mv2 ? json_object_get_string(mv2) : "媒体拒绝配置";
+                                g_store->mark_failed(scope, "INVALID_ARGUMENT", msg.c_str());
+                            }
+                            json_object_put(fo);
+                        }
+                        json_object_put(fwd);
+                    } else if (fwd) { json_object_put(fwd); }
                     json_object* patch = json_object_new_object();
                     json_object_object_add(patch, "configStates", g_store->all_states());
                     json_object_object_add(patch, "configRevision", g_store->config_revision());
-                    if (scope == "role") {
-                        json_object* v = val;
-                        json_object* r = nullptr;
-                        if (v && json_object_object_get_ex(v, "role", &r)) {
-                            json_object* pr = json_object_new_string(json_object_get_string(r));
-                            json_object_object_add(patch, "pendingRole", pr);
-                        }
-                    }
                     g_store->update_node(patch);
                     json_object_put(patch);
-                    // IPC bridge: forward role/input/output changes to the media
-                    // engine through the single configure verb. Best-effort;
-                    // failures surface via /node/media/* and never block config
-                    // persistence.
-                    if (scope == "input" || scope == "output" || scope == "role") {
-                        json_object* fwd = json_object_new_object();
-                        if (scope == "input") {
-                            json_object_object_add(fwd, "whitelist", json_object_get(val));
-                        } else {
-                            json_object_object_add(fwd, "scope", json_object_new_string(scope.c_str()));
-                            json_object_object_add(fwd, "value", json_object_get(val));
-                        }
-                        g_media->request("configure", fwd);
-                        json_object_put(fwd);
-                    }
+                    json_object_put(node_patch);
                     json_object* cfg = g_store->get_config(scope, node_id);
                     if (body) json_object_put(body);
-                    send_json(res, envelope_ok(cfg, "配置已提交"));
+                    send_json(res, envelope_ok(cfg, fail_code.empty() ? "配置已提交" : "配置失败"));
                     return;
                 }
                 if (req.method == "POST" && action == "retry") {
@@ -758,10 +1083,66 @@ int main(int argc, char** argv) {
             return;
         }
         if (req.method == "GET" && req.path == "/api/v1/node/capability") {
+            std::string cr = g_media->request("capability", nullptr);
+            json_object* co = json_tokener_parse(cr.c_str());
+            if (co) {
+                json_object* okv = nullptr;
+                json_object* data = nullptr;
+                if (json_object_object_get_ex(co, "ok", &okv) && okv && json_object_get_boolean(okv) &&
+                    json_object_object_get_ex(co, "data", &data) && data) {
+                    json_object* patch = json_object_new_object();
+                    json_object* caps = nullptr;
+                    json_object_object_get_ex(g_store->node(), "capabilities", &caps);
+                    json_object* merged = caps ? json_object_get(caps) : json_object_new_object();
+                    json_object_object_foreach(data, k, v) {
+                        if ((strcmp(k, "inputPorts") == 0 || strcmp(k, "outputPorts") == 0) &&
+                            json_object_is_type(v, json_type_array) && json_object_array_length(v) == 0)
+                            continue;
+                        json_object_object_add(merged, k, json_object_get(v));
+                    }
+                    json_object_object_add(patch, "capabilities", merged);
+                    g_store->update_node(patch);
+                    json_object_put(patch);
+                }
+                json_object_put(co);
+            }
             json_object* n = g_store->node();
             json_object* cap = nullptr;
             json_object_object_get_ex(n, "capabilities", &cap);
             send_json(res, envelope_ok(cap ? json_object_get(cap) : json_object_new_object(), ""));
+            return;
+        }
+        if (req.method == "POST" && req.path == "/api/v1/node/register") {
+            bool ok = g_reg ? g_reg->trigger_once() : false;
+            json_object* d = json_object_new_object();
+            json_object_object_add(d, "registerState", json_object_new_string(ok ? "registered" : "failed"));
+            json_object_object_add(d, "online", json_object_new_boolean(g_reg && g_reg->online() ? 1 : 0));
+            send_json(res, envelope_ok(d, ok ? "设备注册成功" : "注册失败，可修改地址后重试"));
+            return;
+        }
+        if (req.method == "POST" && req.path == "/api/v1/node/upgrade/upload") {
+            std::string fn = req.query.count("filename") ? req.query.at("filename") : "fw_upload.bin";
+            auto hit = req.headers.find("X-Filename");
+            if (hit != req.headers.end() && !hit->second.empty()) fn = hit->second;
+            std::string base = fn;
+            size_t slash = base.find_last_of("/\\");
+            if (slash != std::string::npos) base = base.substr(slash + 1);
+            if (base.empty() || base.size() > 128) {
+                send_json(res, envelope_fail("INVALID_ARGUMENT", 400, "文件名非法"));
+                return;
+            }
+            std::string dest = "/tmp/" + base;
+            std::ofstream out(dest, std::ios::binary);
+            if (!out) {
+                send_json(res, envelope_fail("INTERNAL", 500, "无法写入暂存"));
+                return;
+            }
+            out.write(req.body.data(), (std::streamsize)req.body.size());
+            out.close();
+            json_object* d = json_object_new_object();
+            json_object_object_add(d, "path", json_object_new_string(dest.c_str()));
+            json_object_object_add(d, "size", json_object_new_int64((int64_t)req.body.size()));
+            send_json(res, envelope_ok(d, "固件已上传"));
             return;
         }
         if (req.method == "GET" && req.path == "/api/v1/node/capacity") {

@@ -25,6 +25,8 @@ public:
 
     bool online() const { return online_; }
     std::string register_state() const { return register_state_; }
+    bool trigger_once();
+    void trigger_async();
 
 private:
     void loop();

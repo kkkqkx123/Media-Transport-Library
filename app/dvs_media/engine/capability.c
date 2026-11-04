@@ -3,10 +3,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <unistd.h>
 
 #ifdef HAVE_LIBDRM
 #include <fcntl.h>
-#include <unistd.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 #endif
@@ -16,7 +16,12 @@
 static void cap_defaults(dvs_capability* cap) {
     cap->output_ports = NULL;
     cap->output_mode_counts = NULL;
+    cap->output_max_w = NULL;
+    cap->output_max_h = NULL;
+    cap->output_max_hz = NULL;
     cap->output_port_count = 0;
+    cap->input_ports = NULL;
+    cap->input_port_count = 0;
     /* Conservative default; real MPP-measured value is filled at S1 end and
      * may be overridden via DVS_MAX_DECODE_SESSIONS for bring-up. */
     cap->max_decode_sessions = 4;
@@ -32,9 +37,19 @@ void dvs_capability_free(dvs_capability* cap) {
     for (int i = 0; i < cap->output_port_count; i++) free(cap->output_ports[i]);
     free(cap->output_ports);
     free(cap->output_mode_counts);
+    free(cap->output_max_w);
+    free(cap->output_max_h);
+    free(cap->output_max_hz);
     cap->output_ports = NULL;
     cap->output_mode_counts = NULL;
+    cap->output_max_w = NULL;
+    cap->output_max_h = NULL;
+    cap->output_max_hz = NULL;
     cap->output_port_count = 0;
+    for (int i = 0; i < cap->input_port_count; i++) free(cap->input_ports[i]);
+    free(cap->input_ports);
+    cap->input_ports = NULL;
+    cap->input_port_count = 0;
 }
 
 static void probe_drm(dvs_capability* cap) {
@@ -52,6 +67,9 @@ static void probe_drm(dvs_capability* cap) {
     int n = res->count_connectors;
     cap->output_ports = calloc((size_t)(n > 0 ? n : 1), sizeof(char*));
     cap->output_mode_counts = calloc((size_t)(n > 0 ? n : 1), sizeof(int));
+    cap->output_max_w = calloc((size_t)(n > 0 ? n : 1), sizeof(int));
+    cap->output_max_h = calloc((size_t)(n > 0 ? n : 1), sizeof(int));
+    cap->output_max_hz = calloc((size_t)(n > 0 ? n : 1), sizeof(int));
     int k = 0;
     for (int i = 0; i < n; i++) {
         drmModeConnector* c = drmModeGetConnector(fd, res->connectors[i]);
@@ -64,6 +82,18 @@ static void probe_drm(dvs_capability* cap) {
         snprintf(cname, sizeof(cname), "HDMI-A-%u", c->connector_type_id);
         cap->output_ports[k] = strdup(cname);
         cap->output_mode_counts[k] = c->count_modes;
+        int mw = 0, mh = 0, mz = 0;
+        for (int m = 0; m < c->count_modes; m++) {
+            int w = (int)c->modes[m].hdisplay;
+            int h = (int)c->modes[m].vdisplay;
+            int z = (int)c->modes[m].vrefresh;
+            if (w > mw) mw = w;
+            if (h > mh) mh = h;
+            if (z > mz) mz = z;
+        }
+        cap->output_max_w[k] = mw > 0 ? mw : 1920;
+        cap->output_max_h[k] = mh > 0 ? mh : 1080;
+        cap->output_max_hz[k] = mz > 0 ? mz : 60;
         k++;
         drmModeFreeConnector(c);
     }
@@ -81,12 +111,27 @@ static void probe_drm(dvs_capability* cap) {
 #endif
 }
 
+static void probe_input(dvs_capability* cap) {
+    int found = 0;
+    for (int i = 0; i < 8; i++) {
+        char path[32];
+        snprintf(path, sizeof(path), "/dev/video%d", i);
+        if (access(path, F_OK) == 0) { found = 1; break; }
+    }
+    if (!found) return;
+    cap->input_ports = calloc(1, sizeof(char*));
+    if (!cap->input_ports) return;
+    cap->input_ports[0] = strdup("HDMI1");
+    cap->input_port_count = cap->input_ports[0] ? 1 : 0;
+}
+
 int dvs_capability_probe(dvs_capability* cap) {
     if (!cap) return -1;
     cap_defaults(cap);
 #ifdef HAVE_LIBDRM
     probe_drm(cap);
 #endif
+    probe_input(cap);
 
     const char* m = getenv("DVS_MAX_DECODE_SESSIONS");
     if (m) {
@@ -100,13 +145,32 @@ char* dvs_capability_to_json(const dvs_capability* cap) {
     if (!cap) return NULL;
     json_object* o = json_object_new_object();
 
+    json_object* in_ports = json_object_new_array();
+    for (int i = 0; i < cap->input_port_count; i++) {
+        json_object* p = json_object_new_object();
+        json_object_object_add(p, "id", json_object_new_string(cap->input_ports[i]));
+        json_object_object_add(p, "label", json_object_new_string(cap->input_ports[i]));
+        json_object_object_add(p, "kind", json_object_new_string("HDMI RX"));
+        json_object_object_add(p, "maxWidth", json_object_new_int(3840));
+        json_object_object_add(p, "maxHeight", json_object_new_int(2160));
+        json_object_object_add(p, "maxRefreshHz", json_object_new_int(60));
+        json_object_array_add(in_ports, p);
+    }
+    json_object_object_add(o, "inputPorts", in_ports);
+
     json_object* ports = json_object_new_array();
     for (int i = 0; i < cap->output_port_count; i++) {
         json_object* p = json_object_new_object();
-        json_object_object_add(p, "name",
-                              json_object_new_string(cap->output_ports[i]));
-        json_object_object_add(p, "safeModes",
-                              json_object_new_int(cap->output_mode_counts[i]));
+        json_object_object_add(p, "id", json_object_new_string(cap->output_ports[i]));
+        json_object_object_add(p, "label", json_object_new_string(cap->output_ports[i]));
+        json_object_object_add(p, "kind", json_object_new_string("HDMI TX"));
+        int mw = cap->output_max_w ? cap->output_max_w[i] : 1920;
+        int mh = cap->output_max_h ? cap->output_max_h[i] : 1080;
+        int mz = cap->output_max_hz ? cap->output_max_hz[i] : 60;
+        json_object_object_add(p, "maxWidth", json_object_new_int(mw));
+        json_object_object_add(p, "maxHeight", json_object_new_int(mh));
+        json_object_object_add(p, "maxRefreshHz", json_object_new_int(mz));
+        json_object_object_add(p, "modeCount", json_object_new_int(cap->output_mode_counts[i]));
         json_object_array_add(ports, p);
     }
     json_object_object_add(o, "outputPorts", ports);

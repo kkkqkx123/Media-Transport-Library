@@ -62,20 +62,23 @@ Maintenance::Maintenance(NodeStore* store, MediaIpcClient* media)
     : store_(store), media_(media) {}
 
 json_object* Maintenance::reboot() {
-    /* Apply any pending role so it takes effect after restart. */
-    store_->apply_pending_role();
-
+    bool switched = store_->apply_pending_role();
+    if (switched) store_->mark_applied("role", 0);
+    if (media_) {
+        json_object* node = store_->node();
+        json_object* r = nullptr;
+        std::string role;
+        if (node && json_object_object_get_ex(node, "role", &r) && r) role = json_object_get_string(r);
+        if (role == "input") media_->request("clear", nullptr);
+    }
+    json_object* patch = json_object_new_object();
+    json_object_object_add(patch, "lifecycle", json_object_new_string("rebooting"));
+    store_->update_node(patch);
+    json_object_put(patch);
     json_object* o = json_object_new_object();
     json_object_object_add(o, "ok", json_object_new_boolean(1));
     json_object_object_add(o, "status", json_object_new_string("rebooting"));
-
-    /* Only perform a real reboot on hardware when explicitly allowed, to keep
-     * CI/dev boxes safe. The status is reported regardless. */
     if (std::getenv("DVS_ALLOW_REBOOT")) {
-        json_object* patch = json_object_new_object();
-        json_object_object_add(patch, "lifecycle", json_object_new_string("rebooting"));
-        store_->update_node(patch);
-        json_object_put(patch);
         sync();
         system("reboot");
     }
@@ -84,12 +87,8 @@ json_object* Maintenance::reboot() {
 
 json_object* Maintenance::factory_reset() {
     json_object* node = store_->node();
-    std::string network = str_of(node, "network");
-    std::string register_state = str_of(node, "registerState");
-    std::string register_mode = str_of(node, "registerMode");
-    std::string node_id = str_of(node, "id");
-
-    /* Preserve network + registration; reset role/input/output/sip/password. */
+    json_object* net = nullptr;
+    json_object_object_get_ex(node, "network", &net);
     json_object* patch = json_object_new_object();
     json_object_object_add(patch, "role", json_object_new_string("output"));
     json_object_object_add(patch, "pendingRole", json_object_new_null());
@@ -99,15 +98,19 @@ json_object* Maintenance::factory_reset() {
     json_object_object_add(sip, "enabled", json_object_new_boolean(0));
     json_object_object_add(sip, "state", json_object_new_string("disabled"));
     json_object_object_add(patch, "sip", sip);
-    json_object_object_add(patch, "network", json_object_new_string(network.c_str()));
-    json_object_object_add(patch, "registerState", json_object_new_string(register_state.c_str()));
-    json_object_object_add(patch, "registerMode", json_object_new_string(register_mode.c_str()));
-    json_object_object_add(patch, "id", json_object_new_string(node_id.c_str()));
-    /* reset password to default and force first-login change */
+    if (net) json_object_object_add(patch, "network", json_object_get(net));
+    json_object* rs = nullptr;
+    if (node && json_object_object_get_ex(node, "registerState", &rs) && rs)
+        json_object_object_add(patch, "registerState", json_object_get(rs));
+    json_object* rm = nullptr;
+    if (node && json_object_object_get_ex(node, "registerMode", &rm) && rm)
+        json_object_object_add(patch, "registerMode", json_object_get(rm));
     store_->set_password("admin123");
     json_object_object_add(patch, "password_change_required", json_object_new_boolean(1));
     store_->update_node(patch);
     json_object_put(patch);
+    if (media_) media_->request("clear", nullptr);
+    for (int i = 0; i < 6; i++) store_->mark_applied(NodeStore::SCOPES[i], 0);
 
     json_object* o = json_object_new_object();
     json_object_object_add(o, "ok", json_object_new_boolean(1));

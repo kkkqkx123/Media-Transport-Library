@@ -146,6 +146,27 @@ bool Registration::register_once() {
     return true;
 }
 
+bool Registration::trigger_once() {
+    if (platform_url_.empty()) return false;
+    register_state_ = "registering";
+    json_object* patch = json_object_new_object();
+    json_object_object_add(patch, "registerState", json_object_new_string("registering"));
+    store_->update_node(patch);
+    json_object_put(patch);
+    bool ok = register_once();
+    register_state_ = ok ? "registered" : "failed";
+    json_object* p2 = json_object_new_object();
+    json_object_object_add(p2, "registerState", json_object_new_string(register_state_.c_str()));
+    store_->update_node(p2);
+    json_object_put(p2);
+    return ok;
+}
+
+void Registration::trigger_async() {
+    if (platform_url_.empty()) return;
+    std::thread([this]() { trigger_once(); }).detach();
+}
+
 bool Registration::heartbeat_once() {
     HttpClient cli;
     json_object* payload = build_heartbeat();

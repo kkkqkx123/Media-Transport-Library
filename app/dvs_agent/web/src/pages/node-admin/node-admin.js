@@ -369,9 +369,11 @@
         };
         $("login-pwd").addEventListener("keydown", function (e) { if (e.key === "Enter") $("btn-login").click(); });
         $("btn-logout").onclick = function () {
-          $("login-mask").style.display = "flex";
-          $("login-pwd").value = "";
-          protoToast("已退出登录");
+          apiAsync("POST", "/api/v1/node/logout", {}).then(function () {
+            $("login-mask").style.display = "flex";
+            $("login-pwd").value = "";
+            protoToast("已退出登录");
+          });
         };
 
         /* ---------- 修改密码 ---------- */
@@ -632,7 +634,7 @@
           $("btn-register").disabled = true;
           setRegState("注册中…", false);
           setConfigState("registration-config-state", "applying", "正在提交注册请求");
-          loadNodeInfo().then(function (r) {
+          apiAsync("POST", "/api/v1/node/register", {}).then(function () { return loadNodeInfo(); }).then(function (r) {
             registrationBusy = false;
             $("btn-register").disabled = false;
             if (!r || !r.ok) {

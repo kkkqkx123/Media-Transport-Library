@@ -60,6 +60,16 @@ int  dvs_engine_apply_layout_at(dvs_engine* e,
 /* Set the desired audio owner/volume; applied on the next layout commit. */
 void dvs_engine_set_audio(dvs_engine* e, const char* owner, int volume);
 
+/* Store an output mode from the node agent. Validates ranges and updates the
+ * cached config; when a compositor is running it is rebuilt so the new mode
+ * takes effect immediately, otherwise the mode waits for the next layout. */
+int dvs_engine_set_output(dvs_engine* e, const char* connector, int width,
+                          int height, int refresh_hz, const char* mode);
+
+/* Store a role switch. Input boxes stop display output; output boxes stay
+ * idle until a layout arrives. */
+int dvs_engine_set_role(dvs_engine* e, const char* role);
+
 /* Stop the run loop, free compositor, uninit MTL. */
 void dvs_engine_stop(dvs_engine* e);
 

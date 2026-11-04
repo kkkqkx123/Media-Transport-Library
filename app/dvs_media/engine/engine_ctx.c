@@ -317,6 +317,42 @@ int dvs_engine_start(dvs_engine* e) {
     return dvs_engine_apply_layout(e, e->cfg.pip_streams, e->cfg.pip_stream_count);
 }
 
+int dvs_engine_set_output(dvs_engine* e, const char* connector, int width,
+                          int height, int refresh_hz, const char* mode) {
+    if (!e) return -1;
+    if (width < 640 || width > 7680 || height < 480 || height > 4320) return -1;
+    if (refresh_hz < 24 || refresh_hz > 120) return -1;
+    if (!mode) mode = "force";
+    if (strcmp(mode, "force") != 0 && strcmp(mode, "hotplug") != 0) return -1;
+    pthread_mutex_lock(&e->mu);
+    if (connector && connector[0]) {
+        snprintf(e->cfg.drm_connector, sizeof(e->cfg.drm_connector), "%s", connector);
+    }
+    e->cfg.width = width;
+    e->cfg.height = height;
+    e->cfg.fps = (float)refresh_hz;
+    if (strcmp(mode, "hotplug") == 0) {
+        snprintf(e->cfg.drm_mode, sizeof(e->cfg.drm_mode), "auto");
+    } else {
+        snprintf(e->cfg.drm_mode, sizeof(e->cfg.drm_mode), "%dx%d@%d", width, height, refresh_hz);
+    }
+    int has_comp = (e->comp != NULL);
+    file_playout_pip_stream cur[MP4_PIP_MAX_LANES];
+    int cur_n = e->cfg.pip_stream_count;
+    if (cur_n > MP4_PIP_MAX_LANES) cur_n = MP4_PIP_MAX_LANES;
+    if (cur_n > 0) memcpy(cur, e->cfg.pip_streams, (size_t)cur_n * sizeof(*cur));
+    pthread_mutex_unlock(&e->mu);
+    if (has_comp && cur_n > 0) return dvs_engine_apply_layout(e, cur, cur_n);
+    return 0;
+}
+
+int dvs_engine_set_role(dvs_engine* e, const char* role) {
+    if (!e || !role) return -1;
+    if (strcmp(role, "input") == 0) return dvs_engine_apply_layout(e, NULL, 0);
+    if (strcmp(role, "output") == 0) return 0;
+    return -1;
+}
+
 void dvs_engine_request_stop(dvs_engine* e) {
     if (e) atomic_store(&e->running, false);
 }

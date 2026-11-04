@@ -11,7 +11,13 @@ typedef struct {
     /* output ports (DRM connectors), each with its supported mode count */
     char** output_ports; /* array of connector names, e.g. "HDMI-A-1" */
     int*   output_mode_counts;
+    int*   output_max_w;
+    int*   output_max_h;
+    int*   output_max_hz;
     int    output_port_count;
+    /* input ports (capture); probed from V4L2 devices, empty when absent */
+    char** input_ports;
+    int    input_port_count;
 
     /* max simultaneous decode sessions (MPP measured; default conservative) */
     int    max_decode_sessions;

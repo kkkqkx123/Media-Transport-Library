@@ -4,8 +4,8 @@
 
 #include "file_playout_config.h"      /* file_playout_mtl_init, mode_dims, apply_drm_mode */
 #include "shared/display_layout.h" /* file_playout_pip_validate, MP4_PIP_MAX_LANES */
-#include "session_admit.h"         /* whitelist + LRU admission (S4) */
-#include "audio_arbiter.h"         /* ALSA audio routing (S4) */
+#include "session_admit.h"         /* whitelist + LRU admission */
+#include "audio_arbiter.h"         /* ALSA audio routing */
 #include "capability.h"
 
 #include <mtl_api.h> /* mtl_ptp_read_time, mtl_stop, mtl_uninit */
@@ -129,7 +129,7 @@ static rx_compositor* build_compositor(dvs_engine* e,
     memcpy(cfg->pip_streams, streams, (size_t)count * sizeof(*streams));
     cfg->pip_stream_count = count;
 
-    /* S4 admission: enforce whitelist and refresh LRU for each source. Reject
+    /* Admission: enforce whitelist and refresh LRU for each source. Reject
      * the whole layout if any source is not whitelisted. */
     dvs_session_tick();
     for (int i = 0; i < count; i++) {
@@ -298,7 +298,7 @@ int dvs_engine_apply_layout_at(dvs_engine* e,
     atomic_store(&e->layers, count);
     pthread_mutex_unlock(&e->mu);
 
-    /* S4 audio: apply the pending audio owner/volume routing. */
+    /* Apply the pending audio owner/volume routing. */
     dvs_audio_set(e, e->audio_owner, e->audio_volume);
 
     if (!atomic_load(&e->running)) {

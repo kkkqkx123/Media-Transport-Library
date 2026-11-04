@@ -30,7 +30,7 @@ typedef struct dvs_engine {
     atomic_int      layers;
     pthread_mutex_t mu;        /* guards st/comp swap during reconfiguration */
 
-    /* pending audio routing (S4 audio arbitration; applied on layout commit) */
+    /* pending audio routing (audio arbitration; applied on layout commit) */
     char            audio_owner[64];
     int             audio_volume;
 } dvs_engine;

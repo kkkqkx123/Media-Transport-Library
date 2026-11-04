@@ -325,12 +325,27 @@ int main(int argc, char** argv) {
             if (req.method == "POST" && act == "heartbeat") {
                 json_object* cur = g_store->get_doc("node", id);
                 if (!cur) { send_json(res, fail_envelope("NOT_FOUND", 404, "node unknown")); return; }
+                json_object* body2 = json_tokener_parse(req.body.c_str());
                 json_object_object_del(cur, "online");
                 json_object_object_add(cur, "online", json_object_new_boolean(1));
                 json_object_object_del(cur, "lastHeartbeat");
                 json_object_object_add(cur, "lastHeartbeat",
                                        json_object_new_string(now_iso().c_str()));
+                json_object* m = nullptr;
+                if (body2 && json_object_object_get_ex(body2, "metrics", &m) && m)
+                    json_object_object_add(cur, "metrics", json_object_get(m));
+                json_object* ld = nullptr;
+                if (body2 && json_object_object_get_ex(body2, "lanesDigest", &ld) && ld) {
+                    json_object* curm = nullptr;
+                    if (!json_object_object_get_ex(cur, "metrics", &curm) || !curm) {
+                        curm = json_object_new_object();
+                        json_object_object_add(cur, "metrics", curm);
+                    }
+                    json_object_object_del(curm, "lanesDigest");
+                    json_object_object_add(curm, "lanesDigest", json_object_get(ld));
+                }
                 g_store->put_doc("node", id, cur);
+                if (body2) json_object_put(body2);
                 json_object_put(cur);
                 json_object* d = g_store->get_doc("node", id);
                 send_json(res, ok_envelope(d ? d : json_object_new_object(), "heartbeat received"));
@@ -453,7 +468,8 @@ int main(int argc, char** argv) {
                 std::string ab = nd ? body_str(nd, "agentBase") : "";
                 json_object* geo = nullptr;
                 if (nd) json_object_object_get_ex(nd, "geometry", &geo);
-                if (!nd || ab.empty() || !geo) {
+                bool geo_ok = geo && rect_int(geo, "w") > 0 && rect_int(geo, "h") > 0;
+                if (!nd || ab.empty() || !geo_ok) {
                     json_object_array_add(missing, json_object_new_string(mid.c_str()));
                     g_store->audit("{\"fanout-skip\":\"" + mid +
                                    "\",\"reason\":\"no agentBase/geometry\"}");
@@ -470,7 +486,8 @@ int main(int argc, char** argv) {
                     std::string agent_base = body_str(nd, "agentBase");
                     json_object* geo = nullptr;
                     json_object_object_get_ex(nd, "geometry", &geo);
-                    if (agent_base.empty() || !geo) {
+                    bool geo_ok = geo && rect_int(geo, "w") > 0 && rect_int(geo, "h") > 0;
+                    if (agent_base.empty() || !geo_ok) {
                         json_object_put(nd);
                         continue;
                     }

@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 /* Per-session admission: maintains (mcast_ip, udp_port) -> lane mapping with a
- * whitelist and an 8-slot LRU table (req 03 §7.3 / S4). Self-contained: no
+ * whitelist and an 8-slot LRU table. Self-contained: no
  * MTL/MPP dependency, so it builds and can be unit-tested on x86. */
 
 #define DVS_MAX_SESSIONS 8

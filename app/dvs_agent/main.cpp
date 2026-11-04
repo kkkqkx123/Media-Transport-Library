@@ -726,6 +726,21 @@ int main(int argc, char** argv) {
                         json_object_object_add(patch, "geometry", json_object_get(val));
                     } else if (k == "role") {
                         g_store->set_desired("role", json_object_get(val), nullptr);
+                        json_object* rv = nullptr;
+                        if (json_object_is_type(val, json_type_object) &&
+                            json_object_object_get_ex(val, "role", &rv) && rv) {
+                            json_object* pr = json_object_new_string(json_object_get_string(rv));
+                            json_object* pp = json_object_new_object();
+                            json_object_object_add(pp, "pendingRole", pr);
+                            g_store->update_node(pp);
+                            json_object_put(pp);
+                        } else if (json_object_is_type(val, json_type_string)) {
+                            json_object* pr = json_object_new_string(json_object_get_string(val));
+                            json_object* pp = json_object_new_object();
+                            json_object_object_add(pp, "pendingRole", pr);
+                            g_store->update_node(pp);
+                            json_object_put(pp);
+                        }
                     } else {
                         json_object_array_add(ignored, json_object_new_string(k.c_str()));
                     }

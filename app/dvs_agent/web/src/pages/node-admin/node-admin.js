@@ -82,6 +82,13 @@
         function renderOutputModes(preferredValue) {
           var outputSelect = $("sel-outputport");
           var resSelect = $("sel-res");
+          if (!nodeCapabilities.outputPorts.length) {
+            resSelect.innerHTML = '<option value="custom">能力未上报 · 请等待节点回读</option>';
+            resSelect.value = "custom";
+            $("custom-res").style.display = "";
+            $("output-capability-note").textContent = "能力未上报：输出口列表为空，已禁用端口相关保存";
+            return;
+          }
           var outputId = outputSelect.value || (nodeCapabilities.selectedOutput && nodeCapabilities.selectedOutput.id);
           var selectedPort = nodeCapabilities.outputPorts.filter(function (port) { return port.id === outputId; })[0] || nodeCapabilities.outputPorts[0];
           if (!selectedPort) return;
@@ -121,18 +128,36 @@
         }
         function renderHardwareCapabilities() {
           nodeCapabilities = DvsHardwareCapabilities.resolve(nodeSnapshot);
-          $("sel-inputport").innerHTML = nodeCapabilities.inputPorts.map(function (port) {
-            return '<option value="' + port.id + '">' + port.label + " · " + port.kind + " · 上限 " + port.maxWidth + "×" + port.maxHeight + " @" + port.maxRefreshHz + "Hz</option>";
-          }).join("");
-          $("sel-outputport").innerHTML = nodeCapabilities.outputPorts.map(function (port) {
-            return '<option value="' + port.id + '">' + port.label + " · " + port.kind + "</option>";
-          }).join("");
-          $("sel-inputport").value = nodeSnapshot.input && nodeSnapshot.input.port && nodeCapabilities.inputPorts.some(function (port) { return port.id === nodeSnapshot.input.port; })
-            ? nodeSnapshot.input.port : (nodeCapabilities.inputPorts[0] && nodeCapabilities.inputPorts[0].id);
-          $("sel-outputport").value = nodeSnapshot.output && nodeSnapshot.output.connector && nodeCapabilities.outputPorts.some(function (port) { return port.id === nodeSnapshot.output.connector; })
-            ? nodeSnapshot.output.connector : (nodeCapabilities.outputPorts[0] && nodeCapabilities.outputPorts[0].id);
+          if (!nodeCapabilities.inputPorts.length) {
+            $("sel-inputport").innerHTML = '<option value="">能力未上报 · 暂无输入口</option>';
+            $("sel-inputport").value = "";
+          } else {
+            $("sel-inputport").innerHTML = nodeCapabilities.inputPorts.map(function (port) {
+              return '<option value="' + port.id + '">' + port.label + " · " + port.kind + " · 上限 " + port.maxWidth + "×" + port.maxHeight + " @" + port.maxRefreshHz + "Hz</option>";
+            }).join("");
+            $("sel-inputport").value = nodeSnapshot.input && nodeSnapshot.input.port && nodeCapabilities.inputPorts.some(function (port) { return port.id === nodeSnapshot.input.port; })
+              ? nodeSnapshot.input.port : (nodeCapabilities.inputPorts[0] && nodeCapabilities.inputPorts[0].id);
+          }
+          if (!nodeCapabilities.outputPorts.length) {
+            $("sel-outputport").innerHTML = '<option value="">能力未上报 · 暂无输出口</option>';
+            $("sel-outputport").value = "";
+          } else {
+            $("sel-outputport").innerHTML = nodeCapabilities.outputPorts.map(function (port) {
+              return '<option value="' + port.id + '">' + port.label + " · " + port.kind + "</option>";
+            }).join("");
+            $("sel-outputport").value = nodeSnapshot.output && nodeSnapshot.output.connector && nodeCapabilities.outputPorts.some(function (port) { return port.id === nodeSnapshot.output.connector; })
+              ? nodeSnapshot.output.connector : (nodeCapabilities.outputPorts[0] && nodeCapabilities.outputPorts[0].id);
+          }
+          var inputSave = document.querySelector('.btn-save-zone[data-zone="input"]');
+          var outputSave = document.querySelector('.btn-save-zone[data-zone="output"]');
+          if (inputSave) inputSave.disabled = !nodeCapabilities.inputPorts.length;
+          if (outputSave) outputSave.disabled = !nodeCapabilities.outputPorts.length;
           renderOutputModes();
-          $("info-capability").textContent = nodeCapabilities.profile.name + "（官方芯片基线）";
+          if (!nodeCapabilities.reported) {
+            $("info-capability").textContent = "能力未上报（仅显示芯片规格参考）";
+          } else {
+            $("info-capability").textContent = nodeCapabilities.profile.name + " · 已回读" + nodeCapabilities.inputPorts.length + "入/" + nodeCapabilities.outputPorts.length + "出";
+          }
           $("info-sync").textContent = nodeCapabilities.sync;
         }
         function playbackText(node) {
@@ -195,11 +220,11 @@
           $("info-exception").textContent = nodeExceptionText(nodeSnapshot);
           $("info-temp").textContent = nodeSnapshot.metrics && nodeSnapshot.metrics.temperature || "—";
           $("info-mem").textContent = nodeSnapshot.metrics && nodeSnapshot.metrics.memory || "—";
-          if (nodeSnapshot.output) {
+          if (nodeSnapshot.output && nodeCapabilities.outputPorts.length) {
             var output = nodeSnapshot.output;
             var outputPortId = output.connector && nodeCapabilities.outputPorts.some(function (port) { return port.id === output.connector; })
               ? output.connector : (nodeCapabilities.outputPorts[0] && nodeCapabilities.outputPorts[0].id);
-            $("sel-outputport").value = outputPortId;
+            if (outputPortId) $("sel-outputport").value = outputPortId;
             if (output.connector !== outputPortId) renderOutputModes();
             var safe = findSafeMode(output);
             $("sel-res").value = safe ? safe.id : "custom";
@@ -212,7 +237,7 @@
             var outMode = document.querySelector('input[name="outmode"][value="' + (output.mode === "hotplug" ? "hotplug" : "force") + '"]');
             if (outMode) outMode.checked = true;
           }
-          if (nodeSnapshot.input && nodeSnapshot.input.port) $("sel-inputport").value = nodeSnapshot.input.port;
+          if (nodeSnapshot.input && nodeSnapshot.input.port && nodeCapabilities.inputPorts.length) $("sel-inputport").value = nodeSnapshot.input.port;
           var regLabel = nodeSnapshot.registerState === "registered" ? "已注册 · " + roleText(nodeSnapshot.role)
             : nodeSnapshot.registerState === "registering" ? "注册中…" : "连接失败 · 请检查地址";
           setRegState(regLabel, nodeSnapshot.registerState === "registered");
@@ -844,7 +869,7 @@
               $("fw-status").hidden = false;
               $("fw-status").textContent = "正在上传固件包，请勿关闭页面…";
               var file = pendingFwFile;
-              /* UPG-1:先上传二进制拿到暂存 path,再用该 path 调升级接口;后端对裸文件名也会回退到 /tmp 查找。 */
+              /* 先上传二进制拿到暂存路径，再用该路径调升级接口；后端对裸文件名也会回退到 /tmp 查找。 */
               function finishUpgrade(stagedPath, sha) {
                 $("fw-status").textContent = "升级中，请勿关闭页面…";
                 return apiAsync("POST", "/api/v1/node/upgrade", { filename: stagedPath, sha256: sha }).then(function (r) {

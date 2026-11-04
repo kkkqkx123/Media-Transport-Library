@@ -243,10 +243,11 @@ static bool validate_whitelist_value(json_object* wv, std::string& bad_item) {
     return false;
 }
 
-/* NET-1 system apply (env-gated). Without DVS_ALLOW_NETWORK_APPLY the call
- * is a dry-run that only persists intent to /tmp; with the env set it also
- * persists to /var/lib and reports IO failures. DVS_FORCE_NETWORK_FAIL=1
- * forces failure for rollback testing. */
+/* System network apply stays intent-only by default. Without
+ * DVS_ALLOW_NETWORK_APPLY the call persists the intent for audit and
+ * returns success; applied in the config state machine therefore means
+ * the intent was stored, not that the host network was reconfigured.
+ * DVS_FORCE_NETWORK_FAIL=1 forces failure for rollback testing. */
 static bool apply_system_network(const std::string& mode, const std::string& ip,
                                  const std::string& mask, const std::string& gw,
                                  const std::string& dns, std::string& err) {
@@ -281,9 +282,10 @@ static bool apply_system_network(const std::string& mode, const std::string& ip,
     return true;
 }
 
-/* CAP-1: pull engine capability once and merge into node.capabilities.
- * Same merge rule as GET /capability: empty input/output arrays never
- * overwrite the seeded ports; mtl/ptp/scalars always merge. Log-only. */
+/* Pull engine capability once and merge into node.capabilities. Engine
+ * unreachable keeps the stored value; an engine that clearly reports an
+ * empty port array propagates the empty array so the frontend can show the
+ * honest empty state instead of a synthesized port. Log-only. */
 static void refresh_capability_from_media() {
     if (!g_media || !g_store) return;
     std::string cr = g_media->request("capability", nullptr);
@@ -298,9 +300,6 @@ static void refresh_capability_from_media() {
         json_object_object_get_ex(g_store->node(), "capabilities", &caps);
         json_object* merged = caps ? json_object_get(caps) : json_object_new_object();
         json_object_object_foreach(data, k, v) {
-            if ((strcmp(k, "inputPorts") == 0 || strcmp(k, "outputPorts") == 0) &&
-                json_object_is_type(v, json_type_array) && json_object_array_length(v) == 0)
-                continue;
             json_object_object_add(merged, k, json_object_get(v));
         }
         json_object_object_add(patch, "capabilities", merged);
@@ -615,7 +614,7 @@ int main(int argc, char** argv) {
     }
     g_reg = new Registration(g_store, g_media, platform_url, 3000, agent_base);
 
-    /* CAP-1: actively merge engine capability at startup (MTL/PTP/ports). */
+    // Merge the live engine capability at startup so MTL and PTP stay fresh.
     refresh_capability_from_media();
 
     // sync configStates into node at startup
@@ -765,6 +764,9 @@ int main(int argc, char** argv) {
                     json_object* node_patch = json_object_new_object();
                     bool forward_media = false;
                     json_object* fwd = nullptr;
+                    // Role activation is deferred to reboot so the running
+                    // compositor is not cleared mid-session; saving here only
+                    // records pendingRole and the reboot path clears media.
                     if (scope == "role") {
                         json_object* r = nullptr;
                         std::string want = (val && json_object_object_get_ex(val, "role", &r) && r) ? json_object_get_string(r) : "";
@@ -877,7 +879,8 @@ int main(int argc, char** argv) {
                             json_object_object_add(fwd, "scope", json_object_new_string("output"));
                             json_object_object_add(fwd, "value", json_object_get(val));
                             forward_media = true;
-                            g_store->mark_applied(scope, 0);
+                            // Stay in pending_apply here; the background thread
+                            // flips the state after the engine answers.
                         }
                     } else if (scope == "network") {
                         json_object* mv = nullptr;
@@ -894,8 +897,8 @@ int main(int argc, char** argv) {
                             fail_code = "INVALID_ARGUMENT"; fail_reason = "静态地址格式不正确";
                         } else if (srv.empty()) { fail_code = "INVALID_ARGUMENT"; fail_reason = "缺少注册服务器地址"; }
                         if (fail_code.empty()) {
-                            /* NET-1: snapshot before mutating, apply to the system
-                             * (env-gated), roll back the node object on failure. */
+                            /* Snapshot before mutating so a failed system apply can
+                             * roll back the node object to the previous values. */
                             json_object* net_old = nullptr;
                             json_object_object_get_ex(g_store->node(), "network", &net_old);
                             json_object* net_old_copy = net_old ? json_object_get(net_old) : json_object_new_object();
@@ -998,15 +1001,25 @@ int main(int argc, char** argv) {
                         }
                     }
                     if (!fail_code.empty()) g_store->mark_failed(scope, fail_code.c_str(), fail_reason.c_str());
-                    /* FWD-1: media forward failure is log-only, never flips the
-                     * applied/failed decision. OUT-1: output scope forwards in
-                     * the background so compositor rebuild never blocks HTTP;
-                     * no-picture case is save-only on the engine side. */
+                    // Media forward decides the final config state. Input is
+                    // synchronous so an engine refusal is visible at once.
+                    // Output stays pending and a background thread flips the
+                    // state after the engine answers; a revision check keeps a
+                    // stale answer from overwriting a newer save.
                     if (forward_media && fwd) {
                         if (scope == "output") {
+                            int want_rev = 0;
+                            {
+                                json_object* cur = g_store->get_config(scope, node_id);
+                                json_object* drv = nullptr;
+                                if (cur && json_object_object_get_ex(cur, "desiredRevision", &drv) && drv)
+                                    want_rev = json_object_get_int(drv);
+                                if (cur) json_object_put(cur);
+                            }
                             json_object* fwd_bg = json_object_get(fwd);
                             std::string sc = scope;
-                            std::thread([fwd_bg, sc]() {
+                            std::string nid = node_id;
+                            std::thread([fwd_bg, sc, nid, want_rev]() {
                                 std::string fr = g_media->request("configure", fwd_bg);
                                 json_object* fo = json_tokener_parse(fr.c_str());
                                 bool ok = false;
@@ -1022,12 +1035,30 @@ int main(int argc, char** argv) {
                                     if (json_object_object_get_ex(fo, "msg", &msgv) && msgv)
                                         msg = json_object_get_string(msgv);
                                     json_object_put(fo);
+                                } else {
+                                    code = "MEDIA_CONFIGURE_UNPARSABLE";
+                                    msg = "media engine response unparsable";
                                 }
-                                if (!ok)
-                                    fprintf(stderr, "dvs-agent: media configure (%s) failed (log-only) code=%s msg=%s\n",
+                                int cur_rev = want_rev;
+                                {
+                                    json_object* cur = g_store->get_config(sc, nid);
+                                    json_object* drv = nullptr;
+                                    if (cur && json_object_object_get_ex(cur, "desiredRevision", &drv) && drv)
+                                        cur_rev = json_object_get_int(drv);
+                                    if (cur) json_object_put(cur);
+                                }
+                                if (cur_rev != want_rev) {
+                                    fprintf(stderr, "dvs-agent: media configure (%s) stale rev %d vs %d, skip\n",
+                                            sc.c_str(), want_rev, cur_rev);
+                                } else if (!ok) {
+                                    g_store->mark_failed(sc, code.empty() ? "MEDIA_CONFIGURE_FAILED" : code.c_str(),
+                                                         msg.empty() ? "media engine refused output config" : msg.c_str());
+                                    fprintf(stderr, "dvs-agent: media configure (%s) failed code=%s msg=%s\n",
                                             sc.c_str(), code.c_str(), msg.c_str());
-                                else
+                                } else {
+                                    g_store->mark_applied(sc, 0);
                                     fprintf(stderr, "dvs-agent: media configure (%s) ok (background)\n", sc.c_str());
+                                }
                                 json_object_put(fwd_bg);
                             }).detach();
                             json_object_put(fwd);
@@ -1046,12 +1077,16 @@ int main(int argc, char** argv) {
                                 json_object* msgv = nullptr;
                                 if (json_object_object_get_ex(fo, "msg", &msgv) && msgv)
                                     msg = json_object_get_string(msgv);
-                                if (!ok)
-                                    fprintf(stderr, "dvs-agent: media configure (%s) failed (log-only) code=%s msg=%s\n",
+                                if (!ok) {
+                                    g_store->mark_failed(scope, code.empty() ? "MEDIA_CONFIGURE_FAILED" : code.c_str(),
+                                                         msg.empty() ? "media engine refused config" : msg.c_str());
+                                    fprintf(stderr, "dvs-agent: media configure (%s) failed code=%s msg=%s\n",
                                             scope.c_str(), code.c_str(), msg.c_str());
+                                }
                                 json_object_put(fo);
                             } else {
-                                fprintf(stderr, "dvs-agent: media configure (%s) unparsable (log-only)\n", scope.c_str());
+                                g_store->mark_failed(scope, "MEDIA_CONFIGURE_UNPARSABLE", "media engine response unparsable");
+                                fprintf(stderr, "dvs-agent: media configure (%s) unparsable\n", scope.c_str());
                             }
                             json_object_put(fwd);
                         }
@@ -1064,7 +1099,8 @@ int main(int argc, char** argv) {
                     json_object_put(node_patch);
                     json_object* cfg = g_store->get_config(scope, node_id);
                     if (body) json_object_put(body);
-                    send_json(res, envelope_ok(cfg, fail_code.empty() ? "配置已提交" : "配置失败"));
+                    const char* ok_msg = (scope == "output" && forward_media) ? "配置已保存，等待媒体生效" : "配置已提交";
+                    send_json(res, envelope_ok(cfg, fail_code.empty() ? ok_msg : "配置失败"));
                     return;
                 }
                 if (req.method == "POST" && action == "retry") {
@@ -1346,9 +1382,6 @@ int main(int argc, char** argv) {
                     json_object_object_get_ex(g_store->node(), "capabilities", &caps);
                     json_object* merged = caps ? json_object_get(caps) : json_object_new_object();
                     json_object_object_foreach(data, k, v) {
-                        if ((strcmp(k, "inputPorts") == 0 || strcmp(k, "outputPorts") == 0) &&
-                            json_object_is_type(v, json_type_array) && json_object_array_length(v) == 0)
-                            continue;
                         json_object_object_add(merged, k, json_object_get(v));
                     }
                     json_object_object_add(patch, "capabilities", merged);

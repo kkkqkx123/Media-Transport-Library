@@ -71,16 +71,22 @@ json_object* Maintenance::reboot() {
         if (node && json_object_object_get_ex(node, "role", &r) && r) role = json_object_get_string(r);
         if (role == "input") media_->request("clear", nullptr);
     }
-    json_object* patch = json_object_new_object();
-    json_object_object_add(patch, "lifecycle", json_object_new_string("rebooting"));
-    store_->update_node(patch);
-    json_object_put(patch);
+    bool allowed = (std::getenv("DVS_ALLOW_REBOOT") != nullptr);
     json_object* o = json_object_new_object();
     json_object_object_add(o, "ok", json_object_new_boolean(1));
-    json_object_object_add(o, "status", json_object_new_string("rebooting"));
-    if (std::getenv("DVS_ALLOW_REBOOT")) {
+    if (allowed) {
+        json_object* patch = json_object_new_object();
+        json_object_object_add(patch, "lifecycle", json_object_new_string("rebooting"));
+        store_->update_node(patch);
+        json_object_put(patch);
+        json_object_object_add(o, "status", json_object_new_string("rebooting"));
+        json_object_object_add(o, "gated", json_object_new_boolean(0));
         sync();
         system("reboot");
+    } else {
+        json_object_object_add(o, "status", json_object_new_string("reboot_deferred"));
+        json_object_object_add(o, "gated", json_object_new_boolean(1));
+        json_object_object_add(o, "reason", json_object_new_string("reboot gated for safety; role promotion and media clear already applied"));
     }
     return o;
 }
@@ -128,7 +134,7 @@ json_object* Maintenance::upgrade(const std::string& filename,
         json_object_object_add(o, "reason", json_object_new_string("missing filename"));
         return o;
     }
-    /* UPG-1: accept a bare basename staged by /upgrade/upload (in /tmp).
+    /* Accept a bare basename staged by /upgrade/upload (in /tmp).
      * Absolute or tmp-relative paths are used as-is; anything else is first
      * resolved against /tmp so the frontend upload->upgrade link works. */
     std::string path = filename;
@@ -175,7 +181,7 @@ json_object* Maintenance::upgrade(const std::string& filename,
     }
 
     /* Verified: stage the package (A/B: previous version path is untouched).
-     * UPG-1: the active switch is env-gated. Without DVS_ALLOW_UPGRADE_SWITCH
+     * The active switch stays gated. Without DVS_ALLOW_UPGRADE_SWITCH
      * the package is staged and reported as "staged" with the version kept
      * on the old value; with the env set the fw version is bumped. */
     std::string ver = derive_version(path);

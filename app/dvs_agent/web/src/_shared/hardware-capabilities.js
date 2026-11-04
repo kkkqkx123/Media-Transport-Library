@@ -2,8 +2,8 @@
  * DVS RK3588 硬件能力桥接（原型用）。
  *
  * 芯片级能力来自 Rockchip RK3588 官方 Brief Datasheet；具体底板的物理
- * 接口数量必须由节点注册回传的 capabilities 覆盖。页面只展示 resolve()
- * 返回的实际可用端口，不把 SoC 的可选接口当成每台设备都存在。
+ * 接口数量必须由节点上报的 capabilities 决定。resolve() 只返回上报端口，
+ * 无上报或空数组时返回空并标记未上报；profile 仅保留规格说明用途。
  */
 (function (global) {
   "use strict";
@@ -78,20 +78,32 @@
   function resolve(node) {
     var profile = getProfile(node && node.hardwareProfile);
     var reported = node && node.capabilities || {};
-    var inputPorts = enrichPorts(Array.isArray(reported.inputPorts) && reported.inputPorts.length
-      ? reported.inputPorts : profile.physicalPorts.input, { maxWidth: 3840, maxHeight: 2160, maxRefreshHz: 60 });
-    var outputPorts = enrichPorts(Array.isArray(reported.outputPorts) && reported.outputPorts.length
-      ? reported.outputPorts : profile.physicalPorts.output, profile.customRange);
+    var hasReportedInput = Array.isArray(reported.inputPorts);
+    var hasReportedOutput = Array.isArray(reported.outputPorts);
+    var inputPorts = hasReportedInput
+      ? enrichPorts(reported.inputPorts, { maxWidth: 3840, maxHeight: 2160, maxRefreshHz: 60 })
+      : [];
+    var outputPorts = hasReportedOutput
+      ? enrichPorts(reported.outputPorts, profile.customRange)
+      : [];
     var outputId = node && node.output && node.output.connector;
-    var selectedOutput = outputPorts.find(function (port) { return port.id === outputId; }) || outputPorts[0];
-    var outputLimit = portLimit(selectedOutput, profile.customRange);
-    var safeModes = profile.safeModes.filter(function (mode) {
+    var selectedOutput = null;
+    if (outputPorts.length) {
+      selectedOutput = outputPorts.filter(function (port) { return port.id === outputId; })[0] || outputPorts[0];
+    }
+    var outputLimit = selectedOutput
+      ? portLimit(selectedOutput, profile.customRange)
+      : { maxWidth: profile.customRange.maxWidth, maxHeight: profile.customRange.maxHeight, maxRefreshHz: profile.customRange.maxRefreshHz };
+    var safeModes = selectedOutput ? profile.safeModes.filter(function (mode) {
       return mode.width <= outputLimit.maxWidth && mode.height <= outputLimit.maxHeight && mode.refreshHz <= outputLimit.maxRefreshHz;
-    });
+    }) : [];
     return {
       profile: profile,
       inputPorts: inputPorts,
       outputPorts: outputPorts,
+      hasReportedInput: hasReportedInput,
+      hasReportedOutput: hasReportedOutput,
+      reported: hasReportedInput && hasReportedOutput,
       selectedOutput: selectedOutput,
       outputLimit: outputLimit,
       safeModes: safeModes,

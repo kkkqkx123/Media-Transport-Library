@@ -26,6 +26,10 @@ int dvs_session_admit(const char* mcast_ip, uint16_t port, int* lane_out);
 /* Release a previously admitted source. */
 void dvs_session_release(const char* mcast_ip, uint16_t port);
 
+/* Snapshot active sessions into caller arrays. Returns active count.
+ * Each entry pairs the session key with its lane. Empty slots omitted. */
+int dvs_session_snapshot(char keys[][DVS_SESSION_KEY_LEN], int* lanes, int max);
+
 /* Advance the LRU clock (call once per admission cycle). */
 void dvs_session_tick(void);
 

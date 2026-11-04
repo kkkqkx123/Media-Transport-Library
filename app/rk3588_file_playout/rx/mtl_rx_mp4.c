@@ -17,7 +17,7 @@ struct mtl_rx_mp4 {
     st22_rx_handle      handle;
     media_clk_anchor    clk;
 
-    struct mp4_rx_pkt       pool[RX_POOL_SIZE];
+    struct file_playout_rx_pkt       pool[RX_POOL_SIZE];
     atomic_bool         stopping;
 
     uint64_t            stat_received;
@@ -27,7 +27,7 @@ struct mtl_rx_mp4 {
 };
 
 /* ---- pool helpers ---- */
-static struct mp4_rx_pkt* rx_pool_acquire(mtl_rx_mp4* rx) {
+static struct file_playout_rx_pkt* rx_pool_acquire(mtl_rx_mp4* rx) {
     for (int i = 0; i < RX_POOL_SIZE; i++) {
         int expected = 0;
         if (atomic_compare_exchange_strong(&rx->pool[i].used, &expected, 1))
@@ -36,7 +36,7 @@ static struct mp4_rx_pkt* rx_pool_acquire(mtl_rx_mp4* rx) {
     return NULL;
 }
 
-static void rx_pool_release(struct mp4_rx_pkt* pkt) {
+static void rx_pool_release(struct file_playout_rx_pkt* pkt) {
     if (!pkt) return;
     pkt->frame     = NULL;
     pkt->size      = 0;
@@ -67,7 +67,7 @@ static int rx_notify_frame_ready(void* priv, void* frame,
         return 0;
     }
 
-    struct mp4_rx_pkt* pkt = rx_pool_acquire(rx);
+    struct file_playout_rx_pkt* pkt = rx_pool_acquire(rx);
     if (!pkt) {
         rx->stat_drops++;
         st22_rx_put_framebuff(rx->handle, frame);
@@ -167,7 +167,7 @@ void mtl_rx_mp4_stop(mtl_rx_mp4* rx) {
             rx_pool_release(&rx->pool[i]);
         }
     }
-    struct mp4_rx_pkt* pkt;
+    struct file_playout_rx_pkt* pkt;
     while (ring_pop(rx->cfg.output_ring, (void**)&pkt) == 0) {
         if (pkt->frame)
             st22_rx_put_framebuff(rx->handle, pkt->frame);

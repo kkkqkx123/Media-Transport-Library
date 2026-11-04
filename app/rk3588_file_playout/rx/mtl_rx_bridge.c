@@ -25,7 +25,7 @@ struct mtl_rx_bridge {
     uint64_t             dump_bytes;
 };
 
-static void bridge_release_rx_pkt(mtl_rx_bridge* b, struct mp4_rx_pkt* mp) {
+static void bridge_release_rx_pkt(mtl_rx_bridge* b, struct file_playout_rx_pkt* mp) {
     if (!mp) return;
     if (b->cfg.rx_handle && mp->frame) {
         st22_rx_put_framebuff(b->cfg.rx_handle, mp->frame);
@@ -93,7 +93,7 @@ static void* bridge_thread(void* arg) {
     bridge_dump_open(b);
 
     while (atomic_load(&b->running)) {
-        struct mp4_rx_pkt* mp = NULL;
+        struct file_playout_rx_pkt* mp = NULL;
         if (ring_pop_wait(b->cfg.mtl_ring, (void**)&mp, &b->running) != 0)
             continue;
         if (!mp || !mp->frame || !mp->size) {
@@ -196,7 +196,7 @@ void mtl_rx_bridge_stop(mtl_rx_bridge* b) {
         if (b->cfg.coded_pool) slab_free(b->cfg.coded_pool, pkt->data);
         free(pkt);
     }
-    struct mp4_rx_pkt* mp;
+    struct file_playout_rx_pkt* mp;
     while (ring_pop(b->cfg.mtl_ring, (void**)&mp) == 0)
         bridge_release_rx_pkt(b, mp);
     printf("mtl_rx_bridge: %llu bridged, %u drops\n",

@@ -1,5 +1,7 @@
 #include "engine_ctx.h"
 
+#include <json-c/json.h>
+
 #include "file_playout_config.h"      /* file_playout_mtl_init, mode_dims, apply_drm_mode */
 #include "shared/display_layout.h" /* file_playout_pip_validate, MP4_PIP_MAX_LANES */
 #include "session_admit.h"         /* whitelist + LRU admission (S4) */
@@ -367,4 +369,38 @@ void dvs_engine_counts(dvs_engine* e, int* rx_sessions, int* decoding,
     if (rx_sessions) *rx_sessions = atomic_load(&e->rx_sessions);
     if (decoding) *decoding = atomic_load(&e->decoding);
     if (layers) *layers = atomic_load(&e->layers);
+}
+
+struct json_object* dvs_engine_lane_stats(dvs_engine* e) {
+    struct json_object* arr = json_object_new_array();
+    if (!arr) return NULL;
+    if (!e) return arr;
+    char keys[DVS_MAX_SESSIONS][DVS_SESSION_KEY_LEN];
+    int lanes[DVS_MAX_SESSIONS];
+    int n = dvs_session_snapshot(keys, lanes, DVS_MAX_SESSIONS);
+    pthread_mutex_lock(&e->mu);
+    int running = (e->comp != NULL);
+    pthread_mutex_unlock(&e->mu);
+    for (int i = 0; i < n; i++) {
+        char* colon = strrchr(keys[i], ':');
+        char sip[64] = {0};
+        int port = 0;
+        if (colon) {
+            size_t len = (size_t)(colon - keys[i]);
+            if (len >= sizeof(sip)) len = sizeof(sip) - 1;
+            memcpy(sip, keys[i], len);
+            port = atoi(colon + 1);
+        } else {
+            snprintf(sip, sizeof(sip), "%s", keys[i]);
+        }
+        struct json_object* o = json_object_new_object();
+        json_object_object_add(o, "lane", json_object_new_int(lanes[i]));
+        json_object_object_add(o, "sip", json_object_new_string(sip));
+        json_object_object_add(o, "udp_port", json_object_new_int(port));
+        json_object_object_add(o, "ready", json_object_new_boolean(running ? 1 : 0));
+        json_object_object_add(o, "lostFrames", json_object_new_int(0));
+        json_object_object_add(o, "lastPtsNs", json_object_new_int64(0));
+        json_object_array_add(arr, o);
+    }
+    return arr;
 }

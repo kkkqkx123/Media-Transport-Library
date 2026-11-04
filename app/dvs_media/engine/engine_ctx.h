@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <json-c/json.h>
 #include <stdatomic.h>
 #include <pthread.h>
 
@@ -69,5 +70,10 @@ void dvs_engine_request_stop(dvs_engine* e);
 /* Live counters for query_state. */
 void dvs_engine_counts(dvs_engine* e, int* rx_sessions, int* decoding,
                        int* layers);
+
+/* Per-lane readiness snapshot for query_state lanes. Empty array means zero
+ * admitted sessions. Ready reflects a running compositor; per-packet loss
+ * counters stay zero until RX statistics are plumbed through. */
+struct json_object* dvs_engine_lane_stats(dvs_engine* e);
 
 #endif /* _DVS_ENGINE_CTX_H_ */

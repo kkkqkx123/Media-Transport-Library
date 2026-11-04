@@ -1,5 +1,5 @@
-#ifndef _E2E_RING_BUFFER_H_
-#define _E2E_RING_BUFFER_H_
+#ifndef _RK3588_COMMON_RING_BUFFER_H_
+#define _RK3588_COMMON_RING_BUFFER_H_
 
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -32,4 +32,4 @@ int ring_pop_wait(struct ring_buffer* r, void** item, const atomic_bool* running
 /** Wake all waiters (call before join on shutdown). */
 void ring_wake_all(struct ring_buffer* r);
 
-#endif /* _E2E_RING_BUFFER_H_ */
+#endif /* _RK3588_COMMON_RING_BUFFER_H_ */

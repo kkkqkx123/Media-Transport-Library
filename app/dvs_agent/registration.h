@@ -37,7 +37,7 @@ private:
     NodeStore* store_;
     MediaIpcClient* media_;
     std::string platform_url_;
-    std::string agent_base_;  // F1/F2: externally reachable base URL of this agent
+    std::string agent_base_;  // externally reachable base URL of this agent
     int interval_ms_;
 
     std::atomic<bool> running_{false};

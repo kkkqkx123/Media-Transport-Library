@@ -1,5 +1,5 @@
-#ifndef _E2E_SLAB_POOL_H_
-#define _E2E_SLAB_POOL_H_
+#ifndef _RK3588_COMMON_SLAB_POOL_H_
+#define _RK3588_COMMON_SLAB_POOL_H_
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -40,4 +40,4 @@ bool slab_pool_owns(struct slab_pool* p, const uint8_t* ptr);
 /** Wake all waiters and prevent further allocations (for shutdown) */
 void slab_pool_stop(struct slab_pool* p);
 
-#endif /* _E2E_SLAB_POOL_H_ */
+#endif /* _RK3588_COMMON_SLAB_POOL_H_ */

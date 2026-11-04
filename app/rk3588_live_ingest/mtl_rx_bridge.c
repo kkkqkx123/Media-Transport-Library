@@ -1,7 +1,4 @@
 #define _GNU_SOURCE
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2024 Intel Corporation
- */
 
 #include "mtl_rx_bridge.h"
 #include "mtl_rx.h"

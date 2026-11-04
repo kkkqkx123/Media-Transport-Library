@@ -28,7 +28,8 @@ static MediaIpcClient* g_media = nullptr;
 static Maintenance* g_maint = nullptr;
 static Registration* g_reg = nullptr;
 static std::string g_web_root;
-// F4: shared control-plane bearer token (mTLS-lite). Empty => no token check.
+// Shared control-plane bearer token. Empty means no check; when set,
+// platform-to-agent calls must carry it in an Authorization header.
 static std::string g_api_token =
     (std::getenv("DVS_API_TOKEN") ? std::getenv("DVS_API_TOKEN") : "");
 
@@ -170,18 +171,20 @@ static std::string get_str(json_object* o, const char* key) {
     return "";
 }
 
-/* F1: background reporter. After the agent forwards a platform sub-layout to the
- * media engine (prepare IPC), the engine emits a media.prepare.result event once
- * it has readied its RX sessions. This thread watches the IPC event ring, finds
- * the matching operationId, and calls the platform's /api/v1/ops/commit so the
- * two-phase barrier can collect this node's reply and switch at applyAtNs.
- * Runs detached; never blocks the HTTP handler. */
+/* Background reporter. After the agent forwards a platform sub-layout to the
+ * media engine (prepare IPC), the engine emits a prepare-result event once
+ * it has readied its RX sessions. This thread watches the IPC event ring,
+ * finds the matching operation, and calls the platform commit endpoint so
+ * the barrier can collect this node's reply and switch at the target time.
+ * Runs detached; never blocks the HTTP handler. Only ready/blocked leave
+ * this node; anything else (including timeouts) is reported as blocked. */
 static void agent_report_commit(const std::string& opid, int rev,
                                 int64_t applyAtNs, const std::string& nodeId,
                                 const std::string& platform_url) {
     (void)rev; (void)applyAtNs;  // reserved for barrier diagnostics
     if (platform_url.empty()) return;  // local-autonomous: nothing to report
     std::string status = "ready";
+    std::string lanes_json = "[]";
     bool done = false;
     for (int i = 0; i < 50 && !done; i++) {  // up to 5s
         json_object* evs = g_media->drain_events();
@@ -193,8 +196,13 @@ static void agent_report_commit(const std::string& opid, int rev,
                 json_object* dd = nullptr;
                 if (json_object_object_get_ex(e, "data", &dd) && dd) {
                     if (get_str(dd, "operationId") == opid) {
-                        status = get_str(dd, "status");
-                        if (status.empty()) status = "ready";
+                        std::string s = get_str(dd, "status");
+                        status = (s == "ready") ? "ready" : "blocked";
+                        json_object* lj = nullptr;
+                        if (json_object_object_get_ex(dd, "lanes", &lj) && lj) {
+                            const char* ls = json_object_to_json_string(lj);
+                            if (ls) lanes_json = ls;
+                        }
                         done = true;
                     }
                 }
@@ -209,9 +217,17 @@ static void agent_report_commit(const std::string& opid, int rev,
         json_object* st = json_tokener_parse(qs.c_str());
         if (st) {
             json_object* d = nullptr;
-            std::string s = (json_object_object_get_ex(st, "data", &d) && d)
-                                ? get_str(d, "state") : "";
-            status = (s == "prepared" || s == "idle") ? "ready" : "blocked";
+            if (json_object_object_get_ex(st, "data", &d) && d) {
+                std::string s = get_str(d, "state");
+                status = (s == "prepared" || s == "idle") ? "ready" : "blocked";
+                json_object* lj = nullptr;
+                if (json_object_object_get_ex(d, "lanes", &lj) && lj) {
+                    const char* ls = json_object_to_json_string(lj);
+                    if (ls) lanes_json = ls;
+                }
+            } else {
+                status = "blocked";
+            }
             json_object_put(st);
         } else {
             status = "blocked";
@@ -222,6 +238,10 @@ static void agent_report_commit(const std::string& opid, int rev,
     json_object_object_add(c, "operationId", json_object_new_string(opid.c_str()));
     json_object_object_add(c, "node", json_object_new_string(nodeId.c_str()));
     json_object_object_add(c, "status", json_object_new_string(status.c_str()));
+    if (lanes_json != "[]") {
+        json_object* lj = json_tokener_parse(lanes_json.c_str());
+        if (lj) json_object_object_add(c, "lanes", lj);
+    }
     const char* cb = json_object_to_json_string(c);
     std::string resp;
     cli.post_json(platform_url + "/api/v1/ops/commit",
@@ -286,7 +306,7 @@ int main(int argc, char** argv) {
         fflush(stdout);
     }
 
-    // F1/F2: derive this agent's externally reachable base URL. Operator may
+    // Derive this agent's externally reachable base URL. Operator may
     // override via --agent-base / DVS_AGENT_BASE; otherwise auto-build from the
     // node's network.ip and the listen port so the platform can fan out to it.
     std::string agent_base = env_or("DVS_AGENT_BASE", "");
@@ -368,9 +388,8 @@ int main(int argc, char** argv) {
         // node-admin prototype keeps working without a login wall. When enabled,
         // every /api request except login must carry a valid session cookie.
         static bool g_require_auth = (std::getenv("DVS_REQUIRE_AUTH") != nullptr);
-        // F4: platform<->agent internal calls authenticate with a Bearer token
-        // (set via DVS_API_TOKEN) so the barrier fan-out/commit cannot be forged
-        // on a shared LAN. Browser sessions still use the cookie.
+        // Browser sessions use the cookie. Internal platform calls use a
+        // bearer token so barrier delivery cannot be forged on a shared LAN.
         bool token_ok = false;
         if (!g_api_token.empty()) {
             auto it = req.headers.find("Authorization");
@@ -612,10 +631,14 @@ int main(int argc, char** argv) {
             send_json(res, o);
             return;
         }
-        // F1: receive a platform-computed per-node sub-layout, forward it to the
-        // media engine as a prepare, and report the result back to the platform
-        // barrier (see agent_report_commit). The node never re-fragments.
+        // Receive a platform-computed per-node sub-layout, forward it to the
+        // media engine as a prepare, and report the result back to the
+        // platform barrier. The node never re-fragments.
         if (req.method == "POST" && req.path == "/api/v1/node/media/layout") {
+            if (!g_api_token.empty() && !token_ok) {
+                send_json(res, envelope_fail("UNAUTHORIZED", 401, "missing or bad token"));
+                return;
+            }
             json_object* body = json_tokener_parse(req.body.c_str());
             std::string opid = get_str(body, "operationId");
             int rev = 1;
@@ -628,6 +651,13 @@ int main(int argc, char** argv) {
             if (opid.empty()) {
                 if (body) json_object_put(body);
                 send_json(res, envelope_fail("INVALID_ARGUMENT", 400, "missing operationId"));
+                return;
+            }
+            json_object* wins0 = nullptr;
+            if (body) json_object_object_get_ex(body, "windows", &wins0);
+            if (wins0 && !json_object_is_type(wins0, json_type_array)) {
+                if (body) json_object_put(body);
+                send_json(res, envelope_fail("INVALID_ARGUMENT", 400, "windows must be an array"));
                 return;
             }
             json_object* prep = json_object_new_object();
@@ -654,9 +684,7 @@ int main(int argc, char** argv) {
             if (body) json_object_put(body);
             return;
         }
-        // F5: expose per-lane MTL RX readiness/lost frames from the engine so the
-        // barrier "all-ready" gains real per-lane semantics (and ops/commit can
-        // carry lane detail).
+        // Expose per-lane RX readiness from the engine for barrier checks.
         if (req.method == "GET" && req.path == "/api/v1/node/media/lanes") {
             std::string r = g_media->query_state();
             json_object* o = json_tokener_parse(r.c_str());
@@ -679,14 +707,18 @@ int main(int argc, char** argv) {
             send_json(res, envelope_ok(d, ""));
             return;
         }
-        // F2: accept the platform's authoritative config (geometry/role, etc.)
-        // so the agent is no longer an independent source of truth. Best-effort:
-        // failures surface via /node/info and never block local operation.
+        // Accept the platform-owned config subset. Only geometry and role
+        // apply; every other key is reported as ignored and never stored.
         if (req.method == "POST" && req.path == "/api/v1/node/config/sync") {
+            if (!g_api_token.empty() && !token_ok) {
+                send_json(res, envelope_fail("UNAUTHORIZED", 401, "missing or bad token"));
+                return;
+            }
             json_object* body = json_tokener_parse(req.body.c_str());
             json_object* cfg = nullptr;
             if (body) json_object_object_get_ex(body, "config", &cfg);
             json_object* patch = json_object_new_object();
+            json_object* ignored = json_object_new_array();
             if (cfg && json_object_is_type(cfg, json_type_object)) {
                 json_object_object_foreach(cfg, key, val) {
                     std::string k(key);
@@ -694,15 +726,18 @@ int main(int argc, char** argv) {
                         json_object_object_add(patch, "geometry", json_object_get(val));
                     } else if (k == "role") {
                         g_store->set_desired("role", json_object_get(val), nullptr);
+                    } else {
+                        json_object_array_add(ignored, json_object_new_string(k.c_str()));
                     }
-                    /* other scopes: ignored until incremental diff (O2) */
                 }
             }
+            json_object_object_add(patch, "configSource", json_object_new_string("platform"));
             g_store->update_node(patch);
             json_object_put(patch);
             json_object* d = json_object_new_object();
             json_object_object_add(d, "applied", json_object_new_boolean(1));
             json_object_object_add(d, "source", json_object_new_string("platform"));
+            json_object_object_add(d, "ignored", ignored);
             if (body) json_object_put(body);
             send_json(res, envelope_ok(d, "config synced"));
             return;

@@ -9,6 +9,7 @@
 #include <cstring>
 #include <ctime>
 #include <mutex>
+#include <thread>
 #include <string>
 #include <unistd.h>
 #include <unordered_map>
@@ -28,8 +29,8 @@ static OpCoordinator g_ops;
 static std::atomic<uint64_t> g_req_seq{0};
 static std::mutex g_idem_mu;
 static std::map<std::string, std::string> g_idem_cache;
-// F4: shared control-plane bearer token. Empty => no token check (prototype
-// compatible). Set via DVS_API_TOKEN on every node/agent/platform for mTLS-lite.
+// Shared control-plane bearer token. Empty means no check so a local
+// prototype keeps working; when set, agent-to-platform calls must carry it.
 static std::string g_api_token =
     (std::getenv("DVS_API_TOKEN") ? std::getenv("DVS_API_TOKEN") : "");
 
@@ -92,14 +93,24 @@ std::string body_str(json_object* o, const char* key) {
         return json_object_get_string(v);
     return "";
 }
-// F1: read an integer field from a rect-style JSON object (default 0).
+bool bearer_ok(const HttpRequest& req) {
+    if (g_api_token.empty()) return true;
+    auto it = req.headers.find("Authorization");
+    return it != req.headers.end() && it->second == ("Bearer " + g_api_token);
+}
+bool require_bearer(const HttpRequest& req, HttpResponse& res) {
+    if (bearer_ok(req)) return true;
+    send_json(res, fail_envelope("UNAUTHORIZED", 401, "missing or bad token"));
+    return false;
+}
+// Read an integer field from a rect-style JSON object (default 0).
 int rect_int(json_object* o, const char* k) {
     json_object* v = nullptr;
     if (o && json_object_object_get_ex(o, k, &v) && v)
         return json_object_get_int(v);
     return 0;
 }
-// F1: intersect the global window set against one node's canvas rect and
+// Intersect the global window set against one node's canvas rect and
 // produce the node-local window list (with source crop). Caller owns the
 // returned array. Pure pixel math; node never rounds (platform owns rounding).
 json_object* fragment_for_node(json_object* windows, const Rect& node,
@@ -218,6 +229,7 @@ int main(int argc, char** argv) {
 
     HttpServer::Handler h = [](const HttpRequest& req, HttpResponse& res) {
         if (req.method == "POST" && req.path == "/api/v1/nodes/register") {
+            if (!require_bearer(req, res)) return;
             json_object* b = json_tokener_parse(req.body.c_str());
             std::string id = body_str(b, "id");
             if (id.empty()) id = body_str(b, "sn");
@@ -233,19 +245,26 @@ int main(int argc, char** argv) {
                 return;
             }
             if (!b) b = json_object_new_object();
+            bool has_base = !body_str(b, "agentBase").empty();
+            json_object* geo0 = nullptr;
+            bool has_geo = b && json_object_object_get_ex(b, "geometry", &geo0) && geo0;
             json_object_object_add(b, "online", json_object_new_boolean(1));
             json_object_object_add(b, "lastHeartbeat",
                                    json_object_new_string(now_iso().c_str()));
             g_store->put_doc("node", id, b);
             g_store->audit("{\"register\":\"" + id + "\"}");
+            if (!has_base || !has_geo)
+                g_store->audit("{\"incomplete-register\":\"" + id + "\"}");
             json_object* d = g_store->get_doc("node", id);
             json_object_put(b);
             send_json(res, ok_envelope(d ? d : json_object_new_object(), ""));
             return;
         }
         if (req.method == "POST" && req.path == "/api/v1/nodes/heartbeat") {
+            if (!require_bearer(req, res)) return;
             json_object* b = json_tokener_parse(req.body.c_str());
             std::string id = body_str(b, "id");
+            if (id.empty()) id = body_str(b, "nodeId");
             json_object* cur = id.empty() ? nullptr : g_store->get_doc("node", id);
             if (!cur) {
                 if (b) json_object_put(b);
@@ -258,6 +277,16 @@ int main(int argc, char** argv) {
             json_object* m = nullptr;
             if (b && json_object_object_get_ex(b, "metrics", &m) && m)
                 json_object_object_add(cur, "metrics", json_object_get(m));
+            json_object* ld = nullptr;
+            if (b && json_object_object_get_ex(b, "lanesDigest", &ld) && ld) {
+                json_object* curm = nullptr;
+                if (!json_object_object_get_ex(cur, "metrics", &curm) || !curm) {
+                    curm = json_object_new_object();
+                    json_object_object_add(cur, "metrics", curm);
+                }
+                json_object_object_del(curm, "lanesDigest");
+                json_object_object_add(curm, "lanesDigest", json_object_get(ld));
+            }
             g_store->put_doc("node", id, cur);
             json_object_put(b);
             json_object* d = json_object_new_object();
@@ -320,8 +349,9 @@ int main(int argc, char** argv) {
                 send_json(res, ok_envelope(json_object_new_object(), "retired"));
                 return;
             }
-            // F2: push the platform's authoritative config to the node so the
-            // agent stops being an independent source of truth for geometry/role.
+            // Push the platform-owned config subset to the node. Only geometry
+            // and role leave the platform; every other key is dropped and
+            // audited so node-local scopes stay authoritative.
             if (req.method == "POST" && act == "config-push") {
                 json_object* cur = g_store->get_doc("node", id);
                 if (!cur) { send_json(res, fail_envelope("NOT_FOUND", 404, "node unknown")); return; }
@@ -330,12 +360,27 @@ int main(int argc, char** argv) {
                 json_object* cfg = nullptr;
                 if (body2) json_object_object_get_ex(body2, "config", &cfg);
                 json_object* d = json_object_new_object();
-                if (base.empty() || !cfg) {
+                json_object* ignored = json_object_new_array();
+                json_object* fwd = json_object_new_object();
+                if (cfg && json_object_is_type(cfg, json_type_object)) {
+                    json_object_object_foreach(cfg, key, val) {
+                        std::string k(key);
+                        if (k == "geometry" || k == "role")
+                            json_object_object_add(fwd, k.c_str(), json_object_get(val));
+                        else {
+                            json_object_array_add(ignored, json_object_new_string(k.c_str()));
+                            g_store->audit("{\"config-push-ignored\":\"" + k + "\"}");
+                        }
+                    }
+                }
+                json_object_object_add(d, "ignored", ignored);
+                if (base.empty() || !json_object_object_length(fwd)) {
+                    json_object_put(fwd);
                     json_object_object_add(d, "status", json_object_new_string("skipped"));
                 } else {
                     HttpClient cli;
                     json_object* sp = json_object_new_object();
-                    json_object_object_add(sp, "config", json_object_get(cfg));
+                    json_object_object_add(sp, "config", fwd);
                     const char* spb = json_object_to_json_string(sp);
                     std::string resp;
                     int sc = cli.post_json(base + "/api/v1/node/config/sync",
@@ -362,7 +407,10 @@ int main(int argc, char** argv) {
             send_json(res, ok_envelope(d, ""));
             return;
         }
-        // Operation barrier (T8): prepare collects members, commit fans out.
+        // Prepare registers the barrier and returns at once; per-node
+        // sub-layout delivery runs in a detached worker so the handler
+        // never blocks on node calls. Geometry comes only from stored
+        // node docs, never from the prepare request.
         if (req.method == "POST" && req.path == "/api/v1/ops/prepare") {
             json_object* b = json_tokener_parse(req.body.c_str());
             std::string opid = body_str(b, "operationId");
@@ -385,65 +433,105 @@ int main(int argc, char** argv) {
             }
             Operation& op = g_ops.begin(opid, rev, members, layout_apply_at_ns(now_ns(), fps));
 
-            // F1: fan out the per-node pixel sub-layout to every member agent.
-            // The barrier cannot complete until each node reports its prepare
-            // result back via /api/v1/ops/commit (see dvs_agent). Geometry and
-            // agentBase come from the node doc (populated at registration).
             json_object* wall = nullptr;
             if (b) json_object_object_get_ex(b, "wall", &wall);
             json_object* windows = nullptr;
             if (b) json_object_object_get_ex(b, "windows", &windows);
             int wall_w = rect_int(wall, "w"), wall_h = rect_int(wall, "h");
-            HttpClient cli;
+            const char* win_s = (windows && json_object_is_type(windows, json_type_array))
+                ? json_object_to_json_string(windows) : "[]";
+            std::string windows_json = win_s ? win_s : "[]";
+            uint64_t apply_at = op.apply_at_ns;
+            std::string opid_c = opid;
+            std::string token_c = g_api_token;
+            if (members.size() > 32)
+                g_store->audit("{\"fanout-scale\":\"" + opid_c + "\",\"members\":" +
+                               std::to_string(members.size()) + "}");
+            json_object* missing = json_object_new_array();
             for (const auto& mid : members) {
                 json_object* nd = g_store->get_doc("node", mid);
-                if (!nd) continue;
-                std::string agent_base = body_str(nd, "agentBase");
+                std::string ab = nd ? body_str(nd, "agentBase") : "";
                 json_object* geo = nullptr;
-                json_object_object_get_ex(nd, "geometry", &geo);
-                if (agent_base.empty() || !geo) {
+                if (nd) json_object_object_get_ex(nd, "geometry", &geo);
+                if (!nd || ab.empty() || !geo) {
+                    json_object_array_add(missing, json_object_new_string(mid.c_str()));
                     g_store->audit("{\"fanout-skip\":\"" + mid +
                                    "\",\"reason\":\"no agentBase/geometry\"}");
-                    json_object_put(nd);
-                    continue;
                 }
-                Rect node{rect_int(geo, "x"), rect_int(geo, "y"),
-                          rect_int(geo, "w"), rect_int(geo, "h")};
-                json_object* frag = fragment_for_node(windows, node, wall_w, wall_h);
-                json_object* payload = json_object_new_object();
-                json_object_object_add(payload, "operationId", json_object_new_string(opid.c_str()));
-                json_object_object_add(payload, "revision", json_object_new_int(rev));
-                json_object_object_add(payload, "applyAtNs",
-                                       json_object_new_int64((int64_t)op.apply_at_ns));
-                json_object_object_add(payload, "geometry", json_object_get(geo));
-                json_object_object_add(payload, "windows", frag);
-                const char* pb = json_object_to_json_string(payload);
-                std::string resp;
-                int sc = cli.post_json(agent_base + "/api/v1/node/media/layout",
-                                       std::string(pb ? pb : "{}"), resp, 5000, 2,
-                                       g_api_token);
-                g_store->audit("{\"fanout\":\"" + mid + "\",\"status\":" +
-                               std::to_string(sc) + "}");
-                json_object_put(payload);
-                json_object_put(nd);
+                if (nd) json_object_put(nd);
             }
+            std::thread([opid_c, rev, apply_at, members, windows_json, wall_w, wall_h,
+                           token_c]() {
+                json_object* wins = json_tokener_parse(windows_json.c_str());
+                HttpClient cli;
+                for (const auto& mid : members) {
+                    json_object* nd = g_store->get_doc("node", mid);
+                    if (!nd) continue;
+                    std::string agent_base = body_str(nd, "agentBase");
+                    json_object* geo = nullptr;
+                    json_object_object_get_ex(nd, "geometry", &geo);
+                    if (agent_base.empty() || !geo) {
+                        json_object_put(nd);
+                        continue;
+                    }
+                    Rect node{rect_int(geo, "x"), rect_int(geo, "y"),
+                              rect_int(geo, "w"), rect_int(geo, "h")};
+                    json_object* frag = fragment_for_node(wins, node, wall_w, wall_h);
+                    json_object* payload = json_object_new_object();
+                    json_object_object_add(payload, "operationId",
+                                           json_object_new_string(opid_c.c_str()));
+                    json_object_object_add(payload, "revision", json_object_new_int(rev));
+                    json_object_object_add(payload, "applyAtNs",
+                                           json_object_new_int64((int64_t)apply_at));
+                    json_object_object_add(payload, "geometry", json_object_get(geo));
+                    json_object_object_add(payload, "windows", frag);
+                    const char* pb = json_object_to_json_string(payload);
+                    std::string resp;
+                    int sc = cli.post_json(agent_base + "/api/v1/node/media/layout",
+                                           std::string(pb ? pb : "{}"), resp, 5000, 2,
+                                           token_c);
+                    g_store->audit("{\"fanout\":\"" + mid + "\",\"status\":" +
+                                   std::to_string(sc) + "}");
+                    json_object_put(payload);
+                    json_object_put(nd);
+                }
+                if (wins) json_object_put(wins);
+            }).detach();
 
             if (b) json_object_put(b);
             json_object* d = json_object_new_object();
             json_object_object_add(d, "operationId", json_object_new_string(op.op_id.c_str()));
             json_object_object_add(d, "applyAt",
                                    json_object_new_int64((int64_t)op.apply_at_ns));
+            json_object_object_add(d, "state", json_object_new_string("preparing"));
+            json_object_object_add(d, "missing", missing);
             send_json(res, ok_envelope(d, "preparing"));
             return;
         }
         if (req.method == "POST" && req.path == "/api/v1/ops/commit") {
+            if (!require_bearer(req, res)) return;
             json_object* b = json_tokener_parse(req.body.c_str());
             std::string opid = body_str(b, "operationId");
             std::string node = body_str(b, "node");
             std::string st = body_str(b, "status");
             if (st.empty()) st = "ready";
+            if (st != "ready") st = "blocked";
+            json_object* lanes = nullptr;
+            if (b) json_object_object_get_ex(b, "lanes", &lanes);
+            if (lanes && json_object_is_type(lanes, json_type_array)) {
+                for (size_t i = 0; i < json_object_array_length(lanes); i++) {
+                    json_object* e = json_object_array_get_idx(lanes, i);
+                    json_object* rv = nullptr;
+                    bool ready = true;
+                    if (e && json_object_object_get_ex(e, "ready", &rv) && rv)
+                        ready = json_object_get_boolean(rv) != 0;
+                    if (!ready) { st = "blocked"; break; }
+                }
+            }
             std::string state = g_ops.on_reply(opid, node, st != "blocked", st);
+            std::set<std::string> still_missing = g_ops.missing(opid);
             const Operation* op = g_ops.find(opid);
+            g_store->audit("{\"commit\":\"" + node + "\",\"state\":\"" + st + "\"}");
             if (b) json_object_put(b);
             if (!op) { send_json(res, fail_envelope("NOT_FOUND", 404, "op unknown")); return; }
             if (state == "blocked") {
@@ -459,6 +547,10 @@ int main(int argc, char** argv) {
             json_object_object_add(d, "state", json_object_new_string(state.c_str()));
             json_object_object_add(d, "applyAt",
                                    json_object_new_int64((int64_t)op->apply_at_ns));
+            json_object* miss = json_object_new_array();
+            for (const auto& m : still_missing)
+                json_object_array_add(miss, json_object_new_string(m.c_str()));
+            json_object_object_add(d, "missing", miss);
             send_json(res, ok_envelope(d, state));
             return;
         }
@@ -482,7 +574,7 @@ int main(int argc, char** argv) {
                     } else {
                         std::string resp;
                         int sc = cli.post_json(base + "/api/v1/node/upgrade",
-                                               req.body, resp, 10000);
+                                               req.body, resp, 10000, 2, g_api_token);
                         json_object_object_add(r, "status", json_object_new_string(
                             sc == 200 ? "applied" : "failed"));
                     }

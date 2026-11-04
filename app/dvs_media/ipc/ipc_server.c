@@ -289,8 +289,7 @@ static int handle_line(dvs_client_t* c, char* line) {
     snprintf(ptp_state, sizeof(ptp_state), "%s", g_cap.ptp_state);
     ptp_off = g_cap.ptp_offset_us;
     if (g_hooks.ptp_state) g_hooks.ptp_state(ptp_state, sizeof(ptp_state), &ptp_off);
-    /* F5: build the data object (rather than a fixed-size sprintf buffer) so we
-     * can embed the per-lane array. Fields are unchanged for existing callers. */
+    /* Build the data object so the per-lane array can be embedded. */
     json_object* data = json_object_new_object();
     json_object_object_add(data, "state", json_object_new_string(name));
     json_object_object_add(data, "revision", json_object_new_int(snap.revision));

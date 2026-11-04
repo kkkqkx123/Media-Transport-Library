@@ -107,12 +107,19 @@ void Registration::loop() {
     }
 }
 
+static std::string control_token() {
+    const char* v = std::getenv("DVS_API_TOKEN");
+    return v ? std::string(v) : std::string();
+}
+
 bool Registration::register_once() {
+    std::string token = control_token();
     HttpClient cli;
     json_object* payload = build_register();
     const char* body = json_object_to_json_string(payload);
     std::string resp;
-    int status = cli.post_json(platform_url_ + "/api/v1/nodes/register", body, resp, 5000);
+    int status = cli.post_json(platform_url_ + "/api/v1/nodes/register", body, resp,
+                               5000, 2, token);
     json_object_put(payload);
     if (status < 0 || status >= 400) return false;
 
@@ -144,7 +151,8 @@ bool Registration::heartbeat_once() {
     json_object* payload = build_heartbeat();
     const char* body = json_object_to_json_string(payload);
     std::string resp;
-    int status = cli.post_json(platform_url_ + "/api/v1/nodes/heartbeat", body, resp, interval_ms_ + 1000);
+    int status = cli.post_json(platform_url_ + "/api/v1/nodes/heartbeat", body, resp,
+                               interval_ms_ + 1000, 2, control_token());
     json_object_put(payload);
     if (status < 0 || status >= 400) return false;
 
@@ -166,7 +174,7 @@ json_object* Registration::build_register() {
     json_object_object_add(o, "firmware", json_object_new_string(str_of(node, "fw", "V1.0.0").c_str()));
     json_object_object_add(o, "role", json_object_new_string(str_of(node, "role", "output").c_str()));
 
-    /* F1/F2: advertise this agent's reachable base URL and its canvas geometry
+    /* Advertise this agent's reachable base URL and its canvas geometry
      * in the global wall so the platform can fan out per-node sub-layouts. */
     if (!agent_base_.empty())
         json_object_object_add(o, "agentBase", json_object_new_string(agent_base_.c_str()));
@@ -205,7 +213,9 @@ json_object* Registration::build_register() {
 json_object* Registration::build_heartbeat() {
     json_object* node = store_->node();
     json_object* o = json_object_new_object();
-    json_object_object_add(o, "nodeId", json_object_new_string(str_of(node, "id", "local-node").c_str()));
+    std::string nid = str_of(node, "id", "local-node");
+    json_object_object_add(o, "id", json_object_new_string(nid.c_str()));
+    json_object_object_add(o, "nodeId", json_object_new_string(nid.c_str()));
     json_object_object_add(o, "uptimeSec", json_object_new_int((int)(time(nullptr) - start_time_)));
     json_object_object_add(o, "role", json_object_new_string(str_of(node, "role", "output").c_str()));
     json_object_object_add(o, "firmware", json_object_new_string(str_of(node, "fw", "V1.0.0").c_str()));
@@ -225,9 +235,11 @@ json_object* Registration::build_heartbeat() {
     }
     json_object_object_add(o, "appliedRevision", json_object_new_int(applied));
 
-    /* media stats + ptp from engine query_state (best effort) */
+    /* media stats + ptp + lane digest from engine query_state (best effort) */
     json_object* media = json_object_new_object();
     json_object* ptp = json_object_new_object();
+    int lane_ready = 0, lane_total = 0;
+    long long lane_lost = 0;
     std::string qs = media_->query_state();
     json_object* st = json_tokener_parse(qs.c_str());
     if (st) {
@@ -241,6 +253,22 @@ json_object* Registration::build_heartbeat() {
                 json_object_object_add(ptp, "state", json_object_new_string(str_of(p, "state", "unknown").c_str()));
                 json_object_object_add(ptp, "offsetUs", json_object_new_int(int_of(p, "offsetUs")));
             }
+            json_object* lanes = nullptr;
+            if (json_object_object_get_ex(d, "lanes", &lanes) && lanes &&
+                json_object_is_type(lanes, json_type_array)) {
+                lane_total = (int)json_object_array_length(lanes);
+                for (int i = 0; i < lane_total; i++) {
+                    json_object* e = json_object_array_get_idx(lanes, i);
+                    json_object* rv = nullptr;
+                    bool ready = false;
+                    if (e && json_object_object_get_ex(e, "ready", &rv) && rv)
+                        ready = json_object_get_boolean(rv) != 0;
+                    if (ready) lane_ready++;
+                    json_object* lv = nullptr;
+                    if (e && json_object_object_get_ex(e, "lostFrames", &lv) && lv)
+                        lane_lost += json_object_get_int64(lv);
+                }
+            }
         }
         json_object_put(st);
     } else {
@@ -252,6 +280,11 @@ json_object* Registration::build_heartbeat() {
     }
     json_object_object_add(o, "media", media);
     json_object_object_add(o, "ptp", ptp);
+    json_object* digest = json_object_new_object();
+    json_object_object_add(digest, "ready", json_object_new_int(lane_ready));
+    json_object_object_add(digest, "total", json_object_new_int(lane_total));
+    json_object_object_add(digest, "lostFrames", json_object_new_int64(lane_lost));
+    json_object_object_add(o, "lanesDigest", digest);
 
     /* resources (best effort) */
     json_object* res = json_object_new_object();

@@ -22,8 +22,8 @@ typedef struct {
     void (*abort)(void);                      /* discard pending layout */
     void (*counts)(int* rx_sessions, int* decoding, int* layers); /* query_state */
     void (*ptp_state)(char* state, size_t n, int* offset_us); /* live PTP */
-    /* F5: per-lane (per ST2110 RX session) readiness/lost-frame stats for the
-     * barrier. May be NULL; query_state then reports an empty lanes array. */
+    /* Per-lane readiness stats for the barrier. May be NULL; query_state
+     * then reports an empty lanes array. */
     struct json_object* (*lane_stats)(void);
 } dvs_ipc_engine_hooks_t;
 

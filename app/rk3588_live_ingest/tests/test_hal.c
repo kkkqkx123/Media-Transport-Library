@@ -43,17 +43,17 @@ static int test_dma_allocator(void) {
 
 static int test_timer(void) {
   printf("  [timer] measuring clock precision...\n");
-  struct e2e_timer* t = e2e_timer_create(NULL);
+  struct monotonic_timer* t = monotonic_timer_create(NULL);
   assert(t);
 
-  uint64_t t0 = e2e_timer_now_ns(t);
-  uint64_t t1 = e2e_timer_now_ns(t);
+  uint64_t t0 = monotonic_timer_now_ns(t);
+  uint64_t t1 = monotonic_timer_now_ns(t);
   printf("  [timer] two consecutive reads: delta=%llu ns\n",
          (unsigned long long)(t1 - t0));
   /* Should be < 1ms (usually < 100ns on modern ARM) */
   assert(t1 >= t0);
 
-  e2e_timer_free(t);
+  monotonic_timer_free(t);
   printf("  [timer] PASS\n");
   return 0;
 }

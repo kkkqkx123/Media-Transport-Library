@@ -41,12 +41,12 @@ static void hook_ptp_state(char* state, size_t n, int* offset_us) {
     if (offset_us) *offset_us = 0;
 }
 
-/* F5: per-lane readiness/lost-frame stats. TODO(O3): call the real engine
- * routine (e.g. dvs_engine_lane_stats) to populate one entry per ST2110 RX
- * session. Until then returns an empty array so the protocol and the agent
- * /media/lanes endpoint are already wired end to end. */
+/* Per-lane readiness snapshot. Empty array means zero admitted sessions;
+ * entries join the admission table with the running compositor state. */
 static json_object* hook_lane_stats(void) {
-    return json_object_new_array();
+    if (!s_eng) return json_object_new_array();
+    json_object* a = dvs_engine_lane_stats(s_eng);
+    return a ? a : json_object_new_array();
 }
 
 void dvs_ipc_attach_engine(dvs_engine* e) {

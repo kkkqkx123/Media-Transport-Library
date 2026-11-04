@@ -113,7 +113,8 @@ dvs_media = executable('dvs_media',
                  libavformat_dep, libavcodec_dep, libavutil_dep,
                  rockchip_mpp_dep, libdrm_dep],
   link_with: [dvs_shared, dvs_rx, file_playout_probe],
-  include_directories: [include_directories('.'), file_playout_inc],
+  include_directories: [include_directories('.'), file_playout_inc,
+                        include_directories('../dvs_common/include')],
 )
 
 subdir('tests')

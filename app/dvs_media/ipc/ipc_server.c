@@ -1,5 +1,6 @@
 #include "ipc_server.h"
 #include "state_machine.h"
+#include "dvs_node_bundle.h"
 #include "engine/capability.h"
 
 #include <errno.h>
@@ -179,8 +180,23 @@ static int handle_line(dvs_client_t* c, char* line) {
     goto done;
   }
 
-  if (strcmp(type, "configure") == 0) {
-    /* accept a desired layout (streams/layout JSON); stash as pending */
+  if (strcmp(type, "hello") == 0) {
+    /* bundle handshake: report protocol + bundle versions with a state
+     * snapshot so the agent can confirm it talks to a co-released engine */
+    dvs_state_t snap;
+    dvs_state_snapshot(&snap);
+    const char* name = "idle";
+    switch (snap.op_state) {
+      case DVS_OP_PREPARING: name = "preparing"; break;
+      case DVS_OP_PREPARED: name = "prepared"; break;
+      default: break;
+    }
+    snprintf(data, sizeof(data),
+             "{\"ipcVersion\":%d,\"bundleVersion\":\"%s\",\"state\":\"%s\",\"revision\":%d}",
+             DVS_MEDIA_IPC_VERSION, DVS_NODE_BUNDLE_VERSION, name, snap.revision);
+    send_envelope(c, rid, 200, "OK", "hello", data);
+  } else if (strcmp(type, "configure") == 0) {
+    /* single entry for desired state (streams/layout JSON); stash as pending */
     if (g_hooks.prepare) g_hooks.prepare(req);
     send_envelope(c, rid, 200, "OK", "configured", NULL);
   } else if (strcmp(type, "prepare") == 0) {
@@ -257,10 +273,6 @@ static int handle_line(dvs_client_t* c, char* line) {
     if (g_hooks.clear) g_hooks.clear();
     dvs_state_clear();
     send_envelope(c, rid, 200, "OK", "cleared", NULL);
-  } else if (strcmp(type, "set_sources") == 0) {
-    /* whitelist/streams JSON stashed as pending layout */
-    if (g_hooks.prepare) g_hooks.prepare(req);
-    send_envelope(c, rid, 200, "OK", "sources set", NULL);
   } else if (strcmp(type, "query_state") == 0) {
     dvs_state_t snap;
     dvs_state_snapshot(&snap);
@@ -277,15 +289,26 @@ static int handle_line(dvs_client_t* c, char* line) {
     snprintf(ptp_state, sizeof(ptp_state), "%s", g_cap.ptp_state);
     ptp_off = g_cap.ptp_offset_us;
     if (g_hooks.ptp_state) g_hooks.ptp_state(ptp_state, sizeof(ptp_state), &ptp_off);
-    char ptp[128];
-    snprintf(ptp, sizeof(ptp), "{\"state\":\"%s\",\"offsetUs\":%d}",
-             ptp_state, ptp_off);
-    snprintf(data, sizeof(data),
-             "{\"state\":\"%s\",\"revision\":%d,\"operationId\":\"%s\",\"opState\":%d,"
-             "\"rxSessions\":%d,\"decoding\":%d,\"layers\":%d,\"ptp\":%s}",
-             name, snap.revision, snap.operation_id, (int)snap.op_state,
-             rx_sessions, decoding, layers, ptp);
-    send_envelope(c, rid, 200, "OK", "", data);
+    /* F5: build the data object (rather than a fixed-size sprintf buffer) so we
+     * can embed the per-lane array. Fields are unchanged for existing callers. */
+    json_object* data = json_object_new_object();
+    json_object_object_add(data, "state", json_object_new_string(name));
+    json_object_object_add(data, "revision", json_object_new_int(snap.revision));
+    json_object_object_add(data, "operationId", json_object_new_string(snap.operation_id));
+    json_object_object_add(data, "opState", json_object_new_int((int)snap.op_state));
+    json_object_object_add(data, "rxSessions", json_object_new_int(rx_sessions));
+    json_object_object_add(data, "decoding", json_object_new_int(decoding));
+    json_object_object_add(data, "layers", json_object_new_int(layers));
+    json_object* ptp = json_object_new_object();
+    json_object_object_add(ptp, "state", json_object_new_string(ptp_state));
+    json_object_object_add(ptp, "offsetUs", json_object_new_int(ptp_off));
+    json_object_object_add(data, "ptp", ptp);
+    json_object* lanes = (g_hooks.lane_stats) ? g_hooks.lane_stats() : NULL;
+    if (!lanes) lanes = json_object_new_array();
+    json_object_object_add(data, "lanes", lanes);
+    const char* data_s = json_object_to_json_string(data);
+    send_envelope(c, rid, 200, "OK", "", data_s);
+    json_object_put(data);
   } else if (strcmp(type, "event") == 0) {
     send_envelope(c, rid, 200, "OK", "event", NULL);
   } else {

@@ -6,6 +6,7 @@
 #include <stdatomic.h>
 
 #include "file_playout_config.h"
+#include "dvs_node_bundle.h"
 #include "ipc/ipc_server.h"
 #include "engine/capability.h"
 #include "engine/session_mgr.h"
@@ -20,9 +21,10 @@ static void sig_handler(int s) {
 
 static void usage(const char* prog) {
     fprintf(stderr,
-            "Usage: %s --config <json> [--ipc-sock <path>]\n"
+            "Usage: %s --config <json> [--ipc-sock <path>] [--version]\n"
             "  --config   static JSON config (network/DRM/MTL + initial layout)\n"
-            "  --ipc-sock run controlled by IPC; layout applied via configure/commit\n",
+            "  --ipc-sock run controlled by IPC; layout applied via configure/commit\n"
+            "  --version  print the node bundle + IPC versions and exit\n",
             prog);
 }
 
@@ -30,7 +32,11 @@ int main(int argc, char** argv) {
     const char* config_path = NULL;
     const char* ipc_sock = NULL;
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
+        if (strcmp(argv[i], "--version") == 0) {
+            printf("dvs-media bundle %s ipc %d\n", DVS_NODE_BUNDLE_VERSION,
+                   DVS_MEDIA_IPC_VERSION);
+            return 0;
+        } else if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
             config_path = argv[++i];
         } else if (strcmp(argv[i], "--ipc-sock") == 0 && i + 1 < argc) {
             ipc_sock = argv[++i];

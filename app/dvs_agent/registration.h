@@ -16,7 +16,8 @@ class MediaIpcClient;
 class Registration {
 public:
     Registration(NodeStore* store, MediaIpcClient* media,
-                 const std::string& platform_url, int interval_ms = 3000);
+                 const std::string& platform_url, int interval_ms = 3000,
+                 const std::string& agent_base = "");
     ~Registration();
 
     void start();
@@ -36,6 +37,7 @@ private:
     NodeStore* store_;
     MediaIpcClient* media_;
     std::string platform_url_;
+    std::string agent_base_;  // F1/F2: externally reachable base URL of this agent
     int interval_ms_;
 
     std::atomic<bool> running_{false};

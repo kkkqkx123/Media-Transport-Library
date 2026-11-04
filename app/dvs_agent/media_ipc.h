@@ -29,6 +29,10 @@ public:
     /* Convenience wrapper; returns response JSON (never empty). */
     std::string query_state();
 
+    /* Bundle handshake; returns the engine hello envelope, or a structured
+     * error envelope when the engine is unreachable. Never throws. */
+    std::string hello();
+
     /* Take all cached events (returns a JSON array object, ownership passes). */
     json_object* drain_events();
 

@@ -22,6 +22,9 @@ typedef struct {
     void (*abort)(void);                      /* discard pending layout */
     void (*counts)(int* rx_sessions, int* decoding, int* layers); /* query_state */
     void (*ptp_state)(char* state, size_t n, int* offset_us); /* live PTP */
+    /* F5: per-lane (per ST2110 RX session) readiness/lost-frame stats for the
+     * barrier. May be NULL; query_state then reports an empty lanes array. */
+    struct json_object* (*lane_stats)(void);
 } dvs_ipc_engine_hooks_t;
 
 void dvs_ipc_install_hooks(const dvs_ipc_engine_hooks_t* h);
@@ -31,8 +34,10 @@ void dvs_ipc_install_hooks(const dvs_ipc_engine_hooks_t* h);
 void dvs_ipc_attach_engine(struct dvs_engine* e);
 
 /* Run the IPC server (blocking). JSON line protocol over a Unix domain
- * socket: long-lived connections, messageId echo, async prepare with
- * media.prepare.result events, and broadcast events on commit. */
+ * socket: long-lived connections, messageId echo, a hello handshake carrying
+ * the bundle contract versions, async prepare with media.prepare.result
+ * events, and broadcast events on commit. Configuration flows through the
+ * single configure verb; query_state drives status. */
 int dvs_ipc_server_run(const char* sock_path);
 
 #endif

@@ -3,12 +3,15 @@
 
 #include "node_store.h"
 #include "media_ipc.h"
+#include "dvs_node_bundle.h"
 #include "http_server.h"
 #include "maintenance.h"
 #include "registration.h"
+#include "http_client.h"
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstdint>
 #include <cstring>
 #include <ctime>
 #include <string>
@@ -25,6 +28,9 @@ static MediaIpcClient* g_media = nullptr;
 static Maintenance* g_maint = nullptr;
 static Registration* g_reg = nullptr;
 static std::string g_web_root;
+// F4: shared control-plane bearer token (mTLS-lite). Empty => no token check.
+static std::string g_api_token =
+    (std::getenv("DVS_API_TOKEN") ? std::getenv("DVS_API_TOKEN") : "");
 
 /* Per-source login rate limiter: 5 attempts / 60s window, then locked out. */
 struct LoginLimiter {
@@ -164,6 +170,65 @@ static std::string get_str(json_object* o, const char* key) {
     return "";
 }
 
+/* F1: background reporter. After the agent forwards a platform sub-layout to the
+ * media engine (prepare IPC), the engine emits a media.prepare.result event once
+ * it has readied its RX sessions. This thread watches the IPC event ring, finds
+ * the matching operationId, and calls the platform's /api/v1/ops/commit so the
+ * two-phase barrier can collect this node's reply and switch at applyAtNs.
+ * Runs detached; never blocks the HTTP handler. */
+static void agent_report_commit(const std::string& opid, int rev,
+                                int64_t applyAtNs, const std::string& nodeId,
+                                const std::string& platform_url) {
+    (void)rev; (void)applyAtNs;  // reserved for barrier diagnostics
+    if (platform_url.empty()) return;  // local-autonomous: nothing to report
+    std::string status = "ready";
+    bool done = false;
+    for (int i = 0; i < 50 && !done; i++) {  // up to 5s
+        json_object* evs = g_media->drain_events();
+        int n = json_object_array_length(evs);
+        for (int j = 0; j < n; j++) {
+            json_object* e = json_object_array_get_idx(evs, j);
+            std::string t = get_str(e, "type");
+            if (t == "media.prepare.result") {
+                json_object* dd = nullptr;
+                if (json_object_object_get_ex(e, "data", &dd) && dd) {
+                    if (get_str(dd, "operationId") == opid) {
+                        status = get_str(dd, "status");
+                        if (status.empty()) status = "ready";
+                        done = true;
+                    }
+                }
+            }
+        }
+        json_object_put(evs);
+        if (!done) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    /* fallback: if the event was missed (e.g. drained elsewhere), probe state */
+    if (!done) {
+        std::string qs = g_media->query_state();
+        json_object* st = json_tokener_parse(qs.c_str());
+        if (st) {
+            json_object* d = nullptr;
+            std::string s = (json_object_object_get_ex(st, "data", &d) && d)
+                                ? get_str(d, "state") : "";
+            status = (s == "prepared" || s == "idle") ? "ready" : "blocked";
+            json_object_put(st);
+        } else {
+            status = "blocked";
+        }
+    }
+    HttpClient cli;
+    json_object* c = json_object_new_object();
+    json_object_object_add(c, "operationId", json_object_new_string(opid.c_str()));
+    json_object_object_add(c, "node", json_object_new_string(nodeId.c_str()));
+    json_object_object_add(c, "status", json_object_new_string(status.c_str()));
+    const char* cb = json_object_to_json_string(c);
+    std::string resp;
+    cli.post_json(platform_url + "/api/v1/ops/commit",
+                  std::string(cb ? cb : "{}"), resp, 5000, 2, g_api_token);
+    json_object_put(c);
+}
+
 int main(int argc, char** argv) {
     std::string db_path = "/tmp/dvs_agent.db";
     std::string platform_url;
@@ -171,6 +236,11 @@ int main(int argc, char** argv) {
     int port = 8080;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
+        if (a == "--version") {
+            printf("dvs-agent bundle %s ipc %d\n", DVS_NODE_BUNDLE_VERSION,
+                   DVS_MEDIA_IPC_VERSION);
+            return 0;
+        }
         if (a == "--db" && i + 1 < argc) db_path = argv[++i];
         else if (a == "--port" && i + 1 < argc) port = std::stoi(argv[++i]);
         else if (a == "--platform-url" && i + 1 < argc) platform_url = argv[++i];
@@ -184,7 +254,55 @@ int main(int argc, char** argv) {
     g_store = new NodeStore(db_path);
     g_media = new MediaIpcClient(media_sock);
     g_maint = new Maintenance(g_store, g_media);
-    g_reg = new Registration(g_store, g_media, platform_url, 3000);
+
+    // Bundle handshake: confirm the local media engine is a co-released
+    // peer. Warn-only; the engine may simply start later than the agent.
+    {
+        std::string hr = g_media->hello();
+        json_object* ho = json_tokener_parse(hr.c_str());
+        bool match = false;
+        if (ho) {
+            json_object* okv = nullptr;
+            json_object* data = nullptr;
+            if (json_object_object_get_ex(ho, "ok", &okv) && okv &&
+                json_object_get_boolean(okv) &&
+                json_object_object_get_ex(ho, "data", &data) && data) {
+                json_object* iv = nullptr;
+                json_object* bv = nullptr;
+                json_object_object_get_ex(data, "ipcVersion", &iv);
+                json_object_object_get_ex(data, "bundleVersion", &bv);
+                match = iv && json_object_get_int(iv) == DVS_MEDIA_IPC_VERSION &&
+                        bv && std::string(json_object_get_string(bv)) ==
+                                  DVS_NODE_BUNDLE_VERSION;
+            }
+            json_object_put(ho);
+        }
+        if (match)
+            printf("dvs-agent: media engine bundle %s ipc %d confirmed\n",
+                   DVS_NODE_BUNDLE_VERSION, DVS_MEDIA_IPC_VERSION);
+        else
+            printf("dvs-agent: WARNING media engine handshake mismatch "
+                   "(see /api/v1/node/version)\n");
+        fflush(stdout);
+    }
+
+    // F1/F2: derive this agent's externally reachable base URL. Operator may
+    // override via --agent-base / DVS_AGENT_BASE; otherwise auto-build from the
+    // node's network.ip and the listen port so the platform can fan out to it.
+    std::string agent_base = env_or("DVS_AGENT_BASE", "");
+    if (agent_base.empty()) {
+        std::string ip = "127.0.0.1";
+        json_object* nd = g_store->node();
+        json_object* net = nullptr;
+        if (nd && json_object_object_get_ex(nd, "network", &net) && net) {
+            const char* nip = nullptr;
+            json_object* n2 = nullptr;
+            if (json_object_object_get_ex(net, "ip", &n2) && n2) nip = json_object_get_string(n2);
+            if (nip) ip = nip;
+        }
+        agent_base = "http://" + ip + ":" + std::to_string(port);
+    }
+    g_reg = new Registration(g_store, g_media, platform_url, 3000, agent_base);
 
     // sync configStates into node at startup
     json_object* cs = g_store->all_states();
@@ -250,9 +368,18 @@ int main(int argc, char** argv) {
         // node-admin prototype keeps working without a login wall. When enabled,
         // every /api request except login must carry a valid session cookie.
         static bool g_require_auth = (std::getenv("DVS_REQUIRE_AUTH") != nullptr);
+        // F4: platform<->agent internal calls authenticate with a Bearer token
+        // (set via DVS_API_TOKEN) so the barrier fan-out/commit cannot be forged
+        // on a shared LAN. Browser sessions still use the cookie.
+        bool token_ok = false;
+        if (!g_api_token.empty()) {
+            auto it = req.headers.find("Authorization");
+            if (it != req.headers.end() && it->second == ("Bearer " + g_api_token))
+                token_ok = true;
+        }
         if (g_require_auth && req.path.rfind("/api/", 0) == 0 &&
-            req.path != "/api/v1/node/login" && !authed) {
-            send_json(res, envelope_fail("UNAUTHORIZED", 401, "未登录"));
+            req.path != "/api/v1/node/login" && !authed && !token_ok) {
+            send_json(res, envelope_fail("UNAUTHORIZED", 401, "未登录或缺少令牌"));
             return;
         }
 
@@ -326,18 +453,18 @@ int main(int argc, char** argv) {
                     g_store->update_node(patch);
                     json_object_put(patch);
                     // IPC bridge: forward role/input/output changes to the media
-                    // engine. Best-effort; failures surface via /node/media/* and
-                    // never block config persistence.
+                    // engine through the single configure verb. Best-effort;
+                    // failures surface via /node/media/* and never block config
+                    // persistence.
                     if (scope == "input" || scope == "output" || scope == "role") {
                         json_object* fwd = json_object_new_object();
                         if (scope == "input") {
                             json_object_object_add(fwd, "whitelist", json_object_get(val));
-                            g_media->request("set_sources", fwd);
                         } else {
                             json_object_object_add(fwd, "scope", json_object_new_string(scope.c_str()));
                             json_object_object_add(fwd, "value", json_object_get(val));
-                            g_media->request("configure", fwd);
                         }
+                        g_media->request("configure", fwd);
                         json_object_put(fwd);
                     }
                     json_object* cfg = g_store->get_config(scope, node_id);
@@ -485,6 +612,63 @@ int main(int argc, char** argv) {
             send_json(res, o);
             return;
         }
+        // F1: receive a platform-computed per-node sub-layout, forward it to the
+        // media engine as a prepare, and report the result back to the platform
+        // barrier (see agent_report_commit). The node never re-fragments.
+        if (req.method == "POST" && req.path == "/api/v1/node/media/layout") {
+            json_object* body = json_tokener_parse(req.body.c_str());
+            std::string opid = get_str(body, "operationId");
+            int rev = 1;
+            json_object* rv = nullptr;
+            if (body && json_object_object_get_ex(body, "revision", &rv)) rev = json_object_get_int(rv);
+            int64_t applyAtNs = 0;
+            json_object* av = nullptr;
+            if (body && json_object_object_get_ex(body, "applyAtNs", &av))
+                applyAtNs = (int64_t)json_object_get_int64(av);
+            if (opid.empty()) {
+                if (body) json_object_put(body);
+                send_json(res, envelope_fail("INVALID_ARGUMENT", 400, "missing operationId"));
+                return;
+            }
+            json_object* prep = json_object_new_object();
+            json_object_object_add(prep, "operationId", json_object_new_string(opid.c_str()));
+            json_object_object_add(prep, "revision", json_object_new_int(rev));
+            json_object_object_add(prep, "applyAtNs", json_object_new_int64(applyAtNs));
+            json_object* wins = nullptr;
+            if (body && json_object_object_get_ex(body, "windows", &wins))
+                json_object_object_add(prep, "windows", json_object_get(wins));
+            json_object* geo = nullptr;
+            if (body && json_object_object_get_ex(body, "geometry", &geo))
+                json_object_object_add(prep, "geometry", json_object_get(geo));
+            std::string r = g_media->request("prepare", prep);
+            json_object_put(prep);
+            std::string nodeId = get_str(g_store->node(), "id");
+            if (nodeId.empty()) nodeId = "local-node";
+            // detach reporter; platform_url captured by value for the thread.
+            std::thread([opid, rev, applyAtNs, nodeId, platform_url]() {
+                agent_report_commit(opid, rev, applyAtNs, nodeId, platform_url);
+            }).detach();
+            json_object* o = json_tokener_parse(r.c_str());
+            if (!o) o = json_object_new_object();
+            send_json(res, o);
+            if (body) json_object_put(body);
+            return;
+        }
+        // F5: expose per-lane MTL RX readiness/lost frames from the engine so the
+        // barrier "all-ready" gains real per-lane semantics (and ops/commit can
+        // carry lane detail).
+        if (req.method == "GET" && req.path == "/api/v1/node/media/lanes") {
+            std::string r = g_media->query_state();
+            json_object* o = json_tokener_parse(r.c_str());
+            json_object* d = nullptr;
+            json_object* lanes = nullptr;
+            if (o && json_object_object_get_ex(o, "data", &d) && d)
+                json_object_object_get_ex(d, "lanes", &lanes);
+            send_json(res, envelope_ok(lanes ? json_object_get(lanes)
+                                             : json_object_new_array(), ""));
+            if (o) json_object_put(o);
+            return;
+        }
         if (req.method == "GET" && req.path == "/api/v1/node/media/sources") {
             send_json(res, envelope_ok(json_object_new_object(), ""));
             return;
@@ -493,6 +677,34 @@ int main(int argc, char** argv) {
             json_object* d = json_object_new_object();
             json_object_object_add(d, "items", json_object_new_array());
             send_json(res, envelope_ok(d, ""));
+            return;
+        }
+        // F2: accept the platform's authoritative config (geometry/role, etc.)
+        // so the agent is no longer an independent source of truth. Best-effort:
+        // failures surface via /node/info and never block local operation.
+        if (req.method == "POST" && req.path == "/api/v1/node/config/sync") {
+            json_object* body = json_tokener_parse(req.body.c_str());
+            json_object* cfg = nullptr;
+            if (body) json_object_object_get_ex(body, "config", &cfg);
+            json_object* patch = json_object_new_object();
+            if (cfg && json_object_is_type(cfg, json_type_object)) {
+                json_object_object_foreach(cfg, key, val) {
+                    std::string k(key);
+                    if (k == "geometry") {
+                        json_object_object_add(patch, "geometry", json_object_get(val));
+                    } else if (k == "role") {
+                        g_store->set_desired("role", json_object_get(val), nullptr);
+                    }
+                    /* other scopes: ignored until incremental diff (O2) */
+                }
+            }
+            g_store->update_node(patch);
+            json_object_put(patch);
+            json_object* d = json_object_new_object();
+            json_object_object_add(d, "applied", json_object_new_boolean(1));
+            json_object_object_add(d, "source", json_object_new_string("platform"));
+            if (body) json_object_put(body);
+            send_json(res, envelope_ok(d, "config synced"));
             return;
         }
         if (req.method == "GET" && req.path == "/api/v1/node/capability") {
@@ -504,6 +716,21 @@ int main(int argc, char** argv) {
         }
         if (req.method == "GET" && req.path == "/api/v1/node/capacity") {
             send_json(res, envelope_ok(node_capacity_json(), ""));
+            return;
+        }
+        if (req.method == "GET" && req.path == "/api/v1/node/version") {
+            // Bundle contract report: this agent's versions plus the live
+            // media engine hello, so ops can confirm a co-released pair.
+            std::string hr = g_media->hello();
+            json_object* ho = json_tokener_parse(hr.c_str());
+            json_object* d = json_object_new_object();
+            json_object_object_add(d, "bundleVersion",
+                                  json_object_new_string(DVS_NODE_BUNDLE_VERSION));
+            json_object_object_add(d, "ipcVersion",
+                                  json_object_new_int(DVS_MEDIA_IPC_VERSION));
+            json_object_object_add(d, "media",
+                                  ho ? ho : json_object_new_object());
+            send_json(res, envelope_ok(d, ""));
             return;
         }
 

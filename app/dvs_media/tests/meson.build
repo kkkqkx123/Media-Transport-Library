@@ -13,7 +13,8 @@ test_ipc = executable('test_ipc',
         '../engine/capability.c'),
   c_args: common_c_args,
   dependencies: test_dep,
-  include_directories: include_directories('..'),
+  include_directories: [include_directories('..'),
+                        include_directories('../../dvs_common/include')],
 )
 
 test_session_admit = executable('test_session_admit',

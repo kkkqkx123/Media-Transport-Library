@@ -118,7 +118,20 @@ int main(void) {
         "response echoes messageId");
   json_object_put(r);
 
-  /* 2. prepare is async: accepted then event */
+  /* 2. hello handshake reports the bundle contract versions */
+  r = request("hello", "m-hello", NULL);
+  {
+    struct json_object* data = NULL;
+    if (r) json_object_object_get_ex(r, "data", &data);
+    CHECK(r && jint(r, "status") == 200, "hello ok");
+    CHECK(data && jint(data, "ipcVersion") == 1, "hello reports ipc version 1");
+    CHECK(data && jstr(data, "bundleVersion") &&
+          strcmp(jstr(data, "bundleVersion"), "1") == 0,
+          "hello reports bundle version 1");
+  }
+  json_object_put(r);
+
+  /* 3. prepare is async: accepted then event */
   r = request("prepare", "m-2", "\"operationId\":\"op1\",\"revision\":1}");
   CHECK(r && jint(r, "status") == 202, "prepare returns 202 accepted");
   json_object_put(r);
@@ -131,7 +144,7 @@ int main(void) {
   ev = read_line(conn_fd, 500);
   if (ev) json_object_put(ev); /* consume duplicate event line if any */
 
-  /* 3. commit */
+  /* 4. commit */
   r = request("commit", "m-3", "\"operationId\":\"op1\",\"revision\":1}");
   CHECK(r && jint(r, "status") == 200, "commit ok");
   json_object_put(r);
@@ -141,19 +154,19 @@ int main(void) {
         "layout applied event broadcast");
   json_object_put(ev);
 
-  /* 4. stale revision rejected */
+  /* 5. stale revision rejected */
   r = request("prepare", "m-4", "\"operationId\":\"op2\",\"revision\":0}");
   CHECK(r && jstr(r, "code") && strcmp(jstr(r, "code"), "STALE_REVISION") == 0,
         "stale revision rejected");
   json_object_put(r);
 
-  /* 5. commit without prepare rejected */
+  /* 6. commit without prepare rejected */
   r = request("commit", "m-5", "\"operationId\":\"op9\",\"revision\":5}");
   CHECK(r && jstr(r, "code") && strcmp(jstr(r, "code"), "INVALID_STATE") == 0,
         "commit without prepare rejected");
   json_object_put(r);
 
-  /* 6. clear idempotent + unknown type */
+  /* 7. clear idempotent + unknown type */
   r = request("clear", "m-6", NULL);
   CHECK(r && jint(r, "status") == 200, "clear ok");
   json_object_put(r);
@@ -161,7 +174,7 @@ int main(void) {
   CHECK(r && jint(r, "status") == 400, "unknown type rejected");
   json_object_put(r);
 
-  /* 7. query_state revision persisted */
+  /* 8. query_state revision persisted */
   r = request("query_state", "m-8", NULL);
   struct json_object* data = NULL;
   if (r) json_object_object_get_ex(r, "data", &data);

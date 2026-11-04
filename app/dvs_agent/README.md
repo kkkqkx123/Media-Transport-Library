@@ -9,7 +9,7 @@ cd app/dvs_agent && meson setup build && ninja -C build && meson test -C build
 ## 功能要点
 
 - **注册/心跳**：向 `dvs_platform` 网关注册节点，周期心跳并上报容量自检（CPU/内存/负载/uptime，读 `/proc`，无外部依赖）；
-- **媒体 IPC**：`media_ipc` 客户端连接本机 `dvs_media` 的 Unix socket，转发 configure/prepare/commit 等引擎控制请求；
+- **媒体 IPC**：`media_ipc` 客户端连接本机 `dvs_media` 的 Unix socket，启动时经 `hello` 握手核对包版本，转发 configure/prepare/commit 等引擎控制请求（配置下发统一走单一 `configure` 谓词）；
 - **维护操作**：`maintenance` 模块执行节点侧维护（如升级落地）；
 - **本地 HTTP + Web 前端**：`web/` 下的 node-device-admin 静态页面，含登录限流（每来源 5 次/60 秒）。
 
@@ -23,4 +23,8 @@ cd app/dvs_agent && meson setup build && ninja -C build && meson test -C build
 | `media_ipc.cpp/.h` | dvs_media IPC 客户端 |
 | `maintenance.cpp/.h` | 维护操作 |
 | `web/` | 静态前端（页面见 `web/src/pages/`，交付说明见 `web/src/开发交付说明.md`） |
+
+## 节点包
+
+与 `dvs_media` 同包发布（见 `../../deploy/dvs-node/`，版本见 `../dvs_common/include/dvs_node_bundle.h`）：`--version` 打印包版本，`GET /api/v1/node/version` 呈现本机代理与引擎的配对状态。部署时两个二进制必须同包，任一不符即拒绝拉起。
 | `tests/test_basic.cpp` | 基础 gtest-free 自测（`meson test` 运行） |

@@ -1,0 +1,15 @@
+[Unit]
+Description=DVS node media engine (bundle co-released with dvs-agent)
+After=network.target
+Wants=dvs-agent.service
+
+[Service]
+Type=simple
+Environment=DVS_MEDIA_SOCK=/run/dvs/media.sock
+EnvironmentFile=-/etc/dvs/node.env
+ExecStart=/usr/bin/dvs_media --config ${DVS_MEDIA_CONFIG} --ipc-sock /run/dvs/media.sock
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

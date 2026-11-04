@@ -4,6 +4,7 @@
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <cstring>
@@ -29,7 +30,7 @@ static bool parse_url(const std::string& url, std::string& host, int& port,
 
 int HttpClient::request(const std::string& method, const std::string& url,
                         const std::string& body, std::string& resp,
-                        int timeout_ms) {
+                        int timeout_ms, const std::string& auth) {
     resp.clear();
     if (url.empty()) return -1;
 
@@ -64,6 +65,8 @@ int HttpClient::request(const std::string& method, const std::string& url,
     std::string req = method + " " + path + " HTTP/1.0\r\n" +
                       "Host: " + host + "\r\n" +
                       "Content-Type: application/json\r\n" +
+                      (auth.empty() ? std::string()
+                                    : "Authorization: Bearer " + auth + "\r\n") +
                       "Connection: close\r\n";
     if (!body.empty()) {
         req += "Content-Length: " + std::to_string(body.size()) + "\r\n";
@@ -109,9 +112,30 @@ int HttpClient::request(const std::string& method, const std::string& url,
 
 int HttpClient::post_json(const std::string& url, const std::string& body,
                           std::string& resp, int timeout_ms) {
-    return request("POST", url, body, resp, timeout_ms);
+    return request("POST", url, body, resp, timeout_ms, "");
+}
+
+int HttpClient::post_json(const std::string& url, const std::string& body,
+                          std::string& resp, int timeout_ms, int retries,
+                          const std::string& bearer) {
+    int status = -1;
+    int attempts = (retries < 1) ? 1 : retries;
+    for (int i = 0; i < attempts; i++) {
+        status = request("POST", url, body, resp, timeout_ms, bearer);
+        /* success: status in [200,400); transport failure: -1. Retry both,
+         * since a dropped connection mid-flight must not lose the op. */
+        if (status >= 200 && status < 400) return status;
+        if (i + 1 < attempts) {
+            int backoff_ms = 200 * (1 << i);
+            if (backoff_ms > 2000) backoff_ms = 2000;
+            struct timespec ts = {backoff_ms / 1000,
+                                  (backoff_ms % 1000) * 1000000L};
+            nanosleep(&ts, nullptr);
+        }
+    }
+    return status;
 }
 
 int HttpClient::get(const std::string& url, std::string& resp, int timeout_ms) {
-    return request("GET", url, "", resp, timeout_ms);
+    return request("GET", url, "", resp, timeout_ms, "");
 }

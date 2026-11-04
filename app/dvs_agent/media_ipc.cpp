@@ -168,6 +168,10 @@ std::string MediaIpcClient::query_state() {
     return request("query_state", nullptr);
 }
 
+std::string MediaIpcClient::hello() {
+    return request("hello", nullptr);
+}
+
 json_object* MediaIpcClient::drain_events() {
     std::lock_guard<std::mutex> lk(mtx_);
     json_object* arr = json_object_new_array();

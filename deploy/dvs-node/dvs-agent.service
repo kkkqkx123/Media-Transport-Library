@@ -1,0 +1,15 @@
+[Unit]
+Description=DVS node agent (bundle co-released with dvs-media)
+After=dvs-media.service
+Requires=dvs-media.service
+
+[Service]
+Type=simple
+Environment=DVS_MEDIA_SOCK=/run/dvs/media.sock
+EnvironmentFile=-/etc/dvs/node.env
+ExecStart=/usr/bin/dvs_agent --media-sock /run/dvs/media.sock
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

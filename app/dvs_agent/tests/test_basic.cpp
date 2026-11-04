@@ -1,4 +1,5 @@
 #include "sha256.h"
+#include "dvs_node_bundle.h"
 #include "node_store.h"
 #include "media_ipc.h"
 #include "registration.h"
@@ -127,6 +128,25 @@ static void test_registration_local_mode() {
   std::remove(db.c_str());
 }
 
+static void test_bundle_contract() {
+  CHECK(std::string(DVS_NODE_BUNDLE_VERSION) == "1", "bundle version is 1");
+  CHECK(DVS_MEDIA_IPC_VERSION == 1, "media IPC version is 1");
+  /* Unconfigured engine socket surfaces a structured envelope, never empty. */
+  MediaIpcClient media("");
+  std::string hr = media.hello();
+  json_object* ho = json_tokener_parse(hr.c_str());
+  json_object* okv = nullptr;
+  json_object* codev = nullptr;
+  if (ho) {
+    json_object_object_get_ex(ho, "ok", &okv);
+    json_object_object_get_ex(ho, "code", &codev);
+  }
+  CHECK(ho && okv && !json_object_get_boolean(okv), "hello without socket is not ok");
+  CHECK(codev && std::string(json_object_get_string(codev)) == "MEDIA_ENGINE_UNCONFIGURED",
+        "hello without socket reports UNCONFIGURED");
+  if (ho) json_object_put(ho);
+}
+
 static void test_http_client_empty_url() {
   HttpClient cli;
   std::string resp;
@@ -141,6 +161,7 @@ int main() {
   test_node_store_state_machine();
   test_node_store_persistence();
   test_registration_local_mode();
+  test_bundle_contract();
   test_http_client_empty_url();
 
   if (g_failures == 0) {

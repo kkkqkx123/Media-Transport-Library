@@ -35,9 +35,11 @@ static long read_long_file(const char* path, long def) {
 }
 
 Registration::Registration(NodeStore* store, MediaIpcClient* media,
-                           const std::string& platform_url, int interval_ms)
+                           const std::string& platform_url, int interval_ms,
+                           const std::string& agent_base)
     : store_(store), media_(media), platform_url_(platform_url),
-      interval_ms_(interval_ms), register_state_("unregistered"),
+      agent_base_(agent_base), interval_ms_(interval_ms),
+      register_state_("unregistered"),
       start_time_(time(nullptr)) {}
 
 Registration::~Registration() { stop(); }
@@ -163,6 +165,23 @@ json_object* Registration::build_register() {
     json_object_object_add(o, "model", json_object_new_string(str_of(node, "model", "DVS-NODE-R1").c_str()));
     json_object_object_add(o, "firmware", json_object_new_string(str_of(node, "fw", "V1.0.0").c_str()));
     json_object_object_add(o, "role", json_object_new_string(str_of(node, "role", "output").c_str()));
+
+    /* F1/F2: advertise this agent's reachable base URL and its canvas geometry
+     * in the global wall so the platform can fan out per-node sub-layouts. */
+    if (!agent_base_.empty())
+        json_object_object_add(o, "agentBase", json_object_new_string(agent_base_.c_str()));
+    json_object* geo = nullptr;
+    json_object_object_get_ex(node, "geometry", &geo);
+    if (geo) {
+        json_object_object_add(o, "geometry", json_object_get(geo));
+    } else {
+        json_object* g0 = json_object_new_object();
+        json_object_object_add(g0, "x", json_object_new_int(0));
+        json_object_object_add(g0, "y", json_object_new_int(0));
+        json_object_object_add(g0, "w", json_object_new_int(0));
+        json_object_object_add(g0, "h", json_object_new_int(0));
+        json_object_object_add(o, "geometry", g0);
+    }
 
     json_object* cap = nullptr;
     json_object_object_get_ex(node, "capabilities", &cap);

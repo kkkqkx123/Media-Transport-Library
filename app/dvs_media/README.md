@@ -6,6 +6,7 @@
 
 ```bash
 cd app/dvs_media && meson setup build && ninja -C build
+./build/dvs_media --version   # 包版本与 IPC 版本（须与 dvs_agent 同包）
 ```
 
 ## 运行
@@ -21,5 +22,9 @@ dvs_media --config <cfg> --ipc-sock <path>    # 受控模式：空闲启动，�
 |---|---|
 | `dvs_media_main.c` | 入口：能力探测、配置加载、引擎创建，选择独立/受控模式 |
 | `engine/` | 引擎核心：`engine_ctx`（引擎上下文）、`session_mgr`（会话管理）、`session_admit`（会话准入）、`layout_executor`（布局执行）、`audio_arbiter`（音频仲裁）、`capability`（能力探测上报）、`ipc_engine_bridge`（IPC→引擎桥接） |
-| `ipc/` | `ipc_server`（Unix socket IPC 服务）+ `state_machine`（configure/prepare/commit 状态机） |
+| `ipc/` | `ipc_server`（Unix socket IPC 服务，含 `hello` 握手）+ `state_machine`（configure/prepare/commit 状态机） |
+
+## 节点包
+
+与 `dvs_agent` 同包发布（见 `../../deploy/dvs-node/`，版本见 `../dvs_common/include/dvs_node_bundle.h`）。配置下发统一走单一 `configure` 谓词；`hello` 上报协议版本、包版本与状态快照，供代理核对同包配对。
 | `tests/` | `test_ipc` / `test_state_machine` / `test_session_admit` |

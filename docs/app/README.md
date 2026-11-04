@@ -8,7 +8,10 @@
 | [`rk3588_live_ingest.md`](./rk3588_live_ingest.md) | 低延迟直播链路：V4L2 采集 → MPP 编码 → MTL 发送/接收 → MPP 解码 → DRM 渲染 |
 | [`rk3588_file_playout.md`](./rk3588_file_playout.md) | MP4 文件分发：FFmpeg 解复用 → ST2110-22/30 发送 → MPP 解码 + DRM 显示 + ALSA 播放 |
 | [`hardware_usage.md`](./hardware_usage.md) | 两个应用对 RK3588 各硬件（V4L2/MPP/RGA/DRM/ALSA/DMA-BUF/MTL/PTP）的使用情况、零拷贝路径与软件回退分析 |
+| [`mtl_usage.md`](./mtl_usage.md) | rk3588 两个应用与 dvs（dvs_media/dvs_agent/dvs_platform）如何使用 MTL：初始化、ST22/ST30 会话、framebuffer、PTP/pacing、API 清单与缺口 |
 | [`frontend_prototype_integration.md`](./frontend_prototype_integration.md) | `ref/` 两个前端原型（平台后台 / 节点本机后台）与 `docs/req` 需求的对应关系，及其与现有 rk3588 app 层的集成设计方案 |
+| [`dvs_agent_frontend_mapping.md`](./dvs_agent_frontend_mapping.md) | dvs_agent 本机前端（node-admin）功能映射到 dvs / rk3588 app 功能的分析 |
+| [`dvs_platform_frontend_mapping.md`](./dvs_platform_frontend_mapping.md) | dvs_platform 平台前端功能映射到 dvs / rk3588 app 功能的分析 |
 | [`dvs_node_analysis.md`](./dvs_node_analysis.md) | `dvs_media` / `dvs_agent` 功能现状与 `docs/req` 需求差距分析；IPC 方式评估与网络通信（平台 WSS 注册心跳）补充建议 |
 
 ## 共同特征

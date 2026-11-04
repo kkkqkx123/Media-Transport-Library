@@ -14,12 +14,6 @@
 #include <string>
 #include <unistd.h>
 
-static std::string str_of(json_object* o, const char* key, const std::string& def = "") {
-    json_object* v = nullptr;
-    if (o && json_object_object_get_ex(o, key, &v) && v) return json_object_get_string(v);
-    return def;
-}
-
 static std::string slurp_file(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
     if (!f) return "";

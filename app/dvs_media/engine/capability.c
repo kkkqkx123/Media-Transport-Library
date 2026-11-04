@@ -62,8 +62,8 @@ void dvs_capability_free(dvs_capability* cap) {
     cap->input_port_count = 0;
 }
 
-static void probe_drm(dvs_capability* cap) {
 #ifdef HAVE_LIBDRM
+static void probe_drm(dvs_capability* cap) {
     int fd = open("/dev/dri/card0", O_RDWR);
     if (fd < 0) {
         fprintf(stderr, "capability: cannot open /dev/dri/card0\n");
@@ -116,10 +116,8 @@ static void probe_drm(dvs_capability* cap) {
         drmModeFreePlaneResources(pr);
     }
     close(fd);
-#else
-    fprintf(stderr, "capability: built without libdrm, using default layers\n");
-#endif
 }
+#endif /* HAVE_LIBDRM */
 
 static void probe_input(dvs_capability* cap) {
     /* CAP-1: enumerate each present /dev/videoN as its own input port instead

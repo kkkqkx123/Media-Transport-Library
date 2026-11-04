@@ -178,7 +178,7 @@ int dvs_session_snapshot(char keys[][DVS_SESSION_KEY_LEN], int* lanes, int max) 
     int n = 0;
     for (int i = 0; i < DVS_MAX_SESSIONS && n < max; i++) {
         if (g_slots[i].last_used < 0) continue;
-        snprintf(keys[n], DVS_SESSION_KEY_LEN, "%s", g_slots[i].key);
+        snprintf(keys[n], DVS_SESSION_KEY_LEN, "%.63s", g_slots[i].key);
         lanes[n] = g_slots[i].lane;
         n++;
     }

@@ -1,4 +1,3 @@
-#define _GNU_SOURCE
 #include "rx_compositor.h"
 #include "mtl_rx_mp4.h"
 #include "mtl_rx_bridge.h"
@@ -601,7 +600,7 @@ void rx_compositor_get_latency(const rx_compositor* comp, uint64_t* min_ns,
                                uint64_t* avg_ns, uint64_t* max_ns) {
     if (!comp)
         return;
-    rx_video_lane* main = &comp->lanes[comp->main_lane_idx];
+    const rx_video_lane* main = &comp->lanes[comp->main_lane_idx];
     uint64_t count = 0;
     rx_e2e_stats_get(&main->e2e, min_ns, avg_ns, max_ns, &count);
 }

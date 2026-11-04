@@ -314,8 +314,11 @@ static void file_playout_add_mp4(file_playout_cfg* cfg, const char* path) {
         snprintf(cfg->mp4_files[cfg->mp4_count], FILE_PLAYOUT_MAX_PATH_LEN, "%s", path);
         cfg->mp4_count++;
     }
-    if (!cfg->mp4_file[0])
-        snprintf(cfg->mp4_file, sizeof(cfg->mp4_file), "%s", path);
+    if (!cfg->mp4_file[0]) {
+        char tmp[FILE_PLAYOUT_MAX_PATH_LEN];
+        snprintf(tmp, sizeof(tmp), "%s", path);
+        snprintf(cfg->mp4_file, sizeof(cfg->mp4_file), "%s", tmp);
+    }
 }
 
 int file_playout_apply_mp4_probe(file_playout_cfg* cfg) {
@@ -752,7 +755,7 @@ static const char* file_playout_sanitize_lcores(const char* lcores) {
         if (id > 0 && id < ncpu) {
             if (n > 0)
                 strncat(out, ",", sizeof(out) - strlen(out) - 1);
-            char buf[8];
+            char buf[32];
             snprintf(buf, sizeof(buf), "%ld", id);
             strncat(out, buf, sizeof(out) - strlen(out) - 1);
             n++;

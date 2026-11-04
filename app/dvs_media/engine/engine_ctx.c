@@ -496,7 +496,7 @@ struct json_object* dvs_engine_lane_stats(dvs_engine* e) {
             memcpy(sip, keys[i], len);
             port = atoi(colon + 1);
         } else {
-            snprintf(sip, sizeof(sip), "%s", keys[i]);
+            snprintf(sip, sizeof(sip), "%.63s", keys[i]);
         }
         struct json_object* o = json_object_new_object();
         json_object_object_add(o, "lane", json_object_new_int(lanes[i]));

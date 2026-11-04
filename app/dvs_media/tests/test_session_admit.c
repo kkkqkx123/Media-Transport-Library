@@ -1,4 +1,4 @@
-/* Unit test for the S4 session admission table (whitelist + LRU).
+/* Unit test for the session admission table (whitelist + LRU).
  * Self-contained (no MTL/MPP), runnable on x86. */
 
 #include "engine/session_admit.h"

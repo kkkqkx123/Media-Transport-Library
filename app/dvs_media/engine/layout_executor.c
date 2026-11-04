@@ -11,11 +11,11 @@
  * prepare(): validate + stash the desired layout (does not touch the running
  *            compositor — current picture stays).
  * commit() : swap the running layout to the pending one (engine recreates the
- *            compositor; true frame-boundary atomic switch is S4).
+ *            compositor).
  * abort()  : discard the pending layout (rollback to current).
  *
- * NOTE: this is the pragmatic first implementation. The S4 work adds a
- * frame-N vblank atomic plane switch and rollback from a saved shadow copy on
+ * NOTE: this is the pragmatic first implementation. A future refinement adds
+ * a frame-N vblank atomic plane switch and rollback from a saved shadow copy on
  * commit failure, instead of full compositor recreation. */
 
 static file_playout_pip_stream g_pending[MP4_PIP_MAX_LANES];

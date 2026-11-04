@@ -618,6 +618,36 @@ uint64_t rx_compositor_e2e_count(const rx_compositor* comp) {
     return total;
 }
 
+int rx_compositor_lane_count(const rx_compositor* comp) {
+    if (!comp) return 0;
+    return comp->lane_count;
+}
+
+const file_playout_pip_stream* rx_compositor_lane_stream(const rx_compositor* comp,
+                                                          int idx) {
+    if (!comp || idx < 0 || idx >= comp->lane_count) return NULL;
+    return &comp->lanes[idx].stream;
+}
+
+int rx_compositor_lane_running(const rx_compositor* comp, int idx) {
+    if (!comp || idx < 0 || idx >= comp->lane_count) return 0;
+    return atomic_load(&comp->lanes[idx].running) ? 1 : 0;
+}
+
+unsigned long long rx_compositor_lane_lost_frames(const rx_compositor* comp, int idx) {
+    if (!comp || idx < 0 || idx >= comp->lane_count) return 0;
+    uint64_t received = 0;
+    uint32_t drops = 0, corrupt = 0, incomplete = 0;
+    mtl_rx_mp4_get_stats(comp->lanes[idx].mrx, &received, &drops, &corrupt,
+                         &incomplete);
+    return (unsigned long long)(drops + corrupt + incomplete);
+}
+
+unsigned long long rx_compositor_lane_last_pts_ns(const rx_compositor* comp, int idx) {
+    if (!comp || idx < 0 || idx >= comp->lane_count) return 0;
+    return (unsigned long long)comp->lanes[idx].last_rx_pts;
+}
+
 void rx_compositor_report_stats(rx_compositor* comp, int period_s, bool reset_period) {
     if (!comp)
         return;

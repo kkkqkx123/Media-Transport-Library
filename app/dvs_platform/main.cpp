@@ -571,7 +571,7 @@ int main(int argc, char** argv) {
             send_json(res, ok_envelope(d, state));
             return;
         }
-        // Serial batch upgrade (T9): one node at a time, failures isolated.
+        // Serial batch upgrade: one node at a time, failures isolated.
         if (req.method == "POST" && req.path == "/api/v1/nodes/upgrade") {
             json_object* b = json_tokener_parse(req.body.c_str());
             json_object* arr = nullptr;

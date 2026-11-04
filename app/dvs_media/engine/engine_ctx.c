@@ -375,12 +375,34 @@ struct json_object* dvs_engine_lane_stats(dvs_engine* e) {
     struct json_object* arr = json_object_new_array();
     if (!arr) return NULL;
     if (!e) return arr;
+
+    pthread_mutex_lock(&e->mu);
+    rx_compositor* comp = e->comp;
+    pthread_mutex_unlock(&e->mu);
+
+    if (comp) {
+        int n = rx_compositor_lane_count(comp);
+        for (int i = 0; i < n; i++) {
+            const file_playout_pip_stream* st = rx_compositor_lane_stream(comp, i);
+            if (!st) continue;
+            struct json_object* o = json_object_new_object();
+            json_object_object_add(o, "lane", json_object_new_int(st->lane));
+            json_object_object_add(o, "sip", json_object_new_string(st->sip));
+            json_object_object_add(o, "udp_port", json_object_new_int(st->udp_port));
+            json_object_object_add(o, "ready",
+                                  json_object_new_boolean(rx_compositor_lane_running(comp, i)));
+            json_object_object_add(o, "lostFrames",
+                                  json_object_new_int64(rx_compositor_lane_lost_frames(comp, i)));
+            json_object_object_add(o, "lastPtsNs",
+                                  json_object_new_int64(rx_compositor_lane_last_pts_ns(comp, i)));
+            json_object_array_add(arr, o);
+        }
+        return arr;
+    }
+
     char keys[DVS_MAX_SESSIONS][DVS_SESSION_KEY_LEN];
     int lanes[DVS_MAX_SESSIONS];
     int n = dvs_session_snapshot(keys, lanes, DVS_MAX_SESSIONS);
-    pthread_mutex_lock(&e->mu);
-    int running = (e->comp != NULL);
-    pthread_mutex_unlock(&e->mu);
     for (int i = 0; i < n; i++) {
         char* colon = strrchr(keys[i], ':');
         char sip[64] = {0};
@@ -397,8 +419,8 @@ struct json_object* dvs_engine_lane_stats(dvs_engine* e) {
         json_object_object_add(o, "lane", json_object_new_int(lanes[i]));
         json_object_object_add(o, "sip", json_object_new_string(sip));
         json_object_object_add(o, "udp_port", json_object_new_int(port));
-        json_object_object_add(o, "ready", json_object_new_boolean(running ? 1 : 0));
-        json_object_object_add(o, "lostFrames", json_object_new_int(0));
+        json_object_object_add(o, "ready", json_object_new_boolean(0));
+        json_object_object_add(o, "lostFrames", json_object_new_int64(0));
         json_object_object_add(o, "lastPtsNs", json_object_new_int64(0));
         json_object_array_add(arr, o);
     }

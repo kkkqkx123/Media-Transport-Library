@@ -5,7 +5,7 @@
 class NodeStore;
 class MediaIpcClient;
 
-/* Node maintenance operations (req 03 §10): reboot (with pendingRole applied),
+/* Node maintenance operations: reboot (with pendingRole applied),
  * factory reset (preserves network + registration), and firmware upgrade
  * (SHA-256 verified, A/B staging, old version kept on failure). */
 class Maintenance {

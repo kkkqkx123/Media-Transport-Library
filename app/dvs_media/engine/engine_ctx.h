@@ -17,8 +17,7 @@
  * Owns the MTL instance and (at most one) rx_compositor covering the current
  * layout. Layout changes are applied by recreating the compositor
  * (stop + free + create + start) — a pragmatic "commit" that is correct but not
- * yet frame-boundary atomic; the atomic switch without decoder rebuild is the
- * S4 refinement. */
+ * yet frame-boundary atomic. */
 typedef struct dvs_engine {
     mtl_handle      st;        /* MTL instance (NULL until inited) */
     rx_compositor*  comp;      /* current compositor (NULL when media off) */

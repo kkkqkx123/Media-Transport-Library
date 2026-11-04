@@ -5,7 +5,7 @@
 #include <set>
 #include <string>
 
-// Cross-node transaction coordinator (T8). Pure logic, no sockets: the HTTP
+// Cross-node transaction coordinator. Pure logic, no sockets: the HTTP
 // layer feeds node replies in and reads the next broadcast out.
 struct Operation {
     std::string op_id;

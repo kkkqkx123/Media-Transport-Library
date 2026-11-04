@@ -51,4 +51,13 @@ uint64_t rx_compositor_e2e_count(const rx_compositor* comp);
 
 void rx_compositor_report_stats(rx_compositor* comp, int period_s, bool reset_period);
 
+/* Per-lane introspection for control-plane status (lost frames / last PTS).
+ * Safe to call with a NULL comp (returns 0 / NULL). */
+int rx_compositor_lane_count(const rx_compositor* comp);
+const file_playout_pip_stream* rx_compositor_lane_stream(const rx_compositor* comp,
+                                                          int idx);
+int rx_compositor_lane_running(const rx_compositor* comp, int idx);
+unsigned long long rx_compositor_lane_lost_frames(const rx_compositor* comp, int idx);
+unsigned long long rx_compositor_lane_last_pts_ns(const rx_compositor* comp, int idx);
+
 #endif /* _RX_COMPOSITOR_H_ */

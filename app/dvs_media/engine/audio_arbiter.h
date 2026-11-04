@@ -3,7 +3,7 @@
 
 struct dvs_engine; /* forward declaration; full type in engine/engine_ctx.h */
 
-/* Route audioOwner -> ALSA playback device and volume -> mixer (req 03 §7.3).
+/* Route audioOwner -> ALSA playback device and volume -> mixer.
  *
  * owner: logical audio owner. If it starts with "hw:" it is treated as a
  *        concrete ALSA device string; otherwise "default" is used. Empty owner

@@ -3,7 +3,7 @@
 
 #include <stddef.h>
 
-/* Runtime-probed node registration capability (req 03 §12). All fields are
+/* Runtime-probed node registration capability. All fields are
  * filled by dvs_capability_probe(); any subsystem that cannot be probed falls
  * back to a sane default and logs a warning — probing must never abort the
  * process, so dvs_media can still serve IPC and report partial capability. */

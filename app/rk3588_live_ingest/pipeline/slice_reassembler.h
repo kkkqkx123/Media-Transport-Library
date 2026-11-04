@@ -8,6 +8,19 @@
 struct slice_reassembler;
 struct slab_pool;
 
+/** Reassembler observability (single-writer decode thread, lock-free poll). */
+struct slice_reasm_stats {
+  uint64_t feed_complete;   /* new picture emitted previous frame */
+  uint64_t feed_waiting;    /* appended, picture not yet complete */
+  uint64_t feed_errors;     /* bad args + buffer failures (total) */
+  uint64_t oversize_drops;  /* picture larger than one slab block */
+  uint64_t alloc_fails;     /* slab/malloc allocation failures */
+  uint64_t flushes;         /* flush emits (timeout + stop share counter) */
+  uint64_t slab_frames;     /* zero-copy slab handoffs */
+  uint64_t malloc_frames;   /* heap fallback handoffs */
+  size_t   pending_peak;    /* buffered-bytes high water */
+};
+
 /** Create a reassembler for one picture. */
 struct slice_reassembler* slice_reasm_create(void);
 void slice_reasm_free(struct slice_reassembler* r);
@@ -55,5 +68,9 @@ void slice_reasm_free_frame(struct slice_reassembler* r, uint8_t* frame);
  */
 int slice_reasm_flush(struct slice_reassembler* r,
                       uint8_t** frame_out, size_t* frame_size_out);
+
+/** One-shot reassembler snapshot (NULL-safe, never blocks). */
+void slice_reasm_stats(struct slice_reassembler* r,
+                       struct slice_reasm_stats* out);
 
 #endif /* _LIVE_INGEST_SLICE_REASSEMBLER_H_ */

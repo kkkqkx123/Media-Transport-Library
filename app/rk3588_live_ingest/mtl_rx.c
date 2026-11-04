@@ -31,6 +31,13 @@ struct mtl_rx {
     uint64_t              stat_pool_full;  /* pool-exhausted acquire fails */
     int                   stat_peak_inflight;
     uint64_t              last_full_warn_ns; /* lcore-side 5s warn cooldown */
+    /* split drops + windowed observability (lcore writes, poll reads) */
+    uint64_t              stat_ring_drops;
+    uint64_t              stat_stopping_drops;
+    size_t                stat_frame_max;
+    uint32_t              poll_fps;
+    uint64_t              poll_last_ns;
+    uint64_t              poll_last_received;
 };
 
 static struct rx_pkt* rx_pool_acquire(struct mtl_rx* rx) {
@@ -63,6 +70,7 @@ static int rx_notify_frame_ready(void* priv, void* frame,
     struct mtl_rx* rx = (struct mtl_rx*)priv;
 
     if (atomic_load(&rx->stopping)) {
+        rx->stat_stopping_drops++;
         st22_rx_put_framebuff(rx->handle, frame);
         return 0;
     }
@@ -95,12 +103,15 @@ static int rx_notify_frame_ready(void* priv, void* frame,
     if (ring_push(rx->cfg.output_ring, pkt) == -ENOSPC) {
         rx_pool_release(pkt);
         rx->stat_drops++;
+        rx->stat_ring_drops++;
         st22_rx_put_framebuff(rx->handle, frame);
         return -ENOSPC;
     }
 
     rx->stat_received++;
     rx->stat_bytes += meta->frame_total_size;
+    if (meta->frame_total_size > rx->stat_frame_max)
+        rx->stat_frame_max = meta->frame_total_size;
     return 0;
 }
 
@@ -181,17 +192,36 @@ void mtl_rx_stop(struct mtl_rx* rx) {
         st22_rx_put_framebuff(rx->handle, pkt->frame);
         rx_pool_release(pkt);
     }
-    printf("mtl_rx: %llu received, %u drops, %llu pool-full (peak inflight %d)\n",
+    printf("mtl_rx: %llu received, %u drops (ring=%llu stop=%llu), %llu pool-full (peak inflight %d) max=%zu\n",
            (unsigned long long)rx->stat_received, rx->stat_drops,
-           (unsigned long long)rx->stat_pool_full, rx->stat_peak_inflight);
+           (unsigned long long)rx->stat_ring_drops,
+           (unsigned long long)rx->stat_stopping_drops,
+           (unsigned long long)rx->stat_pool_full, rx->stat_peak_inflight,
+           rx->stat_frame_max);
 }
 
 void mtl_rx_stats(struct mtl_rx* rx, struct mtl_rx_stats* out) {
     if (!rx || !out) return;
+    /* windowed fps from poll deltas: no per-frame clock on the lcore. */
+    uint64_t now = rx_now_ns();
+    uint32_t fps = 0;
+    if (rx->poll_last_ns != 0 && now > rx->poll_last_ns) {
+        uint64_t dt_ns = now - rx->poll_last_ns;
+        uint64_t dn = rx->stat_received - rx->poll_last_received;
+        if (dt_ns > 0)
+            fps = (uint32_t)((dn * 1000000000ULL) / dt_ns);
+    }
+    rx->poll_last_ns = now;
+    rx->poll_last_received = rx->stat_received;
+    rx->poll_fps = fps;
     out->received  = rx->stat_received;
     out->drops     = rx->stat_drops;
     out->bytes     = rx->stat_bytes;
     out->pool_full = rx->stat_pool_full;
     out->peak      = rx->stat_peak_inflight;
     out->inflight  = rx_inflight(rx);
+    out->ring_drops = rx->stat_ring_drops;
+    out->stopping_drops = rx->stat_stopping_drops;
+    out->fps       = rx->poll_fps;
+    out->frame_max_size = rx->stat_frame_max;
 }

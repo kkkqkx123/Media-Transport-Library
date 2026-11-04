@@ -24,8 +24,15 @@ void mtl_rx_bridge_stop(struct mtl_rx_bridge* b);
 /* Snapshot for the 1s aggregation log (safe to call while running). */
 struct mtl_rx_bridge_stats {
     uint64_t bridged;
-    uint32_t drops;
+    uint32_t drops;         /* total (compat) */
     uint64_t bytes;
+    /* split drops + windowed observability (added, totals kept) */
+    uint64_t bad_drops;     /* empty mtl descriptor */
+    uint64_t slab_drops;    /* coded slab alloc failed */
+    uint64_t malloc_drops;  /* codec_packet header alloc failed */
+    uint64_t ring_drops;    /* dec ring full */
+    uint32_t fps;           /* windowed rate, computed at stats poll */
+    uint64_t copy_ema_us;   /* memcpy cost EMA */
 };
 void mtl_rx_bridge_stats(struct mtl_rx_bridge* b,
                          struct mtl_rx_bridge_stats* out);

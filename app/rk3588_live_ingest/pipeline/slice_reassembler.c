@@ -10,6 +10,16 @@ struct slice_reassembler {
     size_t   buf_len;   /* valid data length */
     struct slab_pool* pool; /* optional: slab-backed accumulation, set by owner */
     bool     buf_is_slab;   /* true when buf came from the slab pool */
+    /* observability (decode thread writes, supervisor reads) */
+    uint64_t stat_complete;
+    uint64_t stat_waiting;
+    uint64_t stat_errors;
+    uint64_t stat_oversize;
+    uint64_t stat_alloc_fails;
+    uint64_t stat_flushes;
+    uint64_t stat_slab_frames;
+    uint64_t stat_malloc_frames;
+    size_t   stat_pending_peak;
 };
 
 struct slice_reassembler* slice_reasm_create(void) {
@@ -160,12 +170,17 @@ static int buf_ensure(struct slice_reassembler* r, size_t extra) {
 /* Hand the accumulated buffer to the caller (zero-copy either way). */
 static void emit_buffered(struct slice_reassembler* r,
                           uint8_t** frame_out, size_t* frame_size_out) {
+    bool is_slab = r->buf_is_slab;
     *frame_out      = r->buf;
     *frame_size_out = r->buf_len;
     r->buf          = NULL;
     r->buf_size     = 0;
     r->buf_len      = 0;
     r->buf_is_slab  = false;
+    if (is_slab)
+        r->stat_slab_frames++;
+    else
+        r->stat_malloc_frames++;
     /* Note: caller must release via slice_reasm_free_frame after use */
 }
 
@@ -173,20 +188,35 @@ int slice_reasm_feed(struct slice_reassembler* r,
                      uint8_t* data, size_t size,
                      uint8_t** frame_out, size_t* frame_size_out) {
     if (frame_out) *frame_out = NULL;
-    if (!r || !data || !size) return -1;
+    if (!r || !data || !size) {
+        if (r) r->stat_errors++;
+        return -1;
+    }
 
     /* parse first_mb_in_slice */
     int first_mb = annex_b_first_mb_in_slice(data, size);
 
     /* first_mb == 0 means a new picture starts.
      * If we already have buffered data, that's the previous complete frame. */
-    if (first_mb == 0 && r->buf_len > 0)
+    if (first_mb == 0 && r->buf_len > 0) {
         emit_buffered(r, frame_out, frame_size_out);
+        r->stat_complete++;
+    }
 
     /* append current slice to buffer */
-    if (buf_ensure(r, size) < 0) return -1;
+    if (buf_ensure(r, size) < 0) {
+        if (r->pool && r->buf_len + size > slab_blk_size(r->pool))
+            r->stat_oversize++;
+        else
+            r->stat_alloc_fails++;
+        r->stat_errors++;
+        return -1;
+    }
     memcpy(r->buf + r->buf_len, data, size);
     r->buf_len += size;
+    if (r->buf_len > r->stat_pending_peak)
+        r->stat_pending_peak = r->buf_len;
+    r->stat_waiting++;
 
     /* frame ready if we just started a new picture (and had a previous one) */
     return (first_mb == 0 && *frame_out != NULL) ? 1 : 0;
@@ -200,7 +230,23 @@ int slice_reasm_flush(struct slice_reassembler* r,
     if (frame_out) *frame_out = NULL;
     if (!r || r->buf_len == 0) return 0;
     emit_buffered(r, frame_out, frame_size_out);
+    r->stat_flushes++;
     return 1;
+}
+
+void slice_reasm_stats(struct slice_reassembler* r,
+                       struct slice_reasm_stats* out) {
+    if (!out) return;
+    if (!r) { memset(out, 0, sizeof(*out)); return; }
+    out->feed_complete = r->stat_complete;
+    out->feed_waiting = r->stat_waiting;
+    out->feed_errors = r->stat_errors;
+    out->oversize_drops = r->stat_oversize;
+    out->alloc_fails = r->stat_alloc_fails;
+    out->flushes = r->stat_flushes;
+    out->slab_frames = r->stat_slab_frames;
+    out->malloc_frames = r->stat_malloc_frames;
+    out->pending_peak = r->stat_pending_peak;
 }
 
 /* ---- self-test (compile with -DREASM_TEST) ---- */

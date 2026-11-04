@@ -15,6 +15,7 @@
 
 /* ---- internal state ---- */
 #define FB_DELAY 8  /* hold 8 frames (~133ms), far exceeding DRM vblank+page flip */
+#define DEC_LAT_WIN 128 /* take-cost window for p50/p90/p99 */
 
 /* Idle sleep between decode_get_frame polls. encode_get_packet-style MPP
  * getters return immediately when no frame is ready; the old 50us x30 tight
@@ -37,6 +38,22 @@ struct mpp_dec {
   uint64_t        stat_input_full_drops; /* input-full drains that lost a frame */
   uint64_t        dec_ema_us;            /* EMA of successful take-frame cost */
   uint64_t        last_output_ns;        /* CLOCK_MONOTONIC of last frame out */
+  /* extended decode observability (decode thread writes, poll reads) */
+  uint64_t        stat_frames_out;
+  uint64_t        stat_feed_chunks;
+  uint64_t        stat_pull_empty;
+  uint64_t        stat_corrupt;
+  uint64_t        stat_discarded;
+  uint64_t        stat_put_fails;
+  uint64_t        stat_info_changes;
+  uint64_t        stat_res_changes;
+  uint32_t        mpp_buf_now;
+  uint32_t        mpp_buf_peak;
+  uint32_t        fps_win_count;
+  uint64_t        fps_win_start_ns;
+  uint32_t        decode_fps;
+  uint32_t        lat_win[DEC_LAT_WIN];
+  int             lat_count;
   /* resolution change reported by info-change, consumed by the pipeline */
   bool            resolution_pending;
   int             pending_w, pending_h;
@@ -156,9 +173,11 @@ static int handle_info_change(struct mpp_dec* d, MppFrame frame) {
     d->pending_w = (int)width;
     d->pending_h = (int)height;
     d->resolution_pending = true;
+    d->stat_res_changes++;
     d->w = (int)width;
     d->h = (int)height;
   }
+  d->stat_info_changes++;
 
   /* create internal buffer group (ION type — same as official mpi_dec_test default).
    * On kernel 5.10 without ION, MPP internally falls back to DMA_HEAP. */
@@ -271,6 +290,8 @@ static int dec_get_frame(struct mpp_dec* d, int* fd_out, uint32_t* hor_stride_ou
     RK_U32 err_info = mpp_frame_get_errinfo(f);
     RK_U32 discard  = mpp_frame_get_discard(f);
     if (err_info || discard) {
+      if (err_info) d->stat_corrupt++;
+      if (discard) d->stat_discarded++;
       mpp_frame_deinit(&f);
       continue; /* corrupted or discarded frame */
     }
@@ -303,14 +324,32 @@ static int dec_get_frame(struct mpp_dec* d, int* fd_out, uint32_t* hor_stride_ou
     d->held[d->held_idx] = f; /* store for later release */
     d->held_idx = (d->held_idx + 1) % FB_DELAY;
     d->frame_count++;
+    d->stat_frames_out++;
     {
       /* Successful take cost feeds the 1s-log EMA and the hang guard. */
       uint64_t sample_us = (dec_now_ns() - t0_ns) / 1000;
+      uint64_t now = dec_now_ns();
       if (d->dec_ema_us == 0)
         d->dec_ema_us = sample_us;
       else
         d->dec_ema_us += (sample_us - d->dec_ema_us) / 8;
-      d->last_output_ns = dec_now_ns();
+      d->last_output_ns = now;
+      /* fps window + latency window (take-cost percentiles) */
+      if (d->fps_win_start_ns == 0) d->fps_win_start_ns = now;
+      d->fps_win_count++;
+      if (now - d->fps_win_start_ns >= 1000000000ULL) {
+        d->decode_fps = d->fps_win_count;
+        d->fps_win_count = 0;
+        d->fps_win_start_ns = now;
+      }
+      uint32_t v = (uint32_t)(sample_us > 0xFFFFFFFFu ? 0xFFFFFFFFu : sample_us);
+      if (d->lat_count < DEC_LAT_WIN) {
+        d->lat_win[d->lat_count++] = v;
+      } else {
+        memmove(&d->lat_win[0], &d->lat_win[1],
+                (size_t)(DEC_LAT_WIN - 1) * sizeof(uint32_t));
+        d->lat_win[DEC_LAT_WIN - 1] = v;
+      }
     }
     got_frame = 1;
     break; /* one frame per call is enough; caller re-invokes for more */
@@ -336,8 +375,12 @@ int mpp_dec_put(void* dec_priv, uint8_t* data, size_t size) {
     if (r < 0) {
       msleep(1);
       r = dec_put_packet(d, data + offset, chunk);
-      if (r < 0) return r;
+      if (r < 0) {
+        d->stat_put_fails++;
+        return r;
+      }
     }
+    d->stat_feed_chunks++;
     offset += chunk;
   }
   return 0;
@@ -347,7 +390,9 @@ int mpp_dec_pull(void* dec_priv, int* fd_out, uint32_t* hor_stride_out,
                  uint32_t* ver_stride_out) {
   struct mpp_dec* d = (struct mpp_dec*)dec_priv;
   if (!d || !fd_out) return -EINVAL;
-  return dec_get_frame(d, fd_out, hor_stride_out, ver_stride_out) ? 1 : 0;
+  int got = dec_get_frame(d, fd_out, hor_stride_out, ver_stride_out) ? 1 : 0;
+  if (!got) d->stat_pull_empty++;
+  return got;
 }
 
 int mpp_dec_feed(void* dec_priv, uint8_t* data, size_t size, int* fd_out,
@@ -374,6 +419,61 @@ int mpp_dec_take_resolution(void* dec_priv, int* w_out, int* h_out) {
   if (w_out) *w_out = d->pending_w;
   if (h_out) *h_out = d->pending_h;
   return 1;
+}
+
+static void dec_probe_mpp_buffers(struct mpp_dec* d) {
+#if defined(__has_include) && __has_include(<rockchip/mpp_buffer.h>)
+  {
+    extern unsigned int mpp_buffer_total_now(void);
+    extern unsigned int mpp_buffer_total_max(void);
+    unsigned int cur = mpp_buffer_total_now();
+    unsigned int peak = mpp_buffer_total_max();
+    d->mpp_buf_now = cur;
+    if (peak > d->mpp_buf_peak) d->mpp_buf_peak = peak;
+    if (cur > d->mpp_buf_peak) d->mpp_buf_peak = cur;
+  }
+#else
+  (void)d;
+#endif
+}
+
+static void dec_lat_percentiles(struct mpp_dec* d, uint32_t* p50,
+                                uint32_t* p90, uint32_t* p99) {
+  uint32_t tmp[DEC_LAT_WIN];
+  int n = d->lat_count;
+  if (n <= 0) { *p50 = *p90 = *p99 = 0; return; }
+  memcpy(tmp, d->lat_win, (size_t)n * sizeof(uint32_t));
+  for (int i = 1; i < n; i++) {
+    uint32_t v = tmp[i];
+    int j = i;
+    while (j > 0 && tmp[j - 1] > v) { tmp[j] = tmp[j - 1]; j--; }
+    tmp[j] = v;
+  }
+  *p50 = tmp[(n * 50) / 100 >= n ? n - 1 : (n * 50) / 100];
+  *p90 = tmp[(n * 90) / 100 >= n ? n - 1 : (n * 90) / 100];
+  *p99 = tmp[(n * 99) / 100 >= n ? n - 1 : (n * 99) / 100];
+}
+
+void mpp_dec_get_decode_stats(void* dec_priv, struct mpp_decode_stats* out) {
+  struct mpp_dec* d = (struct mpp_dec*)dec_priv;
+  if (!out) return;
+  if (!d) { memset(out, 0, sizeof(*out)); return; }
+  dec_probe_mpp_buffers(d);
+  out->frames_out = d->stat_frames_out;
+  out->decode_fps = d->decode_fps;
+  out->take_ema_us = (uint32_t)d->dec_ema_us;
+  dec_lat_percentiles(d, &out->lat_p50_us, &out->lat_p90_us, &out->lat_p99_us);
+  out->feed_chunks = d->stat_feed_chunks;
+  out->pull_empty = d->stat_pull_empty;
+  out->corrupt_frames = d->stat_corrupt;
+  out->discarded_frames = d->stat_discarded;
+  out->input_full_drops = d->stat_input_full_drops;
+  out->put_fail_drops = d->stat_put_fails;
+  out->info_changes = d->stat_info_changes;
+  out->resolution_changes = d->stat_res_changes;
+  out->mpp_buf_now = d->mpp_buf_now;
+  out->mpp_buf_peak = d->mpp_buf_peak;
+  out->last_output_ns = d->last_output_ns;
 }
 
 /* ---- codec_plugin wrapper ---- */

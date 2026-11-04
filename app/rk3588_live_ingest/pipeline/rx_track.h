@@ -75,6 +75,26 @@ static inline bool rx_lat_valid(uint64_t cap_ts, uint64_t now, uint64_t* delta_o
     return true;
 }
 
+/* Latency reject reason for split counting (valid = may enter stats). */
+enum rx_lat_reject {
+    RX_LAT_OK = 0,
+    RX_LAT_ZERO,
+    RX_LAT_BACK,
+    RX_LAT_OVER,
+};
+
+static inline enum rx_lat_reject rx_lat_classify(uint64_t cap_ts, uint64_t now,
+                                                uint64_t* delta_out) {
+    uint64_t delta;
+
+    if (!cap_ts) return RX_LAT_ZERO;
+    if (now < cap_ts) return RX_LAT_BACK;
+    delta = now - cap_ts;
+    if (delta > RX_LAT_MAX_NS) return RX_LAT_OVER;
+    if (delta_out) *delta_out = delta;
+    return RX_LAT_OK;
+}
+
 /* ---- SEI payload offset (peek, no in-place strip) ----
  * Returns the byte offset the decoder must start from: SEI size when the
  * codestream opens with our timestamp SEI, 0 otherwise. */

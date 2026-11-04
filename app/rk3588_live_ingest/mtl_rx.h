@@ -37,11 +37,16 @@ st22_rx_handle mtl_rx_handle(struct mtl_rx* rx);
 /* Snapshot for the 1s aggregation log (safe to call while running). */
 struct mtl_rx_stats {
     uint64_t received;
-    uint32_t drops;
+    uint32_t drops;         /* total: pool-full + ring-full (compat) */
     uint64_t bytes;
-    uint64_t pool_full;
+    uint64_t pool_full;     /* descriptor pool exhausted */
     int      peak;
     int      inflight;
+    /* split drops + windowed observability (added, totals kept) */
+    uint64_t ring_drops;    /* output ring full */
+    uint64_t stopping_drops;/* frames returned during stop */
+    uint32_t fps;           /* windowed rate, computed at stats poll */
+    size_t   frame_max_size;/* largest frame_total_size observed */
 };
 void mtl_rx_stats(struct mtl_rx* rx, struct mtl_rx_stats* out);
 

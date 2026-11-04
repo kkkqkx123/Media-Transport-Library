@@ -85,11 +85,46 @@ uint32_t v4l2_capturer_fourcc(struct v4l2_capturer* c);
 /** Get number of planes (1 for BGR3, 2 for NV12) */
 int v4l2_capturer_num_planes(struct v4l2_capturer* c);
 
+/** Negotiated V4L2 buffer count (REQBUFS actual value, denominator for occupancy). */
+int v4l2_capturer_buf_count(struct v4l2_capturer* c);
+/** Driver-reported capture framerate (G_PARM read-back, 0 when unavailable). */
+int v4l2_capturer_effective_fps(struct v4l2_capturer* c);
+/** Measured capture framerate over the last 1s window (capture thread). */
+uint32_t v4l2_capturer_video_fps(struct v4l2_capturer* c);
+/** Median frame interval over the last 1s window in microseconds (0 = unknown). */
+uint64_t v4l2_capturer_cap_interval_us(struct v4l2_capturer* c);
+/** Times a backwards kernel timestamp was clamped forward (monotonic guard). */
+uint64_t v4l2_capturer_ts_clamp_count(struct v4l2_capturer* c);
+/** Times the driver timestamp was missing and dequeue time was used. */
+uint64_t v4l2_capturer_ts_fallback_count(struct v4l2_capturer* c);
+
 /** Buffers dequeued but not yet released (backpressure indicator). */
 int v4l2_capturer_outstanding(struct v4l2_capturer* c);
 /** Peak dequeued-but-unreleased count since create (for periodic logs). */
 int v4l2_capturer_peak_outstanding(struct v4l2_capturer* c);
 /** Times the pool was observed full at DQBUF time (backpressure events). */
 uint64_t v4l2_capturer_full_events(struct v4l2_capturer* c);
+
+/** No-signal placeholder resolution (zero or tiny dimensions). */
+bool v4l2_capturer_is_placeholder(int width, int height);
+/** Read back the current driver format without disturbing streaming state.
+ * Returns 0 on success, -1 on ioctl failure. */
+int v4l2_capturer_query_driver_format(struct v4l2_capturer* c, int* width,
+                                       int* height, uint32_t* fourcc);
+
+/** One-shot snapshot of capture-side observability (lock-free reads). */
+struct v4l2_capturer_stats {
+  int      outstanding;
+  int      peak_outstanding;
+  int      buf_count;
+  int      effective_fps;
+  uint32_t video_fps;
+  uint64_t full_events;
+  uint64_t cap_interval_us;
+  uint64_t ts_clamp_count;
+  uint64_t ts_fallback_count;
+};
+void v4l2_capturer_stats(struct v4l2_capturer* c,
+                         struct v4l2_capturer_stats* out);
 
 #endif /* _LIVE_INGEST_V4L2_CAPTURER_H_ */

@@ -33,6 +33,7 @@ struct v4l2_capturer {
   int    width, height;
   float  fps;
   int    buf_count;
+  int    effective_fps;   /* G_PARM read-back, falls back to requested fps */
   uint32_t actual_fourcc;   /* actual negotiated pixel format */
   int    actual_num_planes; /* actual number of planes */
   uint32_t plane_stride;    /* bytesperline for plane 0 (byte stride, not pixels!) */
@@ -56,6 +57,18 @@ struct v4l2_capturer {
   atomic_int peak_outstanding; /* session peak of outstanding */
   atomic_ullong full_events;   /* DQBUF observed pool full */
   uint64_t full_warn_ns;       /* last pool-full warning, cooldown */
+  /* measured-rate observability (capture thread writes, readers use atomics) */
+  atomic_uint video_fps;          /* frames in the last 1s window */
+  atomic_ullong cap_interval_us;  /* median frame interval in us, 0 = unknown */
+  atomic_ullong ts_clamp_count;    /* backwards timestamps clamped forward */
+  atomic_ullong ts_fallback_count; /* driver timestamp missing, dequeue used */
+  uint64_t fps_window_start_ms;
+  uint32_t fps_window_count;
+#define CAP_INTERVAL_WIN 128
+  uint64_t interval_buf[CAP_INTERVAL_WIN];
+  uint32_t interval_count;
+  uint64_t last_pts_us;
+  uint64_t interval_window_start_ms;
 };
 
 /* ---- helpers ---- */
@@ -64,6 +77,25 @@ static uint64_t gettime_ns(void) {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
   return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
+static uint64_t gettime_ms(void) { return gettime_ns() / 1000000ULL; }
+
+bool v4l2_capturer_is_placeholder(int width, int height) {
+  return width <= 0 || height <= 0 ||
+         (width <= 128 && height <= 128);
+}
+
+static uint64_t interval_median(uint64_t* buf, uint32_t n) {
+  if (n == 0) return 0;
+  for (uint32_t i = 1; i < n; i++) {
+    uint64_t v = buf[i];
+    uint32_t j = i;
+    while (j > 0 && buf[j - 1] > v) { buf[j] = buf[j - 1]; j--; }
+    buf[j] = v;
+  }
+  if (n & 1) return buf[n / 2];
+  return (buf[n / 2 - 1] + buf[n / 2] + 1) / 2;
 }
 
 static int xioctl(int fd, unsigned long req, void* arg) {
@@ -150,8 +182,8 @@ struct v4l2_capturer* v4l2_capturer_create(const char* device,
   c->plane_stride      = fmt.fmt.pix_mp.plane_fmt[0].bytesperline;
 
   /* placeholder resolution = no signal: let the caller retry later */
-  if (fmt.fmt.pix_mp.width <= 0 || fmt.fmt.pix_mp.height <= 0 ||
-      (fmt.fmt.pix_mp.width <= 128 && fmt.fmt.pix_mp.height <= 128)) {
+  if (v4l2_capturer_is_placeholder((int)fmt.fmt.pix_mp.width,
+                                     (int)fmt.fmt.pix_mp.height)) {
     fprintf(stderr,
             "v4l2_capturer: placeholder resolution %ux%u (no signal?)\n",
             fmt.fmt.pix_mp.width, fmt.fmt.pix_mp.height);
@@ -170,6 +202,16 @@ struct v4l2_capturer* v4l2_capturer_create(const char* device,
   parm.parm.capture.timeperframe.denominator = (int)fps;
   if (xioctl(c->fd, VIDIOC_S_PARM, &parm) < 0)
     fprintf(stderr, "v4l2_capturer: VIDIOC_S_PARM failed (continuing)\n");
+  /* read back the effective rate; drivers may adjust or report the input rate */
+  c->effective_fps = (int)(fps + 0.5f);
+  struct v4l2_streamparm gparm = {0};
+  gparm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+  if (xioctl(c->fd, VIDIOC_G_PARM, &gparm) == 0 &&
+      gparm.parm.capture.timeperframe.numerator != 0) {
+    uint32_t num = gparm.parm.capture.timeperframe.numerator;
+    uint32_t den = gparm.parm.capture.timeperframe.denominator;
+    if (num != 0 && den != 0) c->effective_fps = (int)((den + num / 2) / num);
+  }
 
   /* request MMAP buffers */
   struct v4l2_requestbuffers req = {0};
@@ -184,7 +226,16 @@ struct v4l2_capturer* v4l2_capturer_create(const char* device,
   printf("v4l2_capturer: allocated %d buffers\n", c->buf_count);
   atomic_init(&c->peak_outstanding, 0);
   atomic_init(&c->full_events, 0);
+  atomic_init(&c->video_fps, 0);
+  atomic_init(&c->cap_interval_us, 0);
+  atomic_init(&c->ts_clamp_count, 0);
+  atomic_init(&c->ts_fallback_count, 0);
   c->full_warn_ns = 0;
+  c->fps_window_start_ms = 0;
+  c->fps_window_count = 0;
+  c->interval_count = 0;
+  c->last_pts_us = 0;
+  c->interval_window_start_ms = 0;
 
   /* mmap and export */
   c->bufs = calloc((size_t)c->buf_count, sizeof(struct v4l2_buf_info));
@@ -412,6 +463,7 @@ static void* capture_thread(void* arg) {
     /* timestamp: prefer the kernel frame stamp (ISP time), fall back to
      * dequeue time; never let PTS go backwards */
     uint64_t ts;
+    bool ts_is_fallback = false;
     if ((buf.flags & V4L2_BUF_FLAG_TIMESTAMP_MASK) ==
             V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC &&
         (buf.timestamp.tv_sec || buf.timestamp.tv_usec)) {
@@ -419,6 +471,8 @@ static void* capture_thread(void* arg) {
            (uint64_t)buf.timestamp.tv_usec * 1000ULL;
     } else {
       ts = gettime_ns();
+      ts_is_fallback = true;
+      atomic_fetch_add(&c->ts_fallback_count, 1);
       if (!c->ts_fallback_warned) {
         fprintf(stderr,
                 "v4l2_capturer: driver timestamp unavailable, using dequeue "
@@ -426,7 +480,10 @@ static void* capture_thread(void* arg) {
         c->ts_fallback_warned = true;
       }
     }
-    if (ts < c->last_ts_ns) ts = c->last_ts_ns;
+    if (ts < c->last_ts_ns) {
+      atomic_fetch_add(&c->ts_clamp_count, 1);
+      ts = c->last_ts_ns;
+    }
     c->last_ts_ns = ts;
 
     uint32_t total_size = 0;
@@ -435,6 +492,29 @@ static void* capture_thread(void* arg) {
     if (total_size == 0) { /* empty frame: return buffer, skip callback */
       v4l2_capturer_release(c, buf.index, gen);
       continue;
+    }
+
+    /* measured-rate windows: fps count plus median frame interval */
+    {
+      uint64_t now_ms = gettime_ms();
+      if (c->fps_window_start_ms == 0) c->fps_window_start_ms = now_ms;
+      if (c->interval_window_start_ms == 0)
+        c->interval_window_start_ms = now_ms;
+      uint64_t ts_us = ts / 1000ULL;
+      if (c->last_pts_us != 0 && ts_us > c->last_pts_us &&
+          c->interval_count < CAP_INTERVAL_WIN)
+        c->interval_buf[c->interval_count++] = ts_us - c->last_pts_us;
+      if (ts_us > c->last_pts_us) c->last_pts_us = ts_us;
+      c->fps_window_count++;
+      if (now_ms - c->fps_window_start_ms >= 1000) {
+        atomic_store(&c->video_fps, c->fps_window_count);
+        uint64_t med = interval_median(c->interval_buf, c->interval_count);
+        atomic_store(&c->cap_interval_us, med);
+        c->fps_window_start_ms = now_ms;
+        c->interval_window_start_ms = now_ms;
+        c->fps_window_count = 0;
+        c->interval_count = 0;
+      }
     }
 
     struct v4l2_frame f = {
@@ -490,4 +570,55 @@ int v4l2_capturer_peak_outstanding(struct v4l2_capturer* c) {
 
 uint64_t v4l2_capturer_full_events(struct v4l2_capturer* c) {
   return c ? atomic_load(&c->full_events) : 0;
+}
+
+int v4l2_capturer_buf_count(struct v4l2_capturer* c) {
+  return c ? c->buf_count : 0;
+}
+
+int v4l2_capturer_effective_fps(struct v4l2_capturer* c) {
+  return c ? c->effective_fps : 0;
+}
+
+uint32_t v4l2_capturer_video_fps(struct v4l2_capturer* c) {
+  return c ? atomic_load(&c->video_fps) : 0;
+}
+
+uint64_t v4l2_capturer_cap_interval_us(struct v4l2_capturer* c) {
+  return c ? atomic_load(&c->cap_interval_us) : 0;
+}
+
+uint64_t v4l2_capturer_ts_clamp_count(struct v4l2_capturer* c) {
+  return c ? atomic_load(&c->ts_clamp_count) : 0;
+}
+
+uint64_t v4l2_capturer_ts_fallback_count(struct v4l2_capturer* c) {
+  return c ? atomic_load(&c->ts_fallback_count) : 0;
+}
+
+int v4l2_capturer_query_driver_format(struct v4l2_capturer* c, int* width,
+                                       int* height, uint32_t* fourcc) {
+  if (!c || c->fd < 0) return -1;
+  struct v4l2_format got = {0};
+  got.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+  if (xioctl(c->fd, VIDIOC_G_FMT, &got) < 0) return -1;
+  if (width) *width = (int)got.fmt.pix_mp.width;
+  if (height) *height = (int)got.fmt.pix_mp.height;
+  if (fourcc) *fourcc = got.fmt.pix_mp.pixelformat;
+  return 0;
+}
+
+void v4l2_capturer_stats(struct v4l2_capturer* c,
+                         struct v4l2_capturer_stats* out) {
+  if (!out) return;
+  if (!c) { memset(out, 0, sizeof(*out)); return; }
+  out->outstanding      = atomic_load(&c->outstanding);
+  out->peak_outstanding = atomic_load(&c->peak_outstanding);
+  out->buf_count        = c->buf_count;
+  out->effective_fps    = c->effective_fps;
+  out->video_fps        = atomic_load(&c->video_fps);
+  out->full_events      = atomic_load(&c->full_events);
+  out->cap_interval_us  = atomic_load(&c->cap_interval_us);
+  out->ts_clamp_count   = atomic_load(&c->ts_clamp_count);
+  out->ts_fallback_count = atomic_load(&c->ts_fallback_count);
 }

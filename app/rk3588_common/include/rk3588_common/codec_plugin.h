@@ -37,6 +37,8 @@ struct codec_config {
   int intra_refresh_arg;   /* rows/cols/gap count per frame */
 };
 
+struct codec_encode_stats;
+
 struct codec_plugin {
   const char* name;
   struct codec_caps caps;
@@ -62,6 +64,33 @@ struct codec_plugin {
 
   /** Optional (NULL allowed): frames dropped because internal output ring full. */
   int  (*get_full_drops)(void* ctx, uint64_t* count);
+
+  /** Optional (NULL allowed): one-shot encode observability snapshot. */
+  int  (*get_encode_stats)(void* ctx, struct codec_encode_stats* out);
+  /** Optional (NULL allowed): take and clear the windowed packet counter. */
+  int  (*take_packets_in_window)(void* ctx, uint64_t* n);
+  /** Optional (NULL allowed): read back hot-reconfig state. */
+  int  (*get_rc_state)(void* ctx, int* bitrate, int* gop, int* qp,
+                        int* pending);
+};
+
+/** Encode-side observability snapshot (lock-free reads, cumulative unless noted). */
+struct codec_encode_stats {
+  uint32_t encode_fps;      /* frames emitted in the last 1s window */
+  uint32_t encode_cost_us;  /* submit-to-output cost EMA */
+  uint32_t latency_p50_us;  /* windowed percentiles over recent frames */
+  uint32_t latency_p90_us;
+  uint32_t latency_p99_us;
+  int32_t  avg_qp;          /* -1 when the driver reports no meta */
+  int32_t  start_qp;
+  int32_t  bps_rt;
+  int64_t  sse;
+  int32_t  pskip;
+  uint32_t mpp_buf_now;     /* global MPP buffer usage in bytes */
+  uint32_t mpp_buf_peak;
+  uint64_t packets_total;   /* frames ever emitted to the output ring */
+  uint64_t oversize_drops;  /* frames dropped for exceeding slab block */
+  uint64_t meta_missing;    /* frames emitted without MPP meta */
 };
 
 #endif /* _RK3588_COMMON_CODEC_PLUGIN_H_ */

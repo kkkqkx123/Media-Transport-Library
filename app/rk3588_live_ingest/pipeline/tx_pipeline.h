@@ -8,6 +8,29 @@
 struct ring_buffer;
 struct tx_pipeline;
 
+/** Flat observability snapshot (all counters cumulative unless noted). */
+struct tx_pipeline_stats {
+  uint64_t captured, encoded, encoded_bytes;
+  uint32_t ring_drops, sink_drops;
+  uint64_t send_fails, recv_timeouts, payload_oversize, invalid_frames;
+  uint64_t mtl_acquire_fails, mtl_publish_fails, enc2dec_full;
+  int      cap_outstanding, cap_peak, cap_buf_count, cap_effective_fps;
+  uint32_t cap_fps;
+  uint64_t cap_full_events, cap_interval_us, cap_ts_clamp, cap_ts_fallback;
+  uint64_t rga_calls, rga_fails, rga_pool_exhausted, rga_cpu_fallbacks;
+  uint64_t rga_cpu_fails, rga_ema_us;
+  uint32_t rga_in_use, rga_peak, rga_size;
+  int      rga_degraded;
+  uint32_t enc_fps, enc_cost_us, enc_p50, enc_p90, enc_p99;
+  int32_t  enc_avg_qp, enc_start_qp, enc_bps_rt, enc_pskip;
+  int64_t  enc_sse;
+  uint32_t enc_mpp_now, enc_mpp_peak;
+  uint64_t enc_packets_total, enc_oversize, enc_meta_missing, enc_ring_full;
+  uint32_t rebuild_streak;
+  uint64_t rebuild_errors, rebuild_signals, rebuild_cap_hang, rebuild_enc_hang;
+  int      disabled;
+};
+
 /** Optional MTL direct-write callbacks (live_ingest wires to mtl_tx). */
 struct tx_mtl_sink_ops {
     void* priv;
@@ -64,5 +87,10 @@ struct slab_pool*  tx_pipeline_get_slab_pool(struct tx_pipeline* tp);
  * Supported params: CODEC_PARAM_BITRATE, CODEC_PARAM_GOP_SIZE, CODEC_PARAM_QP.
  * Returns 0 on accepted, -ENOSYS for unsupported, -EINVAL for bad value. */
 int tx_pipeline_set_param(struct tx_pipeline* tp, enum codec_param k, int v);
+
+/** One-shot snapshot of pipeline and submodule counters (lock-free reads). */
+void tx_pipeline_stats(struct tx_pipeline* tp, struct tx_pipeline_stats* out);
+/** Human-readable one-line snapshot, same fields as the 1s log (for query). */
+int tx_pipeline_format_metrics(struct tx_pipeline* tp, char* buf, size_t len);
 
 #endif /* _LIVE_INGEST_TX_PIPELINE_H_ */

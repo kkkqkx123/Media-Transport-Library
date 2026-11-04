@@ -29,13 +29,27 @@ void rga_converter_release(struct rga_converter* c, int pool_idx);
 
 /** Cumulative counters for stats reporting. */
 struct rga_stats {
-  uint64_t calls;          /* successful conversions */
-  uint64_t fails;          /* blit failures (frame dropped) */
+  uint64_t calls;          /* successful conversions (fd hardware path) */
+  uint64_t fails;          /* hardware blit failures (frame dropped) */
   uint64_t pool_exhausted; /* frames dropped because the pool was full */
   uint64_t cpu_fallbacks;  /* frames converted on the degraded CPU path */
-  uint64_t time_ema_us;    /* blit cost EMA in microseconds */
+  uint64_t cpu_fails;      /* CPU fallback conversion failures */
+  uint64_t time_ema_us;    /* hardware blit cost EMA in microseconds */
+  uint32_t pool_in_use;    /* buffers currently checked out */
+  uint32_t pool_peak;      /* session peak of checked-out buffers */
+  uint32_t pool_size;      /* total pool depth */
+  int      degraded;       /* non-zero once the fd path degraded to CPU */
 };
 
 void rga_converter_stats(struct rga_converter* c, struct rga_stats* out);
+
+/** Buffers currently checked out of the pool (pressure indicator). */
+uint32_t rga_converter_in_use(struct rga_converter* c);
+/** Session peak of checked-out buffers. */
+uint32_t rga_converter_peak(struct rga_converter* c);
+/** Non-zero when the fd path has degraded to the CPU fallback. */
+int rga_converter_degraded(struct rga_converter* c);
+/** Startup RGA driver version string (never NULL, "unknown" when unreadable). */
+const char* rga_converter_version(struct rga_converter* c);
 
 #endif

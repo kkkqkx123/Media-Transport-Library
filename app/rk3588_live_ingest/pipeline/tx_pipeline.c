@@ -51,17 +51,27 @@ struct tx_pipeline {
     atomic_bool            flag_capture_error;
     atomic_bool            flag_signal_change;
     atomic_ullong          last_captured_seen; /* hang-guard: capture alive */
+    uint64_t               last_capture_progress_ns;
     uint64_t               rebuild_done_ns;    /* grace window after rebuild */
     uint32_t               consecutive_rebuilds;
+    uint64_t               rebuild_errors, rebuild_signals;
+    uint64_t               rebuild_cap_hang, rebuild_enc_hang;
     bool                   disabled;           /* anti-storm tripped */
 
-    /* stats: ring_drop is CAP2ENC full only; sink_drop covers MTL publish,
-     * oversize and encoder-recv failures downstream */
+    /* stats: ring_drop is CAP2ENC full only; sink_drop is the total of the
+     * split counters below (kept for log compatibility) */
     uint64_t               stat_captured;
     uint64_t               stat_encoded;
     uint64_t               stat_encoded_bytes;
     uint32_t               stat_ring_drops;
     uint32_t               stat_sink_drops;
+    uint64_t               stat_send_fails;
+    uint64_t               stat_recv_timeouts;
+    uint64_t               stat_payload_oversize;
+    uint64_t               stat_invalid_frames;
+    uint64_t               stat_mtl_acquire_fails;
+    uint64_t               stat_mtl_publish_fails;
+    uint64_t               stat_enc2dec_full;
 };
 
 static inline uint64_t now_ns(void) {
@@ -167,6 +177,7 @@ static int tx_pipeline_rebuild(struct tx_pipeline* tp) {
     pthread_setaffinity_np(tp->thd_encode, sizeof(cset), &cset);
 
     tp->rebuild_done_ns = now_ns();
+    tp->last_capture_progress_ns = tp->rebuild_done_ns;
     printf("tx_pipe: rebuild done\n");
     return 0;
 }
@@ -177,58 +188,136 @@ static void* supervise_thread(void* arg) {
     /* per-tick stats deltas for the 1s aggregation log */
     uint64_t prev_captured = 0, prev_encoded = 0, prev_bytes = 0;
     uint64_t prev_rga_calls = 0, prev_rga_fails = 0, prev_exhausted = 0;
-    uint64_t prev_cpu_fb = 0, prev_full_drops = 0;
+    uint64_t prev_cpu_fb = 0, prev_full_drops = 0, prev_packets = 0;
+    uint64_t prev_send = 0, prev_recv = 0, prev_oversize = 0, prev_invalid = 0;
+    uint64_t prev_acq = 0, prev_pub = 0, prev_e2e = 0;
 
     while (atomic_load(&tp->running) && !tp->disabled) {
         sleep(SUPERVISE_TICK_S);
         if (!atomic_load(&tp->running) || tp->disabled) break;
 
+        uint64_t now = now_ns();
         uint64_t captured_now = tp->stat_captured;
-        bool trigger = atomic_exchange(&tp->flag_capture_error, false) ||
-                       atomic_exchange(&tp->flag_signal_change, false);
-        if (!tp->capture || !tp->encoder) trigger = true;
+        bool got_error = atomic_exchange(&tp->flag_capture_error, false);
+        bool got_signal = atomic_exchange(&tp->flag_signal_change, false);
+        bool trigger = got_error || got_signal;
+        const char* reason = got_error ? "capture-error"
+                             : got_signal ? "signal-change" : "";
+        if (!tp->capture || !tp->encoder) {
+            trigger = true;
+            reason = "missing-component";
+        }
 
-        if (!trigger && captured_now > atomic_load(&tp->last_captured_seen)) {
+        bool in_grace = (now - tp->rebuild_done_ns < REBUILD_GRACE_NS) ||
+                        (tp->stat_encoded < 5);
+        /* capture arm: no new frames dequeued for a full hang window */
+        bool cap_hang = false;
+        if (!trigger && !in_grace) {
+            if (captured_now > atomic_load(&tp->last_captured_seen)) {
+                tp->last_capture_progress_ns = now;
+            } else if (now - tp->last_capture_progress_ns > HANG_THRESHOLD_NS) {
+                fprintf(stderr, "tx_pipe: capture hang detected "
+                        "(no frames for >%lldms), rebuilding\n",
+                        (long long)(HANG_THRESHOLD_NS / 1000000));
+                trigger = true;
+                reason = "capture-hang";
+                cap_hang = true;
+            }
+        } else if (captured_now > atomic_load(&tp->last_captured_seen)) {
+            tp->last_capture_progress_ns = now;
+        }
+        /* encode arm: capture progresses but no encoder output */
+        bool enc_hang = false;
+        if (!trigger && !cap_hang && !in_grace &&
+            captured_now > atomic_load(&tp->last_captured_seen)) {
             uint64_t last_out = 0;
             bool have_out = tp->encoder && tp->encoder->get_last_output_ns &&
                             tp->encoder->get_last_output_ns(tp->encoder->priv,
                                                             &last_out) == 0;
-            bool in_grace = (now_ns() - tp->rebuild_done_ns < REBUILD_GRACE_NS) ||
-                            (tp->stat_encoded < 5);
-            if (have_out && !in_grace &&
-                now_ns() - last_out > HANG_THRESHOLD_NS) {
+            if (have_out && now - last_out > HANG_THRESHOLD_NS) {
                 fprintf(stderr, "tx_pipe: encoder hang detected "
                         "(no output for >%lldms), rebuilding\n",
                         (long long)(HANG_THRESHOLD_NS / 1000000));
                 trigger = true;
+                reason = "encode-hang";
+                enc_hang = true;
             }
         }
         atomic_store(&tp->last_captured_seen, captured_now);
 
         {
             struct rga_stats rs;
+            struct codec_encode_stats es;
+            uint64_t packets_win = 0;
+            memset(&es, 0, sizeof(es));
+            es.avg_qp = es.start_qp = es.bps_rt = es.pskip = -1;
+            es.sse = -1;
             rga_converter_stats(tp->rga, &rs);
             uint64_t full_drops = 0;
             if (tp->encoder && tp->encoder->get_full_drops)
                 tp->encoder->get_full_drops(tp->encoder->priv, &full_drops);
-            printf("tx_pipe[1s]: cap=%llu/s enc=%llu/s %llukbps ring_drop=%u sink_drop=%u "
-                   "outstanding=%d peak=%d full_ev=%llu enc_full_drop=%llu streak=%u | "
-                   "rga ok=%llu fail=%llu pool_full=%llu cpu_fb=%llu ema=%lluus\n",
+            if (tp->encoder && tp->encoder->get_encode_stats)
+                tp->encoder->get_encode_stats(tp->encoder->priv, &es);
+            if (tp->encoder && tp->encoder->take_packets_in_window)
+                tp->encoder->take_packets_in_window(tp->encoder->priv,
+                                                     &packets_win);
+            int rc_bitrate = 0, rc_gop = 0, rc_qp = 0, rc_pending = 0;
+            if (tp->encoder && tp->encoder->get_rc_state)
+                tp->encoder->get_rc_state(tp->encoder->priv, &rc_bitrate,
+                                           &rc_gop, &rc_qp, &rc_pending);
+            printf("tx_pipe[1s]: cap=%llu/s enc=%llu/s %llukbps "
+                   "ring_drop=%u sink_drop=%u "
+                   "(send=%llu recv=%llu oversize=%llu invalid=%llu "
+                   "acq=%llu pub=%llu e2e_full=%llu) "
+                   "cap_fps=%u cap_int=%lluus eff_fps=%d out=%d peak=%d full_ev=%llu "
+                   "ts_clamp=%llu ts_fb=%llu enc_fps=%u enc_cost=%uus "
+                   "lat=%u/%u/%uus qp=%d/%d bps=%d sse=%lld pskip=%d "
+                   "mpp=%u/%uB win_pkts=%llu "
+                   "enc_full=%llu streak=%u rc_pend=%d | "
+                   "rga ok=%llu fail=%llu pool_full=%llu cpu_fb=%llu "
+                   "cpu_fail=%llu use=%u/%u deg=%d ema=%lluus rb=%llu/%llu/%llu/%llu\n",
                    (unsigned long long)(captured_now - prev_captured),
                    (unsigned long long)(tp->stat_encoded - prev_encoded),
                    (unsigned long long)((tp->stat_encoded_bytes - prev_bytes) * 8 / 1000),
                    tp->stat_ring_drops,
                    tp->stat_sink_drops,
+                   (unsigned long long)(tp->stat_send_fails - prev_send),
+                   (unsigned long long)(tp->stat_recv_timeouts - prev_recv),
+                   (unsigned long long)(tp->stat_payload_oversize - prev_oversize),
+                   (unsigned long long)(tp->stat_invalid_frames - prev_invalid),
+                   (unsigned long long)(tp->stat_mtl_acquire_fails - prev_acq),
+                   (unsigned long long)(tp->stat_mtl_publish_fails - prev_pub),
+                   (unsigned long long)(tp->stat_enc2dec_full - prev_e2e),
+                   tp->capture ? v4l2_capturer_video_fps(tp->capture) : 0,
+                   tp->capture ? (unsigned long long)v4l2_capturer_cap_interval_us(tp->capture) : 0ULL,
+                   tp->capture ? v4l2_capturer_effective_fps(tp->capture) : 0,
                    tp->capture ? v4l2_capturer_outstanding(tp->capture) : -1,
                    tp->capture ? v4l2_capturer_peak_outstanding(tp->capture) : -1,
                    tp->capture ? (unsigned long long)v4l2_capturer_full_events(tp->capture) : 0ULL,
+                   tp->capture ? (unsigned long long)v4l2_capturer_ts_clamp_count(tp->capture) : 0ULL,
+                   tp->capture ? (unsigned long long)v4l2_capturer_ts_fallback_count(tp->capture) : 0ULL,
+                   (unsigned)es.encode_fps,
+                   (unsigned)es.encode_cost_us,
+                   (unsigned)es.latency_p50_us, (unsigned)es.latency_p90_us,
+                   (unsigned)es.latency_p99_us,
+                   (int)es.avg_qp, (int)es.start_qp, (int)es.bps_rt,
+                   (long long)es.sse, (int)es.pskip,
+                   (unsigned)es.mpp_buf_now, (unsigned)es.mpp_buf_peak,
+                   (unsigned long long)packets_win,
                    (unsigned long long)(full_drops - prev_full_drops),
-                   tp->consecutive_rebuilds,
+                   tp->consecutive_rebuilds, rc_pending,
                    (unsigned long long)(rs.calls - prev_rga_calls),
                    (unsigned long long)(rs.fails - prev_rga_fails),
                    (unsigned long long)(rs.pool_exhausted - prev_exhausted),
                    (unsigned long long)(rs.cpu_fallbacks - prev_cpu_fb),
-                   (unsigned long long)rs.time_ema_us);
+                   (unsigned long long)rs.cpu_fails,
+                   (unsigned)rs.pool_in_use, (unsigned)rs.pool_size,
+                   (int)rs.degraded,
+                   (unsigned long long)rs.time_ema_us,
+                   (unsigned long long)tp->rebuild_errors,
+                   (unsigned long long)tp->rebuild_signals,
+                   (unsigned long long)tp->rebuild_cap_hang,
+                   (unsigned long long)tp->rebuild_enc_hang);
             prev_captured   = captured_now;
             prev_encoded    = tp->stat_encoded;
             prev_bytes      = tp->stat_encoded_bytes;
@@ -237,6 +326,16 @@ static void* supervise_thread(void* arg) {
             prev_exhausted  = rs.pool_exhausted;
             prev_cpu_fb     = rs.cpu_fallbacks;
             prev_full_drops = full_drops;
+            prev_packets    = packets_win;
+            prev_send       = tp->stat_send_fails;
+            prev_recv       = tp->stat_recv_timeouts;
+            prev_oversize   = tp->stat_payload_oversize;
+            prev_invalid    = tp->stat_invalid_frames;
+            prev_acq        = tp->stat_mtl_acquire_fails;
+            prev_pub        = tp->stat_mtl_publish_fails;
+            prev_e2e        = tp->stat_enc2dec_full;
+            (void)prev_packets;
+            (void)reason;
         }
 
         if (!trigger) {
@@ -244,6 +343,10 @@ static void* supervise_thread(void* arg) {
             continue;
         }
 
+        if (got_error) tp->rebuild_errors++;
+        if (got_signal) tp->rebuild_signals++;
+        if (cap_hang) tp->rebuild_cap_hang++;
+        if (enc_hang) tp->rebuild_enc_hang++;
         tp->consecutive_rebuilds++;
         if (tp->consecutive_rebuilds >= MAX_CONSECUTIVE_REBUILDS) {
             tp->disabled = true;
@@ -332,6 +435,7 @@ static void* encode_thread(void* arg) {
             min_stride = (uint32_t)tp->cfg.width * 2;
         if (f->fd < 0 || f->stride < min_stride) {
             tp->stat_sink_drops++;
+            tp->stat_invalid_frames++;
             if (f->capture)
                 v4l2_capturer_release(f->capture, f->buf_index, f->generation);
             free(f);
@@ -348,6 +452,7 @@ static void* encode_thread(void* arg) {
             int nv12_fd; uint32_t nv12_stride;
             if (rga_convert(tp->rga, f->fd, f->stride, f->fourcc,
                             &nv12_fd, &nv12_stride, &nv12_idx) != 0) {
+                tp->stat_sink_drops++;
                 if (f->capture)
                     v4l2_capturer_release(f->capture, f->buf_index, f->generation);
                 free(f);
@@ -359,6 +464,8 @@ static void* encode_thread(void* arg) {
 
         if (tp->encoder->send(tp->encoder->priv, enc_fd, enc_stride) != 0) {
             if (nv12_idx >= 0) rga_converter_release(tp->rga, nv12_idx);
+            tp->stat_sink_drops++;
+            tp->stat_send_fails++;
             if (f->capture)
                 v4l2_capturer_release(f->capture, f->buf_index, f->generation);
             free(f);
@@ -388,6 +495,7 @@ static void* encode_thread(void* arg) {
             if (rr != 1) {
                 if (nv12_idx >= 0) rga_converter_release(tp->rga, nv12_idx);
                 tp->stat_sink_drops++;
+                tp->stat_recv_timeouts++;
                 if (f->capture)
                     v4l2_capturer_release(f->capture, f->buf_index, f->generation);
                 free(f);
@@ -410,11 +518,16 @@ static void* encode_thread(void* arg) {
                     } else {
                         tp->cfg.mtl_sink->abort_fb(tp->cfg.mtl_sink->priv, fb_idx);
                         tp->stat_sink_drops++;
+                        tp->stat_mtl_publish_fails++;
                     }
                 } else {
                     tp->cfg.mtl_sink->abort_fb(tp->cfg.mtl_sink->priv, fb_idx);
                     tp->stat_sink_drops++;
+                    tp->stat_payload_oversize++;
                 }
+            } else {
+                tp->stat_sink_drops++;
+                tp->stat_mtl_acquire_fails++;
             }
             slab_free(tp->slab, data);
         } else {
@@ -422,6 +535,7 @@ static void* encode_thread(void* arg) {
             if (!base) {
                 if (nv12_idx >= 0) rga_converter_release(tp->rga, nv12_idx);
                 tp->stat_sink_drops++;
+                tp->stat_mtl_acquire_fails++;
                 if (f->capture)
                     v4l2_capturer_release(f->capture, f->buf_index, f->generation);
                 free(f);
@@ -436,6 +550,7 @@ static void* encode_thread(void* arg) {
             if (rr != 1) {
                 if (nv12_idx >= 0) rga_converter_release(tp->rga, nv12_idx);
                 tp->stat_sink_drops++;
+                tp->stat_recv_timeouts++;
                 if (f->capture)
                     v4l2_capturer_release(f->capture, f->buf_index, f->generation);
                 slab_free(tp->slab, base);
@@ -449,6 +564,7 @@ static void* encode_thread(void* arg) {
             } else {
                 total = sz + SEI_TS_NAL_SIZE;
                 tp->stat_sink_drops++;
+                tp->stat_payload_oversize++;
                 slab_free(tp->slab, data);
                 slab_free(tp->slab, base);
                 if (nv12_idx >= 0) rga_converter_release(tp->rga, nv12_idx);
@@ -469,11 +585,13 @@ static void* encode_thread(void* arg) {
                     tp->stat_encoded_bytes += total;
                 } else {
                     tp->stat_sink_drops++;
+                    tp->stat_enc2dec_full++;
                     slab_free(tp->slab, base);
                     free(pkt);
                 }
             } else {
                 tp->stat_sink_drops++;
+                tp->stat_mtl_acquire_fails++;
                 slab_free(tp->slab, base);
             }
         }
@@ -539,6 +657,7 @@ struct tx_pipeline* tx_pipeline_create(struct tx_pipeline_params* p) {
     atomic_init(&tp->flag_capture_error, false);
     atomic_init(&tp->flag_signal_change, false);
     atomic_init(&tp->last_captured_seen, 0);
+    tp->last_capture_progress_ns = now_ns();
     tp->rebuild_done_ns = now_ns(); /* startup grace window */
 
     printf("tx_pipe: %dx%d@%.0ffps %dbps slices=%d ready\n",
@@ -554,6 +673,7 @@ fail_errno: {
     tx_pipeline_free(tp);
     errno = saved;
     return NULL;
+}
 }
 
 void tx_pipeline_free(struct tx_pipeline* tp) {
@@ -645,10 +765,23 @@ void tx_pipeline_stop(struct tx_pipeline* tp) {
     if (tp->thd_encode) { pthread_join(tp->thd_encode, NULL); tp->thd_encode = 0; }
     if (tp->encoder) tp->encoder->stop(tp->encoder->priv);
     tx_pipeline_drain_cap2enc(tp);
-    printf("tx_pipe: %llu captured, %llu encoded, ring_drop=%u sink_drop=%u\n",
+    printf("tx_pipe: %llu captured, %llu encoded, ring_drop=%u sink_drop=%u "
+           "(send=%llu recv=%llu oversize=%llu invalid=%llu acq=%llu pub=%llu e2e=%llu) "
+           "rb=%llu/%llu/%llu/%llu\n",
            (unsigned long long)tp->stat_captured,
            (unsigned long long)tp->stat_encoded,
-           tp->stat_ring_drops, tp->stat_sink_drops);
+           tp->stat_ring_drops, tp->stat_sink_drops,
+           (unsigned long long)tp->stat_send_fails,
+           (unsigned long long)tp->stat_recv_timeouts,
+           (unsigned long long)tp->stat_payload_oversize,
+           (unsigned long long)tp->stat_invalid_frames,
+           (unsigned long long)tp->stat_mtl_acquire_fails,
+           (unsigned long long)tp->stat_mtl_publish_fails,
+           (unsigned long long)tp->stat_enc2dec_full,
+           (unsigned long long)tp->rebuild_errors,
+           (unsigned long long)tp->rebuild_signals,
+           (unsigned long long)tp->rebuild_cap_hang,
+           (unsigned long long)tp->rebuild_enc_hang);
 }
 
 struct ring_buffer* tx_pipeline_get_output_ring(struct tx_pipeline* tp) {
@@ -662,4 +795,106 @@ struct slab_pool* tx_pipeline_get_slab_pool(struct tx_pipeline* tp) {
 int tx_pipeline_set_param(struct tx_pipeline* tp, enum codec_param k, int v) {
     if (!tp || !tp->encoder || !tp->encoder->set_param) return -EINVAL;
     return tp->encoder->set_param(tp->encoder->priv, k, v);
+}
+
+void tx_pipeline_stats(struct tx_pipeline* tp, struct tx_pipeline_stats* out) {
+    if (!out) return;
+    if (!tp) { memset(out, 0, sizeof(*out)); return; }
+    out->captured         = tp->stat_captured;
+    out->encoded          = tp->stat_encoded;
+    out->encoded_bytes    = tp->stat_encoded_bytes;
+    out->ring_drops       = tp->stat_ring_drops;
+    out->sink_drops       = tp->stat_sink_drops;
+    out->send_fails       = tp->stat_send_fails;
+    out->recv_timeouts    = tp->stat_recv_timeouts;
+    out->payload_oversize = tp->stat_payload_oversize;
+    out->invalid_frames   = tp->stat_invalid_frames;
+    out->mtl_acquire_fails = tp->stat_mtl_acquire_fails;
+    out->mtl_publish_fails = tp->stat_mtl_publish_fails;
+    out->enc2dec_full     = tp->stat_enc2dec_full;
+    if (tp->capture) {
+        struct v4l2_capturer_stats cs;
+        v4l2_capturer_stats(tp->capture, &cs);
+        out->cap_outstanding   = cs.outstanding;
+        out->cap_peak          = cs.peak_outstanding;
+        out->cap_buf_count     = cs.buf_count;
+        out->cap_effective_fps = cs.effective_fps;
+        out->cap_fps           = cs.video_fps;
+        out->cap_full_events   = cs.full_events;
+        out->cap_interval_us   = cs.cap_interval_us;
+        out->cap_ts_clamp      = cs.ts_clamp_count;
+        out->cap_ts_fallback   = cs.ts_fallback_count;
+    }
+    if (tp->rga) {
+        struct rga_stats rs;
+        rga_converter_stats(tp->rga, &rs);
+        out->rga_calls          = rs.calls;
+        out->rga_fails          = rs.fails;
+        out->rga_pool_exhausted = rs.pool_exhausted;
+        out->rga_cpu_fallbacks  = rs.cpu_fallbacks;
+        out->rga_cpu_fails      = rs.cpu_fails;
+        out->rga_ema_us         = rs.time_ema_us;
+        out->rga_in_use         = rs.pool_in_use;
+        out->rga_peak           = rs.pool_peak;
+        out->rga_size           = rs.pool_size;
+        out->rga_degraded       = rs.degraded;
+    }
+    if (tp->encoder && tp->encoder->get_encode_stats) {
+        struct codec_encode_stats es;
+        memset(&es, 0, sizeof(es));
+        if (tp->encoder->get_encode_stats(tp->encoder->priv, &es) == 0) {
+            out->enc_fps          = es.encode_fps;
+            out->enc_cost_us      = es.encode_cost_us;
+            out->enc_p50          = es.latency_p50_us;
+            out->enc_p90          = es.latency_p90_us;
+            out->enc_p99          = es.latency_p99_us;
+            out->enc_avg_qp       = es.avg_qp;
+            out->enc_start_qp     = es.start_qp;
+            out->enc_bps_rt       = es.bps_rt;
+            out->enc_sse          = es.sse;
+            out->enc_pskip        = es.pskip;
+            out->enc_mpp_now      = es.mpp_buf_now;
+            out->enc_mpp_peak     = es.mpp_buf_peak;
+            out->enc_packets_total = es.packets_total;
+            out->enc_oversize     = es.oversize_drops;
+            out->enc_meta_missing = es.meta_missing;
+        }
+        if (tp->encoder->get_full_drops) {
+            uint64_t n = 0;
+            if (tp->encoder->get_full_drops(tp->encoder->priv, &n) == 0)
+                out->enc_ring_full = n;
+        }
+    }
+    out->rebuild_streak   = tp->consecutive_rebuilds;
+    out->rebuild_errors   = tp->rebuild_errors;
+    out->rebuild_signals  = tp->rebuild_signals;
+    out->rebuild_cap_hang = tp->rebuild_cap_hang;
+    out->rebuild_enc_hang = tp->rebuild_enc_hang;
+    out->disabled         = tp->disabled ? 1 : 0;
+}
+
+int tx_pipeline_format_metrics(struct tx_pipeline* tp, char* buf, size_t len) {
+    struct tx_pipeline_stats s;
+    tx_pipeline_stats(tp, &s);
+    return snprintf(buf, len,
+        "cap=%llu enc=%llu ring=%u sink=%u(send=%llu recv=%llu ovs=%llu inv=%llu "
+        "acq=%llu pub=%llu e2e=%llu) cap_fps=%u cap_int=%lluus eff=%d out=%d/%d "
+        "enc_fps=%u cost=%uus lat=%u/%u/%u qp=%d/%d bps=%d mpp=%u/%u rga=%llu/%llu/%llu/%llu use=%u/%u deg=%d rb=%llu/%llu/%llu/%llu%s",
+        (unsigned long long)s.captured, (unsigned long long)s.encoded,
+        s.ring_drops, s.sink_drops,
+        (unsigned long long)s.send_fails, (unsigned long long)s.recv_timeouts,
+        (unsigned long long)s.payload_oversize, (unsigned long long)s.invalid_frames,
+        (unsigned long long)s.mtl_acquire_fails, (unsigned long long)s.mtl_publish_fails,
+        (unsigned long long)s.enc2dec_full,
+        s.cap_fps, (unsigned long long)s.cap_interval_us, s.cap_effective_fps,
+        s.cap_outstanding, s.cap_buf_count,
+        s.enc_fps, s.enc_cost_us, s.enc_p50, s.enc_p90, s.enc_p99,
+        (int)s.enc_avg_qp, (int)s.enc_start_qp, (int)s.enc_bps_rt,
+        s.enc_mpp_now, s.enc_mpp_peak,
+        (unsigned long long)s.rga_calls, (unsigned long long)s.rga_fails,
+        (unsigned long long)s.rga_pool_exhausted, (unsigned long long)s.rga_cpu_fallbacks,
+        s.rga_in_use, s.rga_size, (int)s.rga_degraded,
+        (unsigned long long)s.rebuild_errors, (unsigned long long)s.rebuild_signals,
+        (unsigned long long)s.rebuild_cap_hang, (unsigned long long)s.rebuild_enc_hang,
+        s.disabled ? " disabled" : "");
 }

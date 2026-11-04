@@ -30,9 +30,12 @@ struct rga_converter {
   int w, h, pool_size;
   struct nv12_buf* bufs;
   struct dma32_allocator* dma32;
+  char version[128];
 
   /* stats (atomic for lock-free cross-thread reporting) */
-  atomic_ullong calls, fails, pool_exhausted, cpu_fallbacks, time_ema_us;
+  atomic_ullong calls, fails, pool_exhausted, cpu_fallbacks, cpu_fails;
+  atomic_ullong time_ema_us;
+  atomic_uint pool_in_use, pool_peak;
 
   /* fd-path degradation state */
   atomic_int fd_fail_streak;
@@ -50,7 +53,10 @@ struct rga_converter* rga_converter_create(int w, int h, int pool_size) {
   atomic_init(&c->fails, 0);
   atomic_init(&c->pool_exhausted, 0);
   atomic_init(&c->cpu_fallbacks, 0);
+  atomic_init(&c->cpu_fails, 0);
   atomic_init(&c->time_ema_us, 0);
+  atomic_init(&c->pool_in_use, 0);
+  atomic_init(&c->pool_peak, 0);
   atomic_init(&c->fd_fail_streak, 0);
   atomic_init(&c->fd_degraded, false);
 
@@ -86,6 +92,20 @@ struct rga_converter* rga_converter_create(int w, int h, int pool_size) {
   }
   printf("rga: ready, %d NV12 bufs (%dx%d) %s\n", pool_size, w, h,
          c->dma32 ? "dma32-heap" : "rga-alloc");
+  /* one-shot driver version record, informational only */
+  snprintf(c->version, sizeof(c->version), "unknown");
+#if defined(__has_include)
+#if __has_include(<rga/im2d_common.h>)
+  {
+    extern const char* querystring(int name);
+    const char* vendor = querystring(0);   /* RGA_VENDOR */
+    const char* ver = querystring(1);      /* RGA_VERSION */
+    if (vendor || ver)
+      snprintf(c->version, sizeof(c->version), "%s %s",
+               vendor ? vendor : "", ver ? ver : "");
+  }
+#endif
+#endif
   return c;
 
 fail:
@@ -120,7 +140,10 @@ void rga_converter_free(struct rga_converter* c) {
 
 void rga_converter_release(struct rga_converter* c, int pool_idx) {
   if (!c || pool_idx < 0 || pool_idx >= c->pool_size) return;
-  atomic_store(&c->bufs[pool_idx].in_use, false);
+  if (atomic_exchange(&c->bufs[pool_idx].in_use, false)) {
+    unsigned cur = atomic_load(&c->pool_in_use);
+    if (cur > 0) atomic_fetch_sub(&c->pool_in_use, 1);
+  }
 }
 
 void rga_converter_stats(struct rga_converter* c, struct rga_stats* out) {
@@ -133,7 +156,28 @@ void rga_converter_stats(struct rga_converter* c, struct rga_stats* out) {
   out->fails          = atomic_load(&c->fails);
   out->pool_exhausted = atomic_load(&c->pool_exhausted);
   out->cpu_fallbacks  = atomic_load(&c->cpu_fallbacks);
+  out->cpu_fails      = atomic_load(&c->cpu_fails);
   out->time_ema_us    = atomic_load(&c->time_ema_us);
+  out->pool_in_use    = atomic_load(&c->pool_in_use);
+  out->pool_peak      = atomic_load(&c->pool_peak);
+  out->pool_size      = (uint32_t)c->pool_size;
+  out->degraded       = atomic_load(&c->fd_degraded) ? 1 : 0;
+}
+
+uint32_t rga_converter_in_use(struct rga_converter* c) {
+  return c ? atomic_load(&c->pool_in_use) : 0;
+}
+
+uint32_t rga_converter_peak(struct rga_converter* c) {
+  return c ? atomic_load(&c->pool_peak) : 0;
+}
+
+int rga_converter_degraded(struct rga_converter* c) {
+  return (c && atomic_load(&c->fd_degraded)) ? 1 : 0;
+}
+
+const char* rga_converter_version(struct rga_converter* c) {
+  return (c && c->version[0]) ? c->version : "unknown";
 }
 
 /* ---- degraded CPU path: packed source → NV12, works for both RGA and
@@ -264,6 +308,9 @@ int rga_convert(struct rga_converter* c, int src_fd, uint32_t src_stride,
     return -EAGAIN;
   }
   struct nv12_buf* b = &c->bufs[idx];
+  unsigned in_use = atomic_fetch_add(&c->pool_in_use, 1) + 1;
+  unsigned peak = atomic_load(&c->pool_peak);
+  if (in_use > peak) atomic_store(&c->pool_peak, in_use);
 
   if (atomic_load(&c->fd_degraded)) {
     int rc = cpu_convert(c, src_fd, src_stride, src_fourcc, b);
@@ -274,6 +321,8 @@ int rga_convert(struct rga_converter* c, int src_fd, uint32_t src_stride,
       return 0;
     }
     atomic_store(&b->in_use, false);
+    atomic_fetch_sub(&c->pool_in_use, 1);
+    atomic_fetch_add(&c->cpu_fails, 1);
     atomic_fetch_add(&c->fails, 1);
     return rc;
   }
@@ -315,6 +364,7 @@ int rga_convert(struct rga_converter* c, int src_fd, uint32_t src_stride,
     atomic_fetch_add(&c->fails, 1);
     int streak = atomic_fetch_add(&c->fd_fail_streak, 1) + 1;
     atomic_store(&b->in_use, false);
+    atomic_fetch_sub(&c->pool_in_use, 1);
     if (streak >= RGA_FD_FAIL_LIMIT &&
         !atomic_exchange(&c->fd_degraded, true)) {
       fprintf(stderr,

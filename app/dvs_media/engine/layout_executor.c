@@ -21,6 +21,10 @@
 static file_playout_pip_stream g_pending[MP4_PIP_MAX_LANES];
 static uint64_t g_pending_apply_at_ns = 0;
 static int g_pending_count = 0;
+/* Set only when a prepare actually staged a layout. A prepare that validated
+ * nothing engine-side (e.g. the platform windows/geometry shape) leaves this
+ * clear so commit keeps the running picture instead of clearing media. */
+static int g_pending_valid = 0;
 static char g_pending_audio_owner[64];
 static int g_pending_audio_volume = 0;
 static pthread_mutex_t g_pending_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -84,6 +88,7 @@ int dvs_layout_prepare(const file_playout_pip_stream* streams, int count) {
     memcpy(g_pending, streams, (size_t)count * sizeof(*streams));
     g_pending_count = count;
     g_pending_apply_at_ns = 0;
+    g_pending_valid = 1;
     pthread_mutex_unlock(&g_pending_mu);
     return 0;
 }
@@ -114,6 +119,7 @@ int dvs_layout_prepare_from_json(struct json_object* req) {
     memcpy(g_pending, buf, (size_t)n * sizeof(*buf));
     g_pending_count = n;
     g_pending_apply_at_ns = json_u64(req, "applyAt", "apply_at");
+    g_pending_valid = 1;
     strncpy(g_pending_audio_owner, owner, sizeof(g_pending_audio_owner) - 1);
     g_pending_audio_owner[sizeof(g_pending_audio_owner) - 1] = '\0';
     g_pending_audio_volume = volume;
@@ -129,11 +135,19 @@ int dvs_layout_commit(dvs_engine* e) {
     uint64_t apply_at;
     pthread_mutex_lock(&g_pending_mu);
     n = g_pending_count;
+    int valid = g_pending_valid;
+    g_pending_valid = 0;
     memcpy(buf, g_pending, (size_t)n * sizeof(*buf));
     memcpy(owner, g_pending_audio_owner, sizeof(owner));
     volume = g_pending_audio_volume;
     apply_at = g_pending_apply_at_ns;
     pthread_mutex_unlock(&g_pending_mu);
+
+    if (!valid) {
+        /* no layout was staged (e.g. a windows/geometry prepare passed
+         * through without engine validation): keep the running picture */
+        return 0;
+    }
 
     /* push audio routing to the engine before (re)building the compositor */
     dvs_engine_set_audio(e, owner, volume);
@@ -152,6 +166,7 @@ void dvs_layout_clear(dvs_engine* e) {
     pthread_mutex_lock(&g_pending_mu);
     g_pending_count = 0;
     g_pending_apply_at_ns = 0;
+    g_pending_valid = 0;
     g_pending_audio_owner[0] = '\0';
     g_pending_audio_volume = 0;
     pthread_mutex_unlock(&g_pending_mu);
@@ -161,6 +176,7 @@ void dvs_layout_abort(void) {
     pthread_mutex_lock(&g_pending_mu);
     g_pending_count = 0;
     g_pending_apply_at_ns = 0;
+    g_pending_valid = 0;
     g_pending_audio_owner[0] = '\0';
     g_pending_audio_volume = 0;
     pthread_mutex_unlock(&g_pending_mu);

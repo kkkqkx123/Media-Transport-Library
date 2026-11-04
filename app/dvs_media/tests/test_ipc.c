@@ -45,7 +45,7 @@ static int connect_sock(void) {
 
 /* reads one JSON line with timeout; returns parsed object or NULL */
 static struct json_object* read_line(int fd, int timeout_ms) {
-  static char buf[8192];
+  static char buf[262144]; /* must hold the biggest query_state envelope */
   static size_t used = 0;
   for (;;) {
     char* nl = memchr(buf, '\n', used);
@@ -125,9 +125,39 @@ static void* server_thread(void* arg) {
   return NULL;
 }
 
+/* lane_stats hook that returns a large array so the query_state envelope
+ * exceeds the historical fixed 8192-byte buffer (P15 regression guard). */
+static struct json_object* big_lane_stats(void) {
+  json_object* arr = json_object_new_array();
+  for (int i = 0; i < 300; i++) {
+    json_object* lane = json_object_new_object();
+    char sig[32];
+    snprintf(sig, sizeof(sig), "sig-lane-%03d-long-identifier", i);
+    json_object_object_add(lane, "sig", json_object_new_string(sig));
+    json_object_object_add(lane, "state", json_object_new_string("ready"));
+    json_object_object_add(lane, "packetLoss", json_object_new_int(i % 7));
+    json_object_object_add(lane, "latencyUs", json_object_new_int(1000 + i));
+    json_object_object_add(lane, "decoder", json_object_new_string("mpp-h264"));
+    json_object_object_add(lane, "renderX", json_object_new_int(i * 16));
+    json_object_object_add(lane, "renderY", json_object_new_int(i * 9));
+    json_object_object_add(lane, "renderW", json_object_new_int(640));
+    json_object_object_add(lane, "renderH", json_object_new_int(360));
+    json_object_array_add(arr, lane);
+  }
+  return arr;
+}
+
 int main(void) {
   unlink(SOCK);
   dvs_ipc_set_prepare_delay_ms(100);
+  /* only query hooks: prepare/commit stay NULL so the server keeps its
+   * pure state-machine mode for the flow tests below */
+  {
+    dvs_ipc_engine_hooks_t hooks;
+    memset(&hooks, 0, sizeof(hooks));
+    hooks.lane_stats = big_lane_stats;
+    dvs_ipc_install_hooks(&hooks);
+  }
 
   pthread_t tid;
   pthread_create(&tid, NULL, server_thread, NULL);
@@ -269,6 +299,43 @@ int main(void) {
   struct json_object* data = NULL;
   if (r) json_object_object_get_ex(r, "data", &data);
   CHECK(data && jint(data, "revision") == 2, "revision persisted after commit");
+  json_object_put(r);
+
+  /* 9. platform windows shape: prepare passes through and commit keeps the
+   * running picture (no engine layout was staged, so no clear) */
+  r = request_payload("prepare", "m-w1",
+                      "{\"operationId\":\"opWin\",\"revision\":3,"
+                      "\"applyAtNs\":0,"
+                      "\"windows\":[{\"id\":\"w1\",\"sig\":\"s1\",\"x\":0,\"y\":0,"
+                      "\"w\":1920,\"h\":1080,\"z\":1,\"muted\":false}],"
+                      "\"geometry\":{\"x\":0,\"y\":0,\"w\":1920,\"h\":1080}}");
+  CHECK(r && jint(r, "status") == 202, "windows shape prepare accepted");
+  json_object_put(r);
+  ev = read_line(conn_fd, 3000);
+  CHECK(ev && jstr(ev, "type") && strcmp(jstr(ev, "type"), "media.prepare.result") == 0,
+        "windows shape prepare event pushed");
+  json_object_put(ev);
+  r = request_payload("commit", "m-w2", "{\"operationId\":\"opWin\",\"revision\":3}");
+  CHECK(r && jint(r, "status") == 200, "windows shape commit ok");
+  json_object_put(r);
+  ev = read_line(conn_fd, 2000);
+  CHECK(ev && jstr(ev, "type") && strcmp(jstr(ev, "type"), "media.layout_applied") == 0,
+        "windows shape commit broadcasts");
+  json_object_put(ev);
+  ev = read_line(conn_fd, 2000);
+  if (ev) json_object_put(ev); /* state_changed */
+
+  /* 10. oversized query_state: 300 lanes must not truncate the envelope */
+  r = request("query_state", "m-big", NULL);
+  {
+    struct json_object* lanes = NULL;
+    if (r) json_object_object_get_ex(r, "data", &data);
+    if (data) json_object_object_get_ex(data, "lanes", &lanes);
+    CHECK(r && jint(r, "status") == 200, "big query_state ok");
+    CHECK(lanes && json_object_is_type(lanes, json_type_array) &&
+              json_object_array_length(lanes) == 300,
+          "big query_state lanes intact (no truncation)");
+  }
   json_object_put(r);
 
   close(conn_fd);

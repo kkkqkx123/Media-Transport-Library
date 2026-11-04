@@ -65,14 +65,35 @@ static int write_line_locked(dvs_client_t* c, const char* line) {
   return (n > 0 && r > 0) ? 0 : -1;
 }
 
+/* Build the response envelope dynamically (json-c handles escaping and
+ * there is no fixed-size truncation, P15). Returns a malloc'd line without
+ * the trailing newline; NULL on OOM. */
+static char* build_envelope(const char* request_id, int status, const char* code,
+                            const char* msg, const char* data_json) {
+  json_object* o = json_object_new_object();
+  if (!o) return NULL;
+  json_object_object_add(o, "ok", json_object_new_boolean(status < 400));
+  json_object_object_add(o, "status", json_object_new_int(status));
+  json_object_object_add(o, "code", json_object_new_string(code ? code : "INTERNAL"));
+  json_object_object_add(o, "msg", json_object_new_string(msg ? msg : ""));
+  json_object* data = json_tokener_parse(data_json ? data_json : "{}");
+  if (!data) data = json_object_new_object();
+  json_object_object_add(o, "data", data);
+  json_object_object_add(
+      o, "requestId", json_object_new_string(request_id ? request_id : "ipc"));
+  const char* s = json_object_to_json_string(o);
+  char* out = s ? strdup(s) : NULL;
+  json_object_put(o);
+  return out;
+}
+
 static int send_envelope(dvs_client_t* c, const char* request_id, int status,
                          const char* code, const char* msg, const char* data_json) {
-  char buf[8192];
-  snprintf(buf, sizeof(buf),
-           "{\"ok\":%s,\"status\":%d,\"code\":\"%s\",\"msg\":\"%s\",\"data\":%s,\"requestId\":\"%s\"}",
-           (status < 400) ? "true" : "false", status, code, msg,
-           data_json ? data_json : "{}", request_id ? request_id : "ipc");
-  return write_line_locked(c, buf);
+  char* line = build_envelope(request_id, status, code, msg, data_json);
+  if (!line) return -1;
+  int rc = write_line_locked(c, line);
+  free(line);
+  return rc;
 }
 
 /* Per-connection messageId replay cache. Only the owning reader thread
@@ -113,13 +134,12 @@ static void idem_clear(dvs_client_t* c) {
 static int respond_cached(dvs_client_t* c, const char* rid, int cacheable,
                           int status, const char* code, const char* msg,
                           const char* data_json) {
-  char buf[8192];
-  snprintf(buf, sizeof(buf),
-           "{\"ok\":%s,\"status\":%d,\"code\":\"%s\",\"msg\":\"%s\",\"data\":%s,\"requestId\":\"%s\"}",
-           (status < 400) ? "true" : "false", status, code, msg,
-           data_json ? data_json : "{}", rid ? rid : "ipc");
-  if (cacheable && rid && rid[0]) idem_store(c, rid, buf);
-  return write_line_locked(c, buf);
+  char* line = build_envelope(rid, status, code, msg, data_json);
+  if (!line) return -1;
+  if (cacheable && rid && rid[0]) idem_store(c, rid, line);
+  int rc = write_line_locked(c, line);
+  free(line);
+  return rc;
 }
 
 static void broadcast_event(const char* type, const char* data_json) {

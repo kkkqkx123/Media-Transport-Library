@@ -5,6 +5,7 @@
 #include "media_ipc.h"
 #include "network_apply.h"
 #include "tx_config.h"
+#include "dvs_contract.h"
 #include "dvs_node_bundle.h"
 #include "http_server.h"
 #include "maintenance.h"
@@ -415,25 +416,11 @@ static json_object* node_capacity_json() {
 }
 
 static json_object* envelope_ok(json_object* data, const char* msg) {
-    json_object* o = json_object_new_object();
-    json_object_object_add(o, "ok", json_object_new_boolean(1));
-    json_object_object_add(o, "status", json_object_new_int(200));
-    json_object_object_add(o, "code", json_object_new_string("OK"));
-    json_object_object_add(o, "msg", json_object_new_string(msg ? msg : ""));
-    json_object_object_add(o, "data", data ? data : json_object_new_object());
-    json_object_object_add(o, "requestId", json_object_new_string("r-1"));
-    return o;
+    return dvs::contract::make_ok(data, msg ? msg : "", "a");
 }
 
 static json_object* envelope_fail(const char* code, int status, const char* msg) {
-    json_object* o = json_object_new_object();
-    json_object_object_add(o, "ok", json_object_new_boolean(0));
-    json_object_object_add(o, "status", json_object_new_int(status));
-    json_object_object_add(o, "code", json_object_new_string(code));
-    json_object_object_add(o, "msg", json_object_new_string(msg ? msg : code));
-    json_object_object_add(o, "data", json_object_new_object());
-    json_object_object_add(o, "requestId", json_object_new_string("r-1"));
-    return o;
+    return dvs::contract::make_fail(code, status, msg ? msg : code, "a");
 }
 
 static void send_json(HttpResponse& res, json_object* o) {
@@ -511,6 +498,13 @@ static void agent_report_commit(const std::string& opid, int rev,
             status = "blocked";
         }
     }
+    json_object* lanes = nullptr;
+    if (lanes_json != "[]") lanes = json_tokener_parse(lanes_json.c_str());
+    // 优先 WS 上行屏障回执，无 WS 时回退短连接，保证弱网不断回执。
+    bool via_ws = false;
+    if (g_reg) via_ws = g_reg->uplink_barrier_ack(opid, nodeId, status, lanes);
+    if (lanes) json_object_put(lanes);
+    if (via_ws) return;
     HttpClient cli;
     json_object* c = json_object_new_object();
     json_object_object_add(c, "operationId", json_object_new_string(opid.c_str()));
@@ -601,6 +595,109 @@ int main(int argc, char** argv) {
         agent_base = "http://" + ip + ":" + std::to_string(port);
     }
     g_reg = new Registration(g_store, g_media, platform_url, 3000, agent_base);
+    // WS 下行分发：布局/配置/升级经长连接到达，与短连接同语义。
+    g_reg->set_downlink_handler([&](const std::string& type, json_object* data,
+                                    const std::string& msg_id) {
+        (void)msg_id;
+        namespace ct = dvs::contract;
+        if (type == ct::kLayoutPrepare) {
+            if (!ct::validate_layout_prepare(data).empty()) return;
+            std::string opid = get_str(data, "operationId");
+            int rev = 1;
+            json_object* rv = nullptr;
+            if (json_object_object_get_ex(data, "revision", &rv)) rev = json_object_get_int(rv);
+            int64_t applyAtNs = 0;
+            json_object* av = nullptr;
+            if (json_object_object_get_ex(data, "applyAtNs", &av))
+                applyAtNs = (int64_t)json_object_get_int64(av);
+            if (opid.empty()) return;
+            json_object* prep = json_object_new_object();
+            json_object_object_add(prep, "operationId", json_object_new_string(opid.c_str()));
+            json_object_object_add(prep, "revision", json_object_new_int(rev));
+            json_object_object_add(prep, "applyAtNs", json_object_new_int64(applyAtNs));
+            json_object* wins = nullptr;
+            if (json_object_object_get_ex(data, "windows", &wins))
+                json_object_object_add(prep, "windows", json_object_get(wins));
+            json_object* geo = nullptr;
+            if (json_object_object_get_ex(data, "geometry", &geo))
+                json_object_object_add(prep, "geometry", json_object_get(geo));
+            std::string r = g_media->request("prepare", prep);
+            json_object_put(prep);
+            (void)r;
+            std::string nodeId = get_str(g_store->node(), "id");
+            if (nodeId.empty()) nodeId = "local-node";
+            std::string purl = platform_url;
+            std::thread([opid, rev, applyAtNs, nodeId, purl]() {
+                agent_report_commit(opid, rev, applyAtNs, nodeId, purl);
+            }).detach();
+        } else if (type == ct::kConfigUpdate) {
+            if (!ct::validate_config_update(data).empty()) return;
+            json_object* cfg = nullptr;
+            json_object_object_get_ex(data, "config", &cfg);
+            json_object* patch2 = json_object_new_object();
+            json_object* role_val = nullptr;
+            if (cfg && json_object_is_type(cfg, json_type_object)) {
+                json_object_object_foreach(cfg, key, val) {
+                    std::string k(key);
+                    if (k == "geometry") json_object_object_add(patch2, "geometry", json_object_get(val));
+                    else if (k == "role") role_val = val;
+                }
+            }
+            json_object_object_add(patch2, "configSource", json_object_new_string("platform-ws"));
+            g_store->update_node(patch2);
+            json_object_put(patch2);
+            if (role_val) {
+                if (json_object_is_type(role_val, json_type_string)) {
+                    std::string r = json_object_get_string(role_val);
+                    json_object* rv2 = json_object_new_object();
+                    json_object_object_add(rv2, "role", json_object_new_string(r.c_str()));
+                    g_store->set_desired("role", rv2, nullptr);
+                    json_object_put(rv2);
+                } else {
+                    g_store->set_desired("role", json_object_get(role_val), nullptr);
+                }
+            }
+            std::string nodeId = get_str(g_store->node(), "id");
+            if (nodeId.empty()) nodeId = "local-node";
+            int applied = 0;
+            json_object* nd = g_store->node();
+            json_object* crr = nullptr;
+            if (nd && json_object_object_get_ex(nd, "configRevision", &crr) && crr) {
+                for (int i = 0; i < 6; i++) {
+                    json_object* s = nullptr;
+                    if (json_object_object_get_ex(crr, NodeStore::SCOPES[i], &s) && s) {
+                        json_object* a = nullptr;
+                        if (json_object_object_get_ex(s, "applied", &a) && a)
+                            applied = std::max(applied, json_object_get_int(a));
+                    }
+                }
+            }
+            g_reg->uplink_config_ack(nodeId, applied);
+        } else if (type == ct::kUpgradeTask) {
+            if (!ct::validate_upgrade_task(data).empty()) return;
+            std::string tid = get_str(data, "taskId");
+            std::string fn = get_str(data, "filename");
+            std::string sha = get_str(data, "sha256");
+            std::string nodeId = get_str(g_store->node(), "id");
+            if (nodeId.empty()) nodeId = "local-node";
+            std::thread([tid, fn, sha, nodeId]() {
+                g_reg->uplink_upgrade_progress(tid, nodeId, "running");
+                json_object* r = g_maint->upgrade(fn, sha);
+                bool okk = false;
+                std::string stt = "failed";
+                if (r) {
+                    json_object* okv = nullptr;
+                    if (json_object_object_get_ex(r, "ok", &okv) && okv)
+                        okk = json_object_get_boolean(okv) != 0;
+                    json_object* sv = nullptr;
+                    if (json_object_object_get_ex(r, "status", &sv) && sv) stt = json_object_get_string(sv);
+                    json_object_put(r);
+                }
+                (void)okk;
+                g_reg->uplink_upgrade_progress(tid, nodeId, stt);
+            }).detach();
+        }
+    });
 
     // Merge the live engine capability at startup so MTL and PTP stay fresh.
     refresh_capability_from_media();
@@ -679,12 +776,8 @@ int main(int argc, char** argv) {
         static bool g_require_auth = (std::getenv("DVS_REQUIRE_AUTH") != nullptr);
         // Browser sessions use the cookie. Internal platform calls use a
         // bearer token so barrier delivery cannot be forged on a shared LAN.
-        bool token_ok = false;
-        if (!g_api_token.empty()) {
-            auto it = req.headers.find("Authorization");
-            if (it != req.headers.end() && it->second == ("Bearer " + g_api_token))
-                token_ok = true;
-        }
+        bool token_ok = dvs::contract::bearer_ok(
+            dvs::contract::extract_bearer(req.headers), g_api_token);
         if (g_require_auth && req.path.rfind("/api/", 0) == 0 &&
             req.path != "/api/v1/node/login" && !authed && !token_ok) {
             send_json(res, envelope_fail("UNAUTHORIZED", 401, "未登录或缺少令牌"));

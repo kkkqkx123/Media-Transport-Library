@@ -1,6 +1,9 @@
 #include "http_client.h"
+#include "http_server.h"
+#include "sha256.h"
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -138,4 +141,138 @@ int HttpClient::post_json(const std::string& url, const std::string& body,
 
 int HttpClient::get(const std::string& url, std::string& resp, int timeout_ms) {
     return request("GET", url, "", resp, timeout_ms, "");
+}
+
+// ---- WsClient ----
+
+WsClient::WsClient() = default;
+WsClient::~WsClient() { close(); }
+
+void WsClient::close() {
+    if (fd_ >= 0) {
+        int f = fd_;
+        fd_ = -1;
+        ::shutdown(f, SHUT_RDWR);
+        ::close(f);
+    }
+}
+
+bool WsClient::connect_ws(const std::string& url, const std::string& bearer,
+                          int timeout_ms) {
+    close();
+    std::string host;
+    int port = 80;
+    std::string path;
+    if (!parse_url(url, host, port, path)) return false;
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return false;
+    struct sockaddr_in addr {};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)port);
+    addr.sin_addr.s_addr = inet_addr(host.c_str());
+    if (addr.sin_addr.s_addr == (uint32_t)-1) { ::close(fd); return false; }
+    // 非阻塞 connect + poll，弱网下不 hung 住拨号线程。
+    (void)0;
+    int fl = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+    int rc = connect(fd, (struct sockaddr*)&addr, sizeof(addr));
+    if (rc != 0) {
+        struct pollfd pf{.fd = fd, .events = POLLOUT};
+        if (poll(&pf, 1, timeout_ms) <= 0 || !(pf.revents & POLLOUT)) {
+            ::close(fd);
+            return false;
+        }
+        int err = 0;
+        socklen_t n = sizeof(err);
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &n) != 0 || err != 0) {
+            ::close(fd);
+            return false;
+        }
+    }
+    fcntl(fd, F_SETFL, fl);
+
+    uint8_t rnd[16];
+    int rfd = open("/dev/urandom", O_RDONLY);
+    if (rfd >= 0) {
+        size_t got = 0;
+        while (got < sizeof(rnd)) {
+            ssize_t n = read(rfd, rnd + got, sizeof(rnd) - got);
+            if (n <= 0) break;
+            got += (size_t)n;
+        }
+        ::close(rfd);
+        if (got != sizeof(rnd)) return false;
+    } else {
+        for (int i = 0; i < 16; i++) rnd[i] = (uint8_t)(rand() & 0xFF);
+    }
+    std::string key = dvs::base64_encode(rnd, 16);
+    std::string hs = "GET " + path + " HTTP/1.1\r\nHost: " + host + "\r\n"
+                     "Upgrade: websocket\r\nConnection: Upgrade\r\n" +
+                     "Sec-WebSocket-Key: " + key + "\r\n" +
+                     "Sec-WebSocket-Version: 13\r\n" +
+                     (bearer.empty() ? std::string()
+                                     : "Authorization: Bearer " + bearer + "\r\n") +
+                     "\r\n";
+    size_t off = 0;
+    while (off < hs.size()) {
+        ssize_t w = write(fd, hs.data() + off, hs.size() - off);
+        if (w <= 0) { ::close(fd); return false; }
+        off += (size_t)w;
+    }
+    std::string raw;
+    char buf[4096];
+    for (;;) {
+        struct pollfd rp{.fd = fd, .events = POLLIN};
+        if (poll(&rp, 1, timeout_ms) <= 0) { ::close(fd); return false; }
+        ssize_t n = read(fd, buf, sizeof(buf));
+        if (n <= 0) { ::close(fd); return false; }
+        raw.append(buf, (size_t)n);
+        if (raw.find("\r\n\r\n") != std::string::npos) break;
+        if (raw.size() > 16384) { ::close(fd); return false; }
+    }
+    if (raw.find(" 101") == std::string::npos) { ::close(fd); return false; }
+    // 校验 Accept，避免连到非 WS 服务。
+    std::string want = HttpServer::ws_accept_key(key);
+    if (raw.find(want) == std::string::npos) { ::close(fd); return false; }
+    fd_ = fd;
+    return true;
+}
+
+bool WsClient::send_text(const std::string& s) {
+    if (fd_ < 0) return false;
+    return HttpServer::ws_send_text(fd_, s, true);
+}
+
+bool WsClient::send_ping(const std::string& p) {
+    if (fd_ < 0) return false;
+    return HttpServer::ws_send_ping(fd_, p, true);
+}
+
+bool WsClient::recv_text(std::string& out, int timeout_ms) {
+    out.clear();
+    if (fd_ < 0) return false;
+    std::string frag;
+    int fd = fd_;
+    for (;;) {
+        uint8_t op = 0;
+        std::string pl;
+        if (!HttpServer::ws_recv_frame(fd, op, pl, timeout_ms)) return false;
+        if (fd_ != fd || fd_ < 0) return false;
+        if (op == 0x8) {
+            HttpServer::ws_send_close(fd, true);
+            return false;
+        }
+        if (op == 0x9) {
+            HttpServer::ws_send_pong(fd, pl, true);
+            continue;
+        }
+        if (op == 0xA) continue;
+        if (op == 0x1 || op == 0x0) {
+            frag += pl;
+            out = frag;
+            return true;
+        }
+        return false;
+    }
 }

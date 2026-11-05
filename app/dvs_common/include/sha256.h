@@ -24,4 +24,12 @@ std::string to_hex(const uint8_t* data, size_t len);
 /* Returns false if the hex string is malformed or longer than max_out. */
 bool from_hex(const char* hex, uint8_t* out, size_t max_out, size_t* out_len);
 
+/* SHA-1 for the WebSocket handshake accept derivation (RFC6455).
+ * Self-contained, same zero-dependency rule as SHA-256. */
+void sha1(const uint8_t* data, size_t len, uint8_t out[20]);
+
+/* Base64 for Sec-WebSocket-Key / Accept. No line breaks, standard alphabet. */
+std::string base64_encode(const uint8_t* data, size_t len);
+bool base64_decode(const std::string& s, std::string& out);
+
 }  // namespace dvs

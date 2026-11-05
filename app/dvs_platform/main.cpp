@@ -4,20 +4,24 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <mutex>
+#include <queue>
 #include <thread>
 #include <string>
 #include <unistd.h>
 #include <unordered_map>
 #include <fstream>
 #include <sstream>
+#include <sys/socket.h>
 #include <sys/stat.h>
 static std::string g_web_root;
 
+#include "dvs_contract.h"
 #include "http_client.h"
 #include "http_server.h"
 #include "layout.h"
@@ -26,21 +30,84 @@ static std::string g_web_root;
 
 static PlatformStore* g_store = nullptr;
 static OpCoordinator g_ops;
-static std::atomic<uint64_t> g_req_seq{0};
+static std::mutex g_ops_mu;
 static std::mutex g_idem_mu;
 static std::map<std::string, std::string> g_idem_cache;
+
+struct ChannelRegistry {
+    std::mutex mu;
+    std::map<std::string, int> node_fd;
+    std::map<int, std::string> fd_node;
+    std::map<std::string, std::string> transport;
+    std::map<std::string, std::string> idem;
+    std::map<std::string, std::string> upgrade_progress;
+    std::mutex send_mu;
+    void register_conn(const std::string& node, int fd) {
+        std::lock_guard<std::mutex> lk(mu);
+        auto it = node_fd.find(node);
+        if (it != node_fd.end() && it->second != fd) {
+            int old = it->second;
+            fd_node.erase(old);
+            ::shutdown(old, SHUT_RDWR);
+        }
+        node_fd[node] = fd;
+        fd_node[fd] = node;
+        transport[node] = "ws";
+    }
+    void unregister_fd(int fd) {
+        std::lock_guard<std::mutex> lk(mu);
+        auto it = fd_node.find(fd);
+        if (it == fd_node.end()) return;
+        std::string node = it->second;
+        fd_node.erase(it);
+        auto nit = node_fd.find(node);
+        if (nit != node_fd.end() && nit->second == fd) node_fd.erase(nit);
+    }
+    std::string node_of(int fd) {
+        std::lock_guard<std::mutex> lk(mu);
+        auto it = fd_node.find(fd);
+        return it == fd_node.end() ? "" : it->second;
+    }
+    int fd_of(const std::string& node) {
+        std::lock_guard<std::mutex> lk(mu);
+        auto it = node_fd.find(node);
+        return it == node_fd.end() ? -1 : it->second;
+    }
+    void set_transport(const std::string& node, const std::string& t) {
+        std::lock_guard<std::mutex> lk(mu);
+        transport[node] = t;
+    }
+    bool idem_hit(const std::string& k, std::string& out) {
+        std::lock_guard<std::mutex> lk(mu);
+        auto it = idem.find(k);
+        if (it == idem.end()) return false;
+        out = it->second;
+        return true;
+    }
+    void idem_store(const std::string& k, const std::string& v) {
+        std::lock_guard<std::mutex> lk(mu);
+        if (idem.size() > 4096) idem.clear();
+        idem[k] = v;
+    }
+};
+static ChannelRegistry g_chan;
+
+struct UpgradeJob {
+    std::string task_id;
+    std::vector<std::string> nodes;
+    std::string filename;
+    std::string sha256;
+};
+static std::mutex g_up_mu;
+static std::condition_variable g_up_cv;
+static std::queue<UpgradeJob> g_up_q;
 // Shared control-plane bearer token. Empty means no check so a local
 // prototype keeps working; when set, agent-to-platform calls must carry it.
 static std::string g_api_token =
     (std::getenv("DVS_API_TOKEN") ? std::getenv("DVS_API_TOKEN") : "");
 
 namespace {
-std::string next_request_id() {
-    uint64_t n = ++g_req_seq;
-    char b[32];
-    snprintf(b, sizeof(b), "p-%llu", (unsigned long long)n);
-    return b;
-}
+namespace ct = dvs::contract;
 std::string idempotency_key(const HttpRequest& req) {
     for (auto& h : req.headers) {
         std::string k = h.first;
@@ -62,24 +129,10 @@ uint64_t now_ns() {
     return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
 json_object* ok_envelope(json_object* data, const std::string& msg) {
-    json_object* o = json_object_new_object();
-    json_object_object_add(o, "ok", json_object_new_boolean(1));
-    json_object_object_add(o, "status", json_object_new_int(200));
-    json_object_object_add(o, "code", json_object_new_string("OK"));
-    json_object_object_add(o, "msg", json_object_new_string(msg.c_str()));
-    json_object_object_add(o, "data", data ? data : json_object_new_object());
-    json_object_object_add(o, "requestId", json_object_new_string(next_request_id().c_str()));
-    return o;
+    return ct::make_ok(data, msg, "p");
 }
 json_object* fail_envelope(const char* code, int status, const std::string& msg) {
-    json_object* o = json_object_new_object();
-    json_object_object_add(o, "ok", json_object_new_boolean(0));
-    json_object_object_add(o, "status", json_object_new_int(status));
-    json_object_object_add(o, "code", json_object_new_string(code));
-    json_object_object_add(o, "msg", json_object_new_string(msg.c_str()));
-    json_object_object_add(o, "data", json_object_new_object());
-    json_object_object_add(o, "requestId", json_object_new_string(next_request_id().c_str()));
-    return o;
+    return ct::make_fail(code, status, msg, "p");
 }
 void send_json(HttpResponse& res, json_object* o) {
     const char* s = json_object_to_json_string(o);
@@ -94,9 +147,7 @@ std::string body_str(json_object* o, const char* key) {
     return "";
 }
 bool bearer_ok(const HttpRequest& req) {
-    if (g_api_token.empty()) return true;
-    auto it = req.headers.find("Authorization");
-    return it != req.headers.end() && it->second == ("Bearer " + g_api_token);
+    return ct::bearer_ok(ct::extract_bearer(req.headers), g_api_token);
 }
 bool require_bearer(const HttpRequest& req, HttpResponse& res) {
     if (bearer_ok(req)) return true;
@@ -213,6 +264,296 @@ bool route_docs(const std::string& kind, const HttpRequest& req, HttpResponse& r
     }
     return false;
 }
+
+void apply_hello_doc(json_object* data) {
+    std::string id = body_str(data, "id");
+    if (id.empty()) id = body_str(data, "sn");
+    if (id.empty()) return;
+    json_object* merged = json_object_get(data);
+    json_object_object_add(merged, "online", json_object_new_boolean(1));
+    json_object_object_add(merged, "lastHeartbeat",
+                           json_object_new_string(now_iso().c_str()));
+    json_object_object_add(merged, "transport", json_object_new_string("ws"));
+    g_store->put_doc("node", id, merged);
+    json_object_put(merged);
+    g_chan.set_transport(id, "ws");
+}
+
+void apply_heartbeat_doc(const std::string& id, json_object* data) {
+    json_object* cur = g_store->get_doc("node", id);
+    if (!cur) return;
+    json_object_object_add(cur, "online", json_object_new_boolean(1));
+    json_object_object_add(cur, "lastHeartbeat",
+                           json_object_new_string(now_iso().c_str()));
+    json_object_object_add(cur, "transport", json_object_new_string("ws"));
+    json_object* ld = nullptr;
+    if (data && json_object_object_get_ex(data, "lanesDigest", &ld) && ld) {
+        json_object* curm = nullptr;
+        if (!json_object_object_get_ex(cur, "metrics", &curm) || !curm) {
+            curm = json_object_new_object();
+            json_object_object_add(cur, "metrics", curm);
+        }
+        json_object_object_del(curm, "lanesDigest");
+        json_object_object_add(curm, "lanesDigest", json_object_get(ld));
+    }
+    json_object* txd = nullptr;
+    if (data && json_object_object_get_ex(data, "txDigest", &txd) && txd) {
+        json_object* curm = nullptr;
+        if (!json_object_object_get_ex(cur, "metrics", &curm) || !curm) {
+            curm = json_object_new_object();
+            json_object_object_add(cur, "metrics", curm);
+        }
+        json_object_object_del(curm, "txDigest");
+        json_object_object_add(curm, "txDigest", json_object_get(txd));
+    }
+    json_object* sipd = nullptr;
+    if (data && json_object_object_get_ex(data, "sip", &sipd) && sipd) {
+        json_object_object_del(cur, "sipDigest");
+        json_object_object_add(cur, "sipDigest", json_object_get(sipd));
+    }
+    g_store->put_doc("node", id, cur);
+    json_object_put(cur);
+    g_chan.set_transport(id, "ws");
+}
+
+std::string handle_barrier_ack(const std::string& opid, const std::string& node,
+                              std::string st, json_object* lanes,
+                              std::set<std::string>& missing_out) {
+    if (st.empty()) st = "ready";
+    if (st != "ready") st = "blocked";
+    if (lanes && json_object_is_type(lanes, json_type_array)) {
+        for (size_t i = 0; i < json_object_array_length(lanes); i++) {
+            json_object* e = json_object_array_get_idx(lanes, i);
+            json_object* rv = nullptr;
+            bool ready = true;
+            if (e && json_object_object_get_ex(e, "ready", &rv) && rv)
+                ready = json_object_get_boolean(rv) != 0;
+            if (!ready) { st = "blocked"; break; }
+        }
+    }
+    std::string state;
+    {
+        std::lock_guard<std::mutex> lk(g_ops_mu);
+        state = g_ops.on_reply(opid, node, st != "blocked", st);
+        missing_out = g_ops.missing(opid);
+    }
+    g_store->audit("{\"commit\":\"" + node + "\",\"state\":\"" + st + "\"}");
+    return state;
+}
+
+bool ws_push(const std::string& node, const std::string& type, json_object* data) {
+    int fd = g_chan.fd_of(node);
+    if (fd < 0) return false;
+    json_object* msg = ct::wrap(ct::next_msg_id("p"), type, data,
+                               ct::next_request_id("p"));
+    const char* s = json_object_to_json_string(msg);
+    std::string frame = s ? s : "{}";
+    json_object_put(msg);
+    std::lock_guard<std::mutex> lk(g_chan.send_mu);
+    return HttpServer::ws_send_text(fd, frame, false);
+}
+
+static std::string ws_idem_key(const std::string& msg_id, const std::string& tp, json_object* data) {
+    std::string node;
+    if (data) {
+        json_object* v = nullptr;
+        if (json_object_object_get_ex(data, "node", &v) && v &&
+            json_object_is_type(v, json_type_string)) node = json_object_get_string(v);
+        else if (json_object_object_get_ex(data, "id", &v) && v &&
+                 json_object_is_type(v, json_type_string)) node = json_object_get_string(v);
+        else if (json_object_object_get_ex(data, "nodeId", &v) && v &&
+                 json_object_is_type(v, json_type_string)) node = json_object_get_string(v);
+        else if (json_object_object_get_ex(data, "sn", &v) && v &&
+                 json_object_is_type(v, json_type_string)) node = json_object_get_string(v);
+    }
+    return msg_id + "#" + tp + "#" + node;
+}
+
+void ws_channel_loop(int fd, HttpRequest hs_req) {
+    std::string hs_bearer = ct::extract_bearer(hs_req.headers);
+    auto send_wrapped = [&](const std::string& idem_key, const std::string& type,
+                            json_object* data) -> std::string {
+        std::string hit;
+        if (!idem_key.empty() && g_chan.idem_hit(idem_key, hit)) {
+            std::lock_guard<std::mutex> lk(g_chan.send_mu);
+            HttpServer::ws_send_text(fd, hit, false);
+            return hit;
+        }
+        json_object* msg = ct::wrap(ct::next_msg_id("p"), type, data,
+                                   ct::next_request_id("p"));
+        const char* s = json_object_to_json_string(msg);
+        std::string frame = s ? s : "{}";
+        json_object_put(msg);
+        {
+            std::lock_guard<std::mutex> lk(g_chan.send_mu);
+            HttpServer::ws_send_text(fd, frame, false);
+        }
+        if (!idem_key.empty()) g_chan.idem_store(idem_key, frame);
+        return frame;
+    };
+    std::string first;
+    if (!HttpServer::ws_recv_text(fd, first, 5000, false)) { ::close(fd); return; }
+    json_object* jm = json_tokener_parse(first.c_str());
+    std::string msg_id, type, req_id;
+    json_object* data = nullptr;
+    if (!jm || !ct::unwrap(jm, msg_id, type, data, req_id) || type != ct::kHello) {
+        if (jm) json_object_put(jm);
+        if (data) json_object_put(data);
+        ::close(fd);
+        return;
+    }
+    json_object* tokv = nullptr;
+    std::string hello_tok;
+    if (json_object_object_get_ex(data, "token", &tokv) && tokv &&
+        json_object_is_type(tokv, json_type_string))
+        hello_tok = json_object_get_string(tokv);
+    std::string provided = !hello_tok.empty() ? hello_tok : hs_bearer;
+    std::string verr = ct::validate_hello(data);
+    bool auth = ct::bearer_ok(provided, g_api_token);
+    std::string node_id = body_str(data, "id");
+    if (node_id.empty()) node_id = body_str(data, "sn");
+    if (!verr.empty() || !auth || node_id.empty() ||
+        g_store->tombstone_check(node_id, now_sec())) {
+        json_object* d = json_object_new_object();
+        json_object_object_add(d, "reason", json_object_new_string(
+            !auth ? "missing or bad token" : (!verr.empty() ? verr.c_str() : "missing id")));
+        send_wrapped(ws_idem_key(msg_id, type, data), ct::kError, d);
+        if (data) json_object_put(data);
+        json_object_put(jm);
+        ::close(fd);
+        return;
+    }
+    g_chan.register_conn(node_id, fd);
+    apply_hello_doc(data);
+    g_store->audit("{\"ws-hello\":\"" + node_id + "\"}");
+    {
+        json_object* w = json_object_new_object();
+        json_object_object_add(w, "heartbeatIntervalMs",
+                               json_object_new_int(ct::heartbeat_interval_ms()));
+        json_object_object_add(w, "barrierTimeoutMs",
+                               json_object_new_int(ct::barrier_timeout_ms()));
+        json_object_object_add(w, "nodeId", json_object_new_string(node_id.c_str()));
+        send_wrapped(ws_idem_key(msg_id, type, data), ct::kWelcome, w);
+    }
+    if (data) json_object_put(data);
+    json_object_put(jm);
+    int hb_ms = ct::heartbeat_interval_ms();
+    int idle_miss = 0;
+    for (;;) {
+        std::string frame;
+        if (!HttpServer::ws_recv_text(fd, frame, hb_ms + 2000, false)) {
+            if (++idle_miss >= 3) break;
+            std::lock_guard<std::mutex> lk(g_chan.send_mu);
+            if (!HttpServer::ws_send_ping(fd, "", false)) break;
+            continue;
+        }
+        idle_miss = 0;
+        json_object* m = json_tokener_parse(frame.c_str());
+        std::string mid, tp, rid;
+        json_object* dd = nullptr;
+        if (!m || !ct::unwrap(m, mid, tp, dd, rid)) {
+            if (m) json_object_put(m);
+            if (dd) json_object_put(dd);
+            continue;
+        }
+        if (tp == ct::kHeartbeat) {
+            std::string e = ct::validate_heartbeat(dd);
+            std::string hid = body_str(dd, "id");
+            if (hid.empty()) hid = body_str(dd, "nodeId");
+            if (!e.empty() || hid.empty()) {
+                json_object* d = json_object_new_object();
+                json_object_object_add(d, "reason", json_object_new_string(
+                    e.empty() ? "bad heartbeat" : e.c_str()));
+                send_wrapped(ws_idem_key(mid, tp, dd), ct::kError, d);
+            } else {
+                apply_heartbeat_doc(hid, dd);
+                json_object* ack = json_object_new_object();
+                json_object_object_add(ack, "revision", json_object_new_int(1));
+                send_wrapped(ws_idem_key(mid, tp, dd), ct::kAck, ack);
+            }
+        } else if (tp == ct::kBarrierAck) {
+            std::string e = ct::validate_barrier_ack(dd);
+            if (!e.empty()) {
+                json_object* d = json_object_new_object();
+                json_object_object_add(d, "reason", json_object_new_string(e.c_str()));
+                send_wrapped(ws_idem_key(mid, tp, dd), ct::kError, d);
+            } else {
+                std::string opid = body_str(dd, "operationId");
+                std::string node = body_str(dd, "node");
+                std::string st = body_str(dd, "status");
+                json_object* lanes = nullptr;
+                json_object_object_get_ex(dd, "lanes", &lanes);
+                std::set<std::string> miss;
+                std::string state = handle_barrier_ack(opid, node, st,
+                    (lanes && json_object_is_type(lanes, json_type_array)) ? lanes : nullptr, miss);
+                const Operation* op = nullptr;
+                { std::lock_guard<std::mutex> lk(g_ops_mu); op = g_ops.find(opid); }
+                json_object* ack = json_object_new_object();
+                if (!op) {
+                    json_object_object_add(ack, "state", json_object_new_string("unknown"));
+                } else if (state == "blocked") {
+                    int to_rev = 0;
+                    std::string rb;
+                    { std::lock_guard<std::mutex> lk(g_ops_mu); rb = g_ops.rollback_op(opid, &to_rev); }
+                    json_object_object_add(ack, "rollback", json_object_new_string(rb.c_str()));
+                    json_object_object_add(ack, "toRevision", json_object_new_int(to_rev));
+                } else {
+                    json_object_object_add(ack, "state", json_object_new_string(state.c_str()));
+                    json_object* ma = json_object_new_array();
+                    for (auto& mm : miss) json_object_array_add(ma, json_object_new_string(mm.c_str()));
+                    json_object_object_add(ack, "missing", ma);
+                }
+                send_wrapped(ws_idem_key(mid, tp, dd), ct::kAck, ack);
+            }
+        } else if (tp == ct::kUpgradeProgress) {
+            std::string e = ct::validate_upgrade_progress(dd);
+            if (!e.empty()) {
+                json_object* d = json_object_new_object();
+                json_object_object_add(d, "reason", json_object_new_string(e.c_str()));
+                send_wrapped(ws_idem_key(mid, tp, dd), ct::kError, d);
+            } else {
+                std::string tid = body_str(dd, "taskId");
+                std::string node = body_str(dd, "node");
+                std::string st = body_str(dd, "status");
+                { std::lock_guard<std::mutex> lk(g_chan.mu); g_chan.upgrade_progress[tid + "/" + node] = st; }
+                g_store->audit("{\"upgrade-progress\":\"" + node + "\",\"task\":\"" + tid + "\",\"status\":\"" + st + "\"}");
+                json_object* ack = json_object_new_object();
+                json_object_object_add(ack, "received", json_object_new_boolean(1));
+                send_wrapped(ws_idem_key(mid, tp, dd), ct::kAck, ack);
+            }
+        } else if (tp == ct::kConfigAck) {
+            std::string e = ct::validate_config_ack(dd);
+            if (!e.empty()) {
+                json_object* d = json_object_new_object();
+                json_object_object_add(d, "reason", json_object_new_string(e.c_str()));
+                send_wrapped(ws_idem_key(mid, tp, dd), ct::kError, d);
+            } else {
+                g_store->audit("{\"config-ack\":\"" + body_str(dd, "node") + "\"}");
+                json_object* ack = json_object_new_object();
+                json_object_object_add(ack, "received", json_object_new_boolean(1));
+                send_wrapped(ws_idem_key(mid, tp, dd), ct::kAck, ack);
+            }
+        } else {
+            json_object* d = json_object_new_object();
+            json_object_object_add(d, "reason", json_object_new_string("unknown type"));
+            send_wrapped(ws_idem_key(mid, tp, dd), ct::kError, d);
+        }
+        if (dd) json_object_put(dd);
+        if (m) json_object_put(m);
+    }
+    std::string gone = g_chan.node_of(fd);
+    g_chan.unregister_fd(fd);
+    if (!gone.empty()) {
+        json_object* cur = g_store->get_doc("node", gone);
+        if (cur) {
+            json_object_object_add(cur, "online", json_object_new_boolean(0));
+            g_store->put_doc("node", gone, cur);
+            json_object_put(cur);
+        }
+        g_store->audit("{\"ws-offline\":\"" + gone + "\"}");
+    }
+    ::close(fd);
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -251,7 +592,9 @@ int main(int argc, char** argv) {
             json_object_object_add(b, "online", json_object_new_boolean(1));
             json_object_object_add(b, "lastHeartbeat",
                                    json_object_new_string(now_iso().c_str()));
+            json_object_object_add(b, "transport", json_object_new_string("short"));
             g_store->put_doc("node", id, b);
+            g_chan.set_transport(id, "short");
             g_store->audit("{\"register\":\"" + id + "\"}");
             if (!has_base || !has_geo)
                 g_store->audit("{\"incomplete-register\":\"" + id + "\"}");
@@ -304,7 +647,9 @@ int main(int argc, char** argv) {
                 json_object_object_del(cur, "sipDigest");
                 json_object_object_add(cur, "sipDigest", json_object_get(sipd));
             }
+            json_object_object_add(cur, "transport", json_object_new_string("short"));
             g_store->put_doc("node", id, cur);
+            g_chan.set_transport(id, "short");
             json_object_put(b);
             json_object* d = json_object_new_object();
             json_object_object_add(d, "revision", json_object_new_int(1));
@@ -421,21 +766,33 @@ int main(int argc, char** argv) {
                     }
                 }
                 json_object_object_add(d, "ignored", ignored);
-                if (base.empty() || !json_object_object_length(fwd)) {
+                if (!json_object_object_length(fwd)) {
                     json_object_put(fwd);
                     json_object_object_add(d, "status", json_object_new_string("skipped"));
                 } else {
-                    HttpClient cli;
                     json_object* sp = json_object_new_object();
-                    json_object_object_add(sp, "config", fwd);
-                    const char* spb = json_object_to_json_string(sp);
-                    std::string resp;
-                    int sc = cli.post_json(base + "/api/v1/node/config/sync",
-                                           std::string(spb ? spb : "{}"), resp, 5000, 2,
-                                           g_api_token);
-                    json_object_object_add(d, "status",
-                                          json_object_new_string(sc == 200 ? "pushed" : "failed"));
-                    json_object_put(sp);
+                    json_object_object_add(sp, "config", json_object_get(fwd));
+                    json_object_put(fwd);
+                    std::string verr = ct::validate_config_update(sp);
+                    bool via_ws = false;
+                    if (verr.empty()) via_ws = ws_push(id, ct::kConfigUpdate, json_object_get(sp));
+                    if (via_ws) {
+                        json_object_object_add(d, "status", json_object_new_string("pushed"));
+                        json_object_object_add(d, "via", json_object_new_string("ws"));
+                        json_object_put(sp);
+                    } else if (!base.empty()) {
+                        HttpClient cli;
+                        const char* spb = json_object_to_json_string(sp);
+                        std::string resp;
+                        int sc = cli.post_json(base + "/api/v1/node/config/sync",
+                                               std::string(spb ? spb : "{}"), resp, 5000, 2, g_api_token);
+                        json_object_object_add(d, "status", json_object_new_string(sc == 200 ? "pushed" : "failed"));
+                        json_object_object_add(d, "via", json_object_new_string("short"));
+                        json_object_put(sp);
+                    } else {
+                        json_object_object_add(d, "status", json_object_new_string("skipped"));
+                        json_object_put(sp);
+                    }
                 }
                 if (body2) json_object_put(body2);
                 json_object_put(cur);
@@ -478,7 +835,14 @@ int main(int argc, char** argv) {
                 send_json(res, fail_envelope("INVALID_ARGUMENT", 400, "need operationId+members"));
                 return;
             }
-            Operation& op = g_ops.begin(opid, rev, members, layout_apply_at_ns(now_ns(), fps));
+            uint64_t apply_ns = layout_apply_at_ns(now_ns(), fps);
+            uint64_t deadline = now_ns() + (uint64_t)ct::barrier_timeout_ms() * 1000000ULL;
+            std::string op_id_copy; uint64_t apply_copy = 0;
+            {
+                std::lock_guard<std::mutex> lk(g_ops_mu);
+                Operation& op = g_ops.begin_with_deadline(opid, rev, members, apply_ns, deadline);
+                op_id_copy = op.op_id; apply_copy = op.apply_at_ns;
+            }
 
             json_object* wall = nullptr;
             if (b) json_object_object_get_ex(b, "wall", &wall);
@@ -488,8 +852,8 @@ int main(int argc, char** argv) {
             const char* win_s = (windows && json_object_is_type(windows, json_type_array))
                 ? json_object_to_json_string(windows) : "[]";
             std::string windows_json = win_s ? win_s : "[]";
-            uint64_t apply_at = op.apply_at_ns;
-            std::string opid_c = opid;
+            uint64_t apply_at = apply_copy;
+            std::string opid_c = op_id_copy;
             std::string token_c = g_api_token;
             if (members.size() > 32)
                 g_store->audit("{\"fanout-scale\":\"" + opid_c + "\",\"members\":" +
@@ -501,10 +865,11 @@ int main(int argc, char** argv) {
                 json_object* geo = nullptr;
                 if (nd) json_object_object_get_ex(nd, "geometry", &geo);
                 bool geo_ok = geo && rect_int(geo, "w") > 0 && rect_int(geo, "h") > 0;
-                if (!nd || ab.empty() || !geo_ok) {
+                bool has_chan = (g_chan.fd_of(mid) >= 0) || !ab.empty();
+                if (!nd || !geo_ok || !has_chan) {
                     json_object_array_add(missing, json_object_new_string(mid.c_str()));
                     g_store->audit("{\"fanout-skip\":\"" + mid +
-                                   "\",\"reason\":\"no agentBase/geometry\"}");
+                                   "\",\"reason\":\"no channel/geometry\"}");
                 }
                 if (nd) json_object_put(nd);
             }
@@ -519,10 +884,7 @@ int main(int argc, char** argv) {
                     json_object* geo = nullptr;
                     json_object_object_get_ex(nd, "geometry", &geo);
                     bool geo_ok = geo && rect_int(geo, "w") > 0 && rect_int(geo, "h") > 0;
-                    if (agent_base.empty() || !geo_ok) {
-                        json_object_put(nd);
-                        continue;
-                    }
+                    if (!geo_ok) { json_object_put(nd); continue; }
                     Rect node{rect_int(geo, "x"), rect_int(geo, "y"),
                               rect_int(geo, "w"), rect_int(geo, "h")};
                     json_object* frag = fragment_for_node(wins, node, wall_w, wall_h);
@@ -534,14 +896,25 @@ int main(int argc, char** argv) {
                                            json_object_new_int64((int64_t)apply_at));
                     json_object_object_add(payload, "geometry", json_object_get(geo));
                     json_object_object_add(payload, "windows", frag);
-                    const char* pb = json_object_to_json_string(payload);
-                    std::string resp;
-                    int sc = cli.post_json(agent_base + "/api/v1/node/media/layout",
-                                           std::string(pb ? pb : "{}"), resp, 5000, 2,
-                                           token_c);
-                    g_store->audit("{\"fanout\":\"" + mid + "\",\"status\":" +
-                                   std::to_string(sc) + "}");
-                    json_object_put(payload);
+                    std::string verr = ct::validate_layout_prepare(payload);
+                    bool via_ws = false;
+                    if (verr.empty()) via_ws = ws_push(mid, ct::kLayoutPrepare, json_object_get(payload));
+                    if (via_ws) {
+                        g_store->audit("{\"fanout\":\"" + mid + "\",\"via\":\"ws\"}");
+                        g_chan.set_transport(mid, "ws");
+                        json_object_put(payload);
+                    } else if (!agent_base.empty()) {
+                        const char* pb = json_object_to_json_string(payload);
+                        std::string resp;
+                        int sc = cli.post_json(agent_base + "/api/v1/node/media/layout",
+                                               std::string(pb ? pb : "{}"), resp, 5000, 2, token_c);
+                        g_store->audit("{\"fanout\":\"" + mid + "\",\"status\":" + std::to_string(sc) + "}");
+                        g_chan.set_transport(mid, "short");
+                        json_object_put(payload);
+                    } else {
+                        g_store->audit("{\"fanout-skip\":\"" + mid + "\",\"reason\":\"no channel\"}");
+                        json_object_put(payload);
+                    }
                     json_object_put(nd);
                 }
                 if (wins) json_object_put(wins);
@@ -549,9 +922,9 @@ int main(int argc, char** argv) {
 
             if (b) json_object_put(b);
             json_object* d = json_object_new_object();
-            json_object_object_add(d, "operationId", json_object_new_string(op.op_id.c_str()));
+            json_object_object_add(d, "operationId", json_object_new_string(opid_c.c_str()));
             json_object_object_add(d, "applyAt",
-                                   json_object_new_int64((int64_t)op.apply_at_ns));
+                                   json_object_new_int64((int64_t)apply_at));
             json_object_object_add(d, "state", json_object_new_string("preparing"));
             json_object_object_add(d, "missing", missing);
             send_json(res, ok_envelope(d, "preparing"));
@@ -563,29 +936,23 @@ int main(int argc, char** argv) {
             std::string opid = body_str(b, "operationId");
             std::string node = body_str(b, "node");
             std::string st = body_str(b, "status");
-            if (st.empty()) st = "ready";
-            if (st != "ready") st = "blocked";
             json_object* lanes = nullptr;
             if (b) json_object_object_get_ex(b, "lanes", &lanes);
-            if (lanes && json_object_is_type(lanes, json_type_array)) {
-                for (size_t i = 0; i < json_object_array_length(lanes); i++) {
-                    json_object* e = json_object_array_get_idx(lanes, i);
-                    json_object* rv = nullptr;
-                    bool ready = true;
-                    if (e && json_object_object_get_ex(e, "ready", &rv) && rv)
-                        ready = json_object_get_boolean(rv) != 0;
-                    if (!ready) { st = "blocked"; break; }
-                }
+            std::set<std::string> still_missing;
+            std::string state = handle_barrier_ack(opid, node, st, lanes, still_missing);
+            uint64_t apply_ns = 0;
+            bool known = false;
+            {
+                std::lock_guard<std::mutex> lk(g_ops_mu);
+                const Operation* op = g_ops.find(opid);
+                if (op) { apply_ns = op->apply_at_ns; known = true; }
             }
-            std::string state = g_ops.on_reply(opid, node, st != "blocked", st);
-            std::set<std::string> still_missing = g_ops.missing(opid);
-            const Operation* op = g_ops.find(opid);
-            g_store->audit("{\"commit\":\"" + node + "\",\"state\":\"" + st + "\"}");
             if (b) json_object_put(b);
-            if (!op) { send_json(res, fail_envelope("NOT_FOUND", 404, "op unknown")); return; }
+            if (!known) { send_json(res, fail_envelope("NOT_FOUND", 404, "op unknown")); return; }
             if (state == "blocked") {
                 int to_rev = 0;
-                std::string rb = g_ops.rollback_op(opid, &to_rev);
+                std::string rb;
+                { std::lock_guard<std::mutex> lk(g_ops_mu); rb = g_ops.rollback_op(opid, &to_rev); }
                 json_object* d = json_object_new_object();
                 json_object_object_add(d, "rollback", json_object_new_string(rb.c_str()));
                 json_object_object_add(d, "toRevision", json_object_new_int(to_rev));
@@ -595,7 +962,7 @@ int main(int argc, char** argv) {
             json_object* d = json_object_new_object();
             json_object_object_add(d, "state", json_object_new_string(state.c_str()));
             json_object_object_add(d, "applyAt",
-                                   json_object_new_int64((int64_t)op->apply_at_ns));
+                                   json_object_new_int64((int64_t)apply_ns));
             json_object* miss = json_object_new_array();
             for (const auto& m : still_missing)
                 json_object_array_add(miss, json_object_new_string(m.c_str()));
@@ -603,37 +970,31 @@ int main(int argc, char** argv) {
             send_json(res, ok_envelope(d, state));
             return;
         }
-        // Serial batch upgrade: one node at a time, failures isolated.
+        // 升级改为任务队列驱动：handler 只入队，worker 串行经 WS/短连接投递。
         if (req.method == "POST" && req.path == "/api/v1/nodes/upgrade") {
             json_object* b = json_tokener_parse(req.body.c_str());
             json_object* arr = nullptr;
             if (b) json_object_object_get_ex(b, "targetNodeIds", &arr);
-            json_object* results = json_object_new_array();
-            HttpClient cli;
+            std::string fn = body_str(b, "filename");
+            if (fn.empty()) fn = "fw.bin";
+            std::string sha = body_str(b, "sha256");
+            std::vector<std::string> nodes;
             if (arr && json_object_is_type(arr, json_type_array)) {
-                for (size_t i = 0; i < json_object_array_length(arr); i++) {
-                    std::string nid = json_object_get_string(json_object_array_get_idx(arr, i));
-                    json_object* nd = g_store->get_doc("node", nid);
-                    std::string base = nd ? body_str(nd, "agentBase") : "";
-                    if (nd) json_object_put(nd);
-                    json_object* r = json_object_new_object();
-                    json_object_object_add(r, "node", json_object_new_string(nid.c_str()));
-                    if (base.empty()) {
-                        json_object_object_add(r, "status", json_object_new_string("skipped"));
-                    } else {
-                        std::string resp;
-                        int sc = cli.post_json(base + "/api/v1/node/upgrade",
-                                               req.body, resp, 10000, 2, g_api_token);
-                        json_object_object_add(r, "status", json_object_new_string(
-                            sc == 200 ? "applied" : "failed"));
-                    }
-                    json_object_array_add(results, r);
-                }
+                for (size_t i = 0; i < json_object_array_length(arr); i++)
+                    nodes.push_back(json_object_get_string(json_object_array_get_idx(arr, i)));
             }
             if (b) json_object_put(b);
+            std::string task_id = ct::next_msg_id("p");
+            {
+                std::lock_guard<std::mutex> lk(g_up_mu);
+                g_up_q.push(UpgradeJob{task_id, nodes, fn, sha});
+            }
+            g_up_cv.notify_one();
+            g_store->audit("{\"upgrade-enqueue\":\"" + task_id + "\"}");
             json_object* d = json_object_new_object();
-            json_object_object_add(d, "results", results);
-            send_json(res, ok_envelope(d, ""));
+            json_object_object_add(d, "taskId", json_object_new_string(task_id.c_str()));
+            json_object_object_add(d, "queued", json_object_new_int((int)nodes.size()));
+            send_json(res, ok_envelope(d, "queued"));
             return;
         }
         if (req.method == "GET" && req.path == "/api/v1/audit-events") {
@@ -674,6 +1035,69 @@ int main(int argc, char** argv) {
     }
     if (g_web_root.empty()) g_web_root = "./web/src";
     HttpServer server(port, h);
+    server.set_ws_handler("/api/v1/channel/ws", ws_channel_loop);
+    // 屏障超时回收：超时未齐按阻塞处理并回滚，避免永久停留 preparing。
+    std::thread([]() {
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            std::vector<std::string> expired;
+            {
+                std::lock_guard<std::mutex> lk(g_ops_mu);
+                expired = g_ops.expire_sweep(now_ns());
+            }
+            for (auto& id : expired) {
+                int to_rev = 0;
+                std::string rb;
+                {
+                    std::lock_guard<std::mutex> lk(g_ops_mu);
+                    rb = g_ops.rollback_op(id, &to_rev);
+                }
+                g_store->audit("{\"barrier-timeout\":\"" + id + "\"}");
+            }
+        }
+    }).detach();
+    // 升级任务队列 worker：逐节点串行，失败隔离到单节点。
+    std::thread([]() {
+        HttpClient cli;
+        for (;;) {
+            UpgradeJob job;
+            {
+                std::unique_lock<std::mutex> lk(g_up_mu);
+                g_up_cv.wait(lk, []() { return !g_up_q.empty(); });
+                job = g_up_q.front();
+                g_up_q.pop();
+            }
+            for (auto& nid : job.nodes) {
+                json_object* task = json_object_new_object();
+                json_object_object_add(task, "taskId", json_object_new_string(job.task_id.c_str()));
+                json_object_object_add(task, "filename", json_object_new_string(job.filename.c_str()));
+                if (!job.sha256.empty())
+                    json_object_object_add(task, "sha256", json_object_new_string(job.sha256.c_str()));
+                bool via_ws = false;
+                if (ct::validate_upgrade_task(task).empty())
+                    via_ws = ws_push(nid, ct::kUpgradeTask, json_object_get(task));
+                if (via_ws) {
+                    g_store->audit("{\"upgrade-push\":\"" + nid + "\",\"via\":\"ws\"}");
+                    json_object_put(task);
+                    continue;
+                }
+                json_object* nd = g_store->get_doc("node", nid);
+                std::string base = nd ? body_str(nd, "agentBase") : "";
+                if (nd) json_object_put(nd);
+                if (base.empty()) {
+                    g_store->audit("{\"upgrade-skip\":\"" + nid + "\"}");
+                    json_object_put(task);
+                    continue;
+                }
+                const char* tb = json_object_to_json_string(task);
+                std::string body = tb ? tb : "{}";
+                json_object_put(task);
+                std::string resp;
+                int sc = cli.post_json(base + "/api/v1/node/upgrade", body, resp, 10000, 2, g_api_token);
+                g_store->audit("{\"upgrade-push\":\"" + nid + "\",\"status\":" + std::to_string(sc) + "}");
+            }
+        }
+    }).detach();
     server.start();
     printf("dvs-platform listening on 0.0.0.0:%d\n", port);
     fflush(stdout);

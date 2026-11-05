@@ -1,4 +1,5 @@
 #include "sha256.h"
+#include "dvs_contract.h"
 #include "dvs_node_bundle.h"
 #include "node_store.h"
 #include "media_ipc.h"
@@ -174,6 +175,51 @@ static void test_http_client_empty_url() {
   std::string resp;
   CHECK(cli.post_json("", "{}", resp) == -1, "empty URL returns -1 (no throw)");
   CHECK(cli.get("", resp) == -1, "empty URL GET returns -1");
+  WsClient ws;
+  CHECK(!ws.connect_ws("", "", 200), "ws empty url fails");
+  CHECK(!ws.is_open(), "ws not open after fail");
+}
+
+static void test_channel_contract() {
+  namespace ct = dvs::contract;
+  CHECK(ct::next_request_id("a") != ct::next_request_id("a"), "request ids unique");
+  CHECK(ct::next_msg_id("a") != ct::next_msg_id("a"), "msg ids unique");
+  json_object* d = json_object_new_object();
+  json_object* ok = ct::make_ok(d, "ok", "a");
+  json_object* okv = nullptr;
+  CHECK(ok && json_object_object_get_ex(ok, "ok", &okv) && json_object_get_boolean(okv),
+        "contract ok envelope");
+  if (ok) json_object_put(ok);
+  json_object* f = ct::make_fail("BAD", 400, "bad", "a");
+  json_object* fv = nullptr;
+  CHECK(f && json_object_object_get_ex(f, "ok", &fv) && !json_object_get_boolean(fv),
+        "contract fail envelope");
+  if (f) json_object_put(f);
+  CHECK(ct::bearer_ok("Bearer tok", "tok"), "bearer ok");
+  CHECK(!ct::bearer_ok("", "tok"), "empty bearer rejected when expected");
+  CHECK(ct::bearer_ok("anything", ""), "empty expected disables check");
+  json_object* h = json_object_new_object();
+  json_object_object_add(h, "id", json_object_new_string("n1"));
+  json_object* g = json_object_new_object();
+  json_object_object_add(g, "x", json_object_new_int(0));
+  json_object_object_add(g, "y", json_object_new_int(0));
+  json_object_object_add(g, "w", json_object_new_int(1280));
+  json_object_object_add(g, "h", json_object_new_int(720));
+  json_object_object_add(h, "geometry", g);
+  json_object_object_add(h, "capability", json_object_new_object());
+  CHECK(ct::validate_hello(h).empty(), "hello valid");
+  json_object_put(h);
+  json_object* bad = json_object_new_object();
+  CHECK(!ct::validate_hello(bad).empty(), "hello missing id rejected");
+  json_object_put(bad);
+  unsetenv("DVS_TRANSPORT_MODE");
+  CHECK(ct::transport_mode() == "auto" && ct::use_ws() && !ct::ws_only(),
+        "default transport auto prefers ws");
+  setenv("DVS_TRANSPORT_MODE", "short", 1);
+  CHECK(!ct::use_ws(), "short disables ws");
+  setenv("DVS_TRANSPORT_MODE", "ws", 1);
+  CHECK(ct::ws_only(), "ws-only mode");
+  unsetenv("DVS_TRANSPORT_MODE");
 }
 
 static void test_network_apply_parsers() {
@@ -333,6 +379,7 @@ int main() {
   test_registration_local_mode();
   test_bundle_contract();
   test_http_client_empty_url();
+  test_channel_contract();
   test_network_apply_parsers();
   test_network_render_and_gate();
   test_tx_config();

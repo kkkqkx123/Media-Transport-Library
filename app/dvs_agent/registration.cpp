@@ -1,5 +1,7 @@
 #include "registration.h"
 
+#include "dvs_contract.h"
+#include "http_server.h"
 #include "node_store.h"
 #include "media_ipc.h"
 #include "http_client.h"
@@ -10,7 +12,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <chrono>
 #include <fstream>
+#include <random>
 #include <string>
 
 static std::string str_of(json_object* o, const char* key, const char* def = "") {
@@ -24,6 +28,8 @@ static int int_of(json_object* o, const char* key, int def = 0) {
     if (o && json_object_object_get_ex(o, key, &v) && v) return json_object_get_int(v);
     return def;
 }
+
+static std::string control_token();
 
 /* Read a single integer from a sysfs/proc file. Returns def on any failure. */
 static long read_long_file(const char* path, long def) {
@@ -55,14 +61,23 @@ void Registration::stop() {
     if (thread_.joinable()) thread_.join();
 }
 
+void Registration::set_downlink_handler(DownlinkHandler h) {
+    std::lock_guard<std::mutex> lk(dl_mu_);
+    downlink_ = h;
+}
+
+std::string Registration::ws_channel_url() const {
+    std::string base = platform_url_;
+    while (!base.empty() && base.back() == '/') base.pop_back();
+    return base + "/api/v1/channel/ws";
+}
+
 void Registration::loop() {
     if (platform_url_.empty()) {
-        /* Local autonomous mode: stay online, no egress. */
         register_state_ = "unregistered";
         online_ = true;
         while (running_) {
             std::this_thread::sleep_for(std::chrono::seconds(3));
-            /* touch lastHeartbeat locally so the admin page shows liveness */
             json_object* patch = json_object_new_object();
             json_object_object_add(patch, "lastHeartbeat", json_object_new_string("now"));
             store_->update_node(patch);
@@ -70,41 +85,230 @@ void Registration::loop() {
         }
         return;
     }
-
     register_state_ = "registering";
     int backoff = 2;
+    std::random_device rd;
+    std::mt19937 rng(rd());
     while (running_) {
-        if (register_state_ != "registered") {
-            if (register_once()) {
-                register_state_ = "registered";
-                backoff = 2;
-            } else {
-                std::this_thread::sleep_for(std::chrono::seconds(backoff));
-                if (backoff < 30) backoff *= 2;
-                continue;
-            }
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms_));
-        if (!heartbeat_once()) {
-            fail_streak_++;
-            if (fail_streak_ >= 3) {
-                online_ = false;
-                json_object* patch = json_object_new_object();
-                json_object_object_add(patch, "online", json_object_new_boolean(0));
-                store_->update_node(patch);
-                json_object_put(patch);
+        namespace ct = dvs::contract;
+        bool want_ws = ct::use_ws();
+        bool ws_only = ct::ws_only();
+        if (want_ws) {
+            bool ok = ws_loop_once();
+            if (ok) { backoff = 2; continue; }
+            // WS 断开：auto 模式回退一次短连接心跳，ws 模式直接退避重拨。
+            if (!ws_only) {
+                if (register_state_ != "registered") register_once();
+                else heartbeat_once();
             }
         } else {
-            if (!online_) {
-                online_ = true;
-                json_object* patch = json_object_new_object();
-                json_object_object_add(patch, "online", json_object_new_boolean(1));
-                store_->update_node(patch);
-                json_object_put(patch);
+            if (register_state_ != "registered") {
+                if (register_once()) { register_state_ = "registered"; backoff = 2; }
+                else {
+                    std::this_thread::sleep_for(std::chrono::seconds(backoff));
+                    if (backoff < 30) backoff *= 2;
+                    continue;
+                }
             }
-            fail_streak_ = 0;
+            std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms_));
+            if (!heartbeat_once()) {
+                fail_streak_++;
+                if (fail_streak_ >= 3) {
+                    online_ = false;
+                    json_object* patch = json_object_new_object();
+                    json_object_object_add(patch, "online", json_object_new_boolean(0));
+                    store_->update_node(patch);
+                    json_object_put(patch);
+                }
+            } else {
+                if (!online_) {
+                    online_ = true;
+                    json_object* patch = json_object_new_object();
+                    json_object_object_add(patch, "online", json_object_new_boolean(1));
+                    store_->update_node(patch);
+                    json_object_put(patch);
+                }
+                fail_streak_ = 0;
+            }
+            continue;
+        }
+        int jitter = (int)(rng() % 1000);
+        std::this_thread::sleep_for(std::chrono::milliseconds(backoff * 1000 + jitter));
+        if (backoff < 30) backoff *= 2;
+    }
+}
+
+bool Registration::ws_send_wrapped(const std::string& type, json_object* data,
+                                   std::string* reply_out) {
+    namespace ct = dvs::contract;
+    (void)reply_out;
+    json_object* msg = ct::wrap(ct::next_msg_id("a"), type, data, ct::next_request_id("a"));
+    const char* s = json_object_to_json_string(msg);
+    std::string frame = s ? s : "{}";
+    json_object_put(msg);
+    std::lock_guard<std::mutex> lk(ws_mu_);
+    if (!ws_.is_open()) return false;
+    return ws_.send_text(frame);
+}
+
+bool Registration::ws_loop_once() {
+    namespace ct = dvs::contract;
+    std::string token = control_token();
+    {
+        std::lock_guard<std::mutex> lk(ws_mu_);
+        ws_.close();
+        if (!ws_.connect_ws(ws_channel_url(), token, 5000)) return false;
+    }
+    // 首包 hello：问候携带与短连接注册体相同的档案信息。
+    json_object* reg = build_register();
+    json_object* node = store_->node();
+    json_object* nidv = nullptr;
+    std::string nid = "local-node";
+    if (node) {
+        json_object* iv = nullptr;
+        if (json_object_object_get_ex(node, "id", &iv) && iv) nid = json_object_get_string(iv);
+    }
+    (void)nidv;
+    json_object_object_add(reg, "id", json_object_new_string(nid.c_str()));
+    if (!token.empty())
+        json_object_object_add(reg, "token", json_object_new_string(token.c_str()));
+    json_object* hello = ct::wrap(ct::next_msg_id("a"), ct::kHello, reg, ct::next_request_id("a"));
+    const char* hs = json_object_to_json_string(hello);
+    std::string hframe = hs ? hs : "{}";
+    json_object_put(hello);
+    {
+        std::lock_guard<std::mutex> lk(ws_mu_);
+        if (!ws_.send_text(hframe)) return false;
+    }
+    std::string wframe;
+    {
+        std::lock_guard<std::mutex> lk(ws_mu_);
+        // 握手等待 welcome：借 ws_mu 短暂独占，避免与回执发送交错。
+        // recv 本身不持锁，此处为简化串行，欢迎后即释放。
+    }
+    // 用临时锁外接收，避免长时间持锁阻塞 uplink。
+    if (!ws_.recv_text(wframe, 5000)) { ws_.close(); return false; }
+    json_object* wm = json_tokener_parse(wframe.c_str());
+    std::string mid, tp, rid;
+    json_object* dd = nullptr;
+    bool ok = wm && ct::unwrap(wm, mid, tp, dd, rid) && tp == ct::kWelcome;
+    if (ok && dd) {
+        json_object* iv = nullptr;
+        if (json_object_object_get_ex(dd, "heartbeatIntervalMs", &iv) && iv) {
+            int v = json_object_get_int(iv);
+            if (v > 0) interval_ms_ = v;
         }
     }
+    if (dd) json_object_put(dd);
+    if (wm) json_object_put(wm);
+    if (!ok) { ws_.close(); return false; }
+    register_state_ = "registered";
+    transport_ = "ws";
+    online_ = true;
+    fail_streak_ = 0;
+    {
+        json_object* patch = json_object_new_object();
+        json_object_object_add(patch, "registerState", json_object_new_string("registered"));
+        json_object_object_add(patch, "online", json_object_new_boolean(1));
+        store_->update_node(patch);
+        json_object_put(patch);
+    }
+    int64_t last_hb = (int64_t)time(nullptr) * 1000;
+    while (running_ && ws_.is_open()) {
+        std::string frame;
+        int64_t t0 = (int64_t)time(nullptr) * 1000;
+        // 以心跳周期为接收超时：超时即补一次 WS 心跳。
+        bool got = ws_.recv_text(frame, interval_ms_ + 1000);
+        int64_t now_ms = (int64_t)time(nullptr) * 1000;
+        if (!got) {
+            // 耗时不足半个周期即返回的失败视为传输错误，直接断开；
+            // 达到超时的失败则补心跳，成功继续，失败断开。
+            if (now_ms - t0 < (interval_ms_ / 2)) break;
+            json_object* hb = build_heartbeat();
+            if (!ws_send_wrapped(ct::kHeartbeat, hb)) break;
+            last_hb = now_ms;
+            continue;
+        }
+        json_object* m = json_tokener_parse(frame.c_str());
+        std::string in_mid, in_tp, in_rid;
+        json_object* in_dd = nullptr;
+        if (!m || !ct::unwrap(m, in_mid, in_tp, in_dd, in_rid)) {
+            if (m) json_object_put(m);
+            if (in_dd) json_object_put(in_dd);
+            continue;
+        }
+        if (in_tp == ct::kAck || in_tp == ct::kError || in_tp == ct::kWelcome) {
+            // 服务端确认，无需处理。
+        } else if (in_tp == ct::kLayoutPrepare || in_tp == ct::kConfigUpdate ||
+                   in_tp == ct::kUpgradeTask) {
+            DownlinkHandler h;
+            { std::lock_guard<std::mutex> lk(dl_mu_); h = downlink_; }
+            if (h) h(in_tp, in_dd, in_mid);
+        }
+        if (in_dd) json_object_put(in_dd);
+        if (m) json_object_put(m);
+        if (now_ms - last_hb >= interval_ms_) {
+            json_object* hb = build_heartbeat();
+            // 心跳 data 复用短连接载荷，WS 侧由平台按契约校验。
+            ws_send_wrapped(ct::kHeartbeat, hb);
+            last_hb = now_ms;
+        }
+    }
+    ws_.close();
+    if (transport_ == "ws") transport_ = "short";
+    online_ = false;
+    return register_state_ == "registered";
+}
+
+bool Registration::uplink_barrier_ack(const std::string& opid, const std::string& node,
+                            const std::string& status, json_object* lanes) {
+    namespace ct = dvs::contract;
+    json_object* d = json_object_new_object();
+    json_object_object_add(d, "operationId", json_object_new_string(opid.c_str()));
+    json_object_object_add(d, "node", json_object_new_string(node.c_str()));
+    json_object_object_add(d, "status", json_object_new_string(status.c_str()));
+    if (lanes) json_object_object_add(d, "lanes", json_object_get(lanes));
+    if (!ct::validate_barrier_ack(d).empty()) { json_object_put(d); return false; }
+    if (ws_.is_open() && ws_send_wrapped(ct::kBarrierAck, d)) return true;
+    json_object_put(d);
+    if (platform_url_.empty()) return false;
+    HttpClient cli;
+    json_object* c = json_object_new_object();
+    json_object_object_add(c, "operationId", json_object_new_string(opid.c_str()));
+    json_object_object_add(c, "node", json_object_new_string(node.c_str()));
+    json_object_object_add(c, "status", json_object_new_string(status.c_str()));
+    if (lanes) json_object_object_add(c, "lanes", json_object_get(lanes));
+    const char* cb = json_object_to_json_string(c);
+    std::string resp;
+    int sc = cli.post_json(platform_url_ + "/api/v1/ops/commit", std::string(cb ? cb : "{}"),
+                           resp, 5000, 2, control_token());
+    json_object_put(c);
+    return sc >= 200 && sc < 400;
+}
+
+bool Registration::uplink_config_ack(const std::string& node, int applied_revision) {
+    namespace ct = dvs::contract;
+    json_object* d = json_object_new_object();
+    json_object_object_add(d, "node", json_object_new_string(node.c_str()));
+    json_object_object_add(d, "appliedRevision", json_object_new_int(applied_revision));
+    if (ws_.is_open() && ws_send_wrapped(ct::kConfigAck, d)) return true;
+    json_object_put(d);
+    return false;
+}
+
+bool Registration::uplink_upgrade_progress(const std::string& task_id, const std::string& node,
+                                 const std::string& status, const std::string& detail) {
+    namespace ct = dvs::contract;
+    json_object* d = json_object_new_object();
+    json_object_object_add(d, "taskId", json_object_new_string(task_id.c_str()));
+    json_object_object_add(d, "node", json_object_new_string(node.c_str()));
+    json_object_object_add(d, "status", json_object_new_string(status.c_str()));
+    if (!detail.empty())
+        json_object_object_add(d, "detail", json_object_new_string(detail.c_str()));
+    if (!ct::validate_upgrade_progress(d).empty()) { json_object_put(d); return false; }
+    if (ws_.is_open() && ws_send_wrapped(ct::kUpgradeProgress, d)) return true;
+    json_object_put(d);
+    return false;
 }
 
 static std::string control_token() {

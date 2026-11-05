@@ -28,3 +28,28 @@ private:
                 const std::string& body, std::string& resp, int timeout_ms,
                 const std::string& auth = "");
 };
+
+/* 持久化 WS 客户端：由代理主动拨出，与平台同端口的流式路径建链。
+ * 握手为标准 RFC6455（掩码发送、不掩码接收），鉴权不在握手头完成，
+ * 而由首条 hello 消息携带 token 经共享契约校验。 */
+class WsClient {
+public:
+    WsClient();
+    ~WsClient();
+    WsClient(const WsClient&) = delete;
+    WsClient& operator=(const WsClient&) = delete;
+
+    // url 形如 http://host:port/api/v1/channel/ws；bearer 为裸 token。
+    bool connect_ws(const std::string& url, const std::string& bearer = "",
+                    int timeout_ms = 5000);
+    bool send_text(const std::string& s);
+    // 读取一个文本消息；自动回 pong（掩码）、忽略 pong、遇 close 返回 false。
+    bool recv_text(std::string& out, int timeout_ms);
+    bool send_ping(const std::string& p = "");
+    void close();
+    bool is_open() const { return fd_ >= 0; }
+    int fd() const { return fd_; }
+
+private:
+    int fd_ = -1;
+};

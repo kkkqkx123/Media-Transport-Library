@@ -11,10 +11,30 @@ struct HttpResponse { int status=200; std::string body; std::string content_type
 class HttpServer {
 public:
     using Handler = std::function<void(const HttpRequest&, HttpResponse&)>;
+    // 长连接接管：握手成功后 fd 交给 h，h 负责帧循环并最终关闭 fd。
+    using WsHandler = std::function<void(int fd, const HttpRequest& hs_req)>;
     HttpServer(int port, Handler h);
     ~HttpServer();
     void start();
     void stop();
+    void set_ws_handler(const std::string& path, WsHandler h);
+
+    // WS 帧原语（服务端发送不掩码，客户端发送必须掩码由调用方指定）。
+    static bool ws_send_frame(int fd, uint8_t opcode, const std::string& payload,
+                              bool mask = false);
+    static bool ws_send_text(int fd, const std::string& payload, bool mask = false);
+    static bool ws_send_ping(int fd, const std::string& payload = "", bool mask = false);
+    static bool ws_send_pong(int fd, const std::string& payload = "", bool mask = false);
+    static bool ws_send_close(int fd, bool mask = false);
+    // 读取一帧（原始，不自动回 pong）。timeout_ms 内无数据返回 false。
+    static bool ws_recv_frame(int fd, uint8_t& opcode, std::string& payload,
+                              int timeout_ms);
+    // 读取一个文本消息：自动回 pong、忽略 pong、拼装分片、遇 close 回 close 并返回 false。
+    // mask_pong 决定自动 pong 是否掩码（服务端 false，客户端 true）。
+    static bool ws_recv_text(int fd, std::string& out, int timeout_ms,
+                             bool mask_pong = false);
+    static std::string ws_accept_key(const std::string& client_key);
+
 private:
     void loop();
     void handle_client(int fd);
@@ -23,4 +43,6 @@ private:
     std::atomic<bool> running_{false};
     std::thread thread_;
     int listen_fd_=-1;
+    std::string ws_path_;
+    WsHandler ws_handler_;
 };

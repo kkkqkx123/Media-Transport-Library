@@ -17,6 +17,7 @@ common_sources = files(
   common_src + '/src/http_server.cpp',
   common_src + '/src/http_client.cpp',
   common_src + '/src/sha256.cpp',
+  common_src + '/src/dvs_contract.cpp',
   common_src + '/third_party/sqlite/sqlite3.c',
 )
 

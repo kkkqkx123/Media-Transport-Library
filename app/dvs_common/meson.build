@@ -17,6 +17,7 @@ dvs_common_sources = files(
   'src/http_server.cpp',
   'src/http_client.cpp',
   'src/sha256.cpp',
+  'src/dvs_contract.cpp',
   'third_party/sqlite/sqlite3.c',
 )
 

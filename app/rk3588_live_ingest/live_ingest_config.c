@@ -9,13 +9,8 @@ struct live_ingest_cfg_strings {
     char tx_port[128];
     char tx_lip[32];
     char tx_dip[32];
-    char rx_port[128];
-    char rx_lip[32];
-    char rx_sip[32];
     char v4l2_device[64];
     char drm_device[64];
-    char drm_connector[32];
-    char drm_mode[32];
     char log_level[16];
 };
 
@@ -41,17 +36,10 @@ struct live_ingest_cfg live_ingest_cfg_defaults(void) {
         .tx_port     = "native_af_xdp:enP3p49s0",
         .tx_lip      = "192.168.80.213",
         .tx_dip      = "192.168.80.212",
-        .rx_port     = "native_af_xdp:eth0",
-        .rx_lip      = "192.168.80.212",
-        .rx_sip      = "192.168.80.213",
         .v4l2_device = "/dev/video0",
         .drm_device  = "/dev/dri/card0",
-        .drm_connector = "HDMI-A-1",
-        .drm_mode    = "1920x1080@60",
         .cpu_capture = 1,
         .cpu_encode  = 2,
-        .cpu_bridge  = 5,
-        .cpu_decode  = 4,
         .log_level   = "info",
     };
     return c;
@@ -94,14 +82,8 @@ int live_ingest_config_load(const char* path, struct live_ingest_cfg* cfg) {
         struct json_object* i0 = json_object_array_get_idx(iface, 0);
         const char* name = json_get_string(i0, "name");
         const char* ip   = json_get_string(i0, "ip");
-        bool tx_mode = json_get_int(root, "tx_mode", 1) != 0;
-        if (tx_mode) {
-            if (name) dup_str(&cfg->tx_port, g_str.tx_port, sizeof(g_str.tx_port), name);
-            if (ip)   dup_str(&cfg->tx_lip, g_str.tx_lip, sizeof(g_str.tx_lip), ip);
-        } else {
-            if (name) dup_str(&cfg->rx_port, g_str.rx_port, sizeof(g_str.rx_port), name);
-            if (ip)   dup_str(&cfg->rx_lip, g_str.rx_lip, sizeof(g_str.rx_lip), ip);
-        }
+        if (name) dup_str(&cfg->tx_port, g_str.tx_port, sizeof(g_str.tx_port), name);
+        if (ip)   dup_str(&cfg->tx_lip, g_str.tx_lip, sizeof(g_str.tx_lip), ip);
     }
 
     struct json_object* streams = NULL;
@@ -133,22 +115,7 @@ int live_ingest_config_load(const char* path, struct live_ingest_cfg* cfg) {
         if (json_object_object_get_ex(s0, "transport", &xport)) {
             cfg->udp_port = (uint16_t)json_get_int(xport, "udp_port", cfg->udp_port);
             const char* dip = json_get_string(xport, "dip_addr");
-            const char* sip = json_get_string(xport, "sip_addr");
             if (dip) dup_str(&cfg->tx_dip, g_str.tx_dip, sizeof(g_str.tx_dip), dip);
-            if (sip) dup_str(&cfg->rx_sip, g_str.rx_sip, sizeof(g_str.rx_sip), sip);
-        }
-
-        struct json_object* render = NULL;
-        if (json_object_object_get_ex(s0, "render", &render)) {
-            const char* dev = json_get_string(render, "device");
-            const char* conn = json_get_string(render, "connector");
-            const char* mode = json_get_string(render, "mode");
-            if (dev)  dup_str(&cfg->drm_device, g_str.drm_device,
-                              sizeof(g_str.drm_device), dev);
-            if (conn) dup_str(&cfg->drm_connector, g_str.drm_connector,
-                              sizeof(g_str.drm_connector), conn);
-            if (mode) dup_str(&cfg->drm_mode, g_str.drm_mode,
-                              sizeof(g_str.drm_mode), mode);
         }
     }
 
@@ -156,8 +123,6 @@ int live_ingest_config_load(const char* path, struct live_ingest_cfg* cfg) {
     if (json_object_object_get_ex(root, "affinity", &aff)) {
         cfg->cpu_capture = json_get_int(aff, "capture", cfg->cpu_capture);
         cfg->cpu_encode  = json_get_int(aff, "encoder", cfg->cpu_encode);
-        cfg->cpu_bridge  = json_get_int(aff, "bridge", cfg->cpu_bridge);
-        cfg->cpu_decode  = json_get_int(aff, "decoder", cfg->cpu_decode);
     }
 
     const char* ll = json_get_string(root, "log_level");

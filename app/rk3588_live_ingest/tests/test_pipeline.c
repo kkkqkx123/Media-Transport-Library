@@ -1,5 +1,4 @@
 #include "../pipeline/tx_pipeline.h"
-#include "../pipeline/rx_pipeline.h"
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -15,9 +14,9 @@ int main(int argc, char** argv) {
     int test_time = (argc > 1) ? atoi(argv[1]) : 10;
     int w = 1920, h = 1080;
 
-    printf("=== Phase 4 Pipeline Test ===\n");
+    printf("=== TX Pipeline Test (encode-only) ===\n");
 
-    /* TX pipeline */
+    /* TX pipeline without MTL sink: encoded frames land in the output ring. */
     struct tx_pipeline_params txp = {
         .v4l2_device   = "/dev/video0",
         .width         = w, .height = h,
@@ -32,28 +31,13 @@ int main(int argc, char** argv) {
         .ring_size     = 3,
         .cpu_capture   = 1,
         .cpu_encode    = 2,
+        .mtl_sink      = NULL,
     };
     struct tx_pipeline* tx = tx_pipeline_create(&txp);
     if (!tx) { fprintf(stderr, "FAIL: tx_pipeline_create\n"); return 1; }
 
-    /* RX pipeline */
-    struct rx_pipeline_params rxp = {
-        .drm_device    = "/dev/dri/card0",
-        .drm_connector = "HDMI-A-1",
-        .drm_mode      = "1920x1080@60",
-        .width         = w, .height = h,
-        .drm_buf_count = 4,
-        .num_slices    = 1,
-        .input_ring    = tx_pipeline_get_output_ring(tx),
-        .coded_pool    = tx_pipeline_get_slab_pool(tx),
-        .cpu_decode    = 3,
-    };
-    struct rx_pipeline* rx = rx_pipeline_create(&rxp);
-    if (!rx) { tx_pipeline_free(tx); fprintf(stderr, "FAIL: rx_pipeline_create\n"); return 1; }
-
-    printf("Starting pipeline for %ds...\n", test_time);
-    if (tx_pipeline_start(tx) != 0) { rx_pipeline_free(rx); tx_pipeline_free(tx); return 1; }
-    if (rx_pipeline_start(rx) != 0) { tx_pipeline_stop(tx); rx_pipeline_free(rx); tx_pipeline_free(tx); return 1; }
+    printf("Starting TX pipeline for %ds...\n", test_time);
+    if (tx_pipeline_start(tx) != 0) { tx_pipeline_free(tx); return 1; }
 
     /* run */
     while (atomic_load(&g_run) && test_time > 0) {
@@ -61,18 +45,8 @@ int main(int argc, char** argv) {
         test_time--;
     }
 
-    /* Note: rx_pipeline_free/tx_pipeline_free internally call stop(),
-     * so no need for explicit stop() — avoids double pthread_join. */
-    uint64_t min_ns, avg_ns, max_ns;
-    rx_pipeline_get_latency(rx, &min_ns, &avg_ns, &max_ns);
-
-    rx_pipeline_free(rx);
     tx_pipeline_free(tx);
 
-    printf("\n=== E2E Latency: min=%llu avg=%llu max=%llu us ===\n",
-           (unsigned long long)(min_ns / 1000),
-           (unsigned long long)(avg_ns / 1000),
-           (unsigned long long)(max_ns / 1000));
     printf("=== PASS ===\n");
     return 0;
 }

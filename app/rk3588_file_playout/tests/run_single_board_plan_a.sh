@@ -1,32 +1,32 @@
 #!/bin/bash
-# Single-board Plan A: trace + dump + compare + offline MPP replay.
+# Single-board Plan A (decode role): RX capture + dump + compare + offline MPP replay.
+#
+# Sender is the encode package (live_ingest TX, HDMI capture). Start RX first,
+# then the sender with a matching UDP port / fps / resolution. HDMI signal is
+# required; without it live_ingest retries and RX captures nothing.
 #
 # Usage:
-#   ./tests/run_single_board_plan_a.sh [seconds] [mp4_path] [log_path]
+#   ./tests/run_single_board_plan_a.sh [seconds] [rx_args...]
 #
 # Env (optional):
 #   FILE_PLAYOUT_MPP_AGGRESSIVE_PULL=1  — idle pull after each AU + EOS flush
 #   FILE_PLAYOUT_MPP_WHOLE_AU=1         — whole AU feed (A/B only; default is legacy)
-#
-# Uses file_playout_both.sh (RX first, TX +2s). Defaults match file_playout_config:
-#   TX: enP3p49s0 @ 192.168.80.213 -> RX: eth0 @ 192.168.80.212
 
 set -euo pipefail
 
 SEC="${1:-120}"
-MP4="${2:-../InTheGrey.mp4}"
-LOG="${3:-/tmp/run1.log}"
+shift || true
+LOG="/tmp/run1.log"
 BASE="/tmp/run1"
 CD="$(cd "$(dirname "$0")/.." && pwd)"
+LIVE_INGEST="$CD/../rk3588_live_ingest/build/live_ingest"
 
 cd "$CD"
 [ -x ./build/file_playout_rx ] || { echo "run: ninja -C build first"; exit 1; }
-[ -x ./build/file_playout_tx ] || { echo "run: ninja -C build first"; exit 1; }
-chmod +x tests/file_playout_both.sh 2>/dev/null || true
+[ -x "$LIVE_INGEST" ] || { echo "run: build rk3588_live_ingest first (encode sender)"; exit 1; }
 
 echo "=== clean old trace/dump (avoid NUL/corrupt csv) ==="
-rm -f "${BASE}.tx.csv" "${BASE}.tx_wire.csv" \
-      "${BASE}.rx_mtl.csv" "${BASE}.rx_br.csv" \
+rm -f "${BASE}.rx_mtl.csv" "${BASE}.rx_br.csv" \
       /tmp/rx_capture.h264 /tmp/rx_capture.idx \
       /tmp/rx_capture_replay.yuv
 
@@ -39,9 +39,18 @@ echo "  test_sec=$SEC  log=$LOG"
 echo "  FILE_PLAYOUT_MPP_WHOLE_AU=${FILE_PLAYOUT_MPP_WHOLE_AU:-<unset>}"
 echo "  FILE_PLAYOUT_MPP_AGGRESSIVE_PULL=${FILE_PLAYOUT_MPP_AGGRESSIVE_PULL:-<unset>}"
 
-echo "=== file_playout_both ${SEC}s ==="
-./tests/file_playout_both.sh "$SEC" --mp4 "$MP4" \
-  --width 1920 --height 1080 --fps 23.976 2>&1 | tee "$LOG"
+echo "=== RX ${SEC}s (sender: live_ingest, HDMI required) ==="
+./build/file_playout_rx "$SEC" --udp 15000 --sip 192.168.80.213 \
+  --width 1920 --height 1080 --fps 60.0 "$@" &
+RX_PID=$!
+
+sleep 2
+"$LIVE_INGEST" "$SEC" --udp 15000 --dip 192.168.80.212 2>&1 | tee "$LOG" &
+TX_PID=$!
+
+wait "$RX_PID" && RX_ST=0 || RX_ST=$?
+wait "$TX_PID" && TX_ST=0 || TX_ST=$?
+echo "=== done rx=$RX_ST tx=$TX_ST ==="
 
 echo ""
 echo "=== live decode summary ==="
@@ -50,7 +59,7 @@ grep -E 'mpp_dec:|mpp_dec stats|rx_pipe:' "$LOG" || true
 echo ""
 echo "=== trace files ==="
 ls -l "${BASE}"*.csv /tmp/rx_capture.h264 2>/dev/null || true
-for f in "${BASE}.tx.csv" "${BASE}.tx_wire.csv" "${BASE}.rx_mtl.csv" "${BASE}.rx_br.csv"; do
+for f in "${BASE}.rx_mtl.csv" "${BASE}.rx_br.csv"; do
   if [ -f "$f" ]; then
     echo -n "$f: "
     head -1 "$f"
@@ -60,12 +69,8 @@ for f in "${BASE}.tx.csv" "${BASE}.tx_wire.csv" "${BASE}.rx_mtl.csv" "${BASE}.rx
 done
 
 echo ""
-echo "=== compare_au_trace ==="
-python3 tests/compare_au_trace.py "$BASE"
-
+echo "=== offline mpi_dec_test replay ==="
 if [ -f /tmp/rx_capture.h264 ] && command -v mpi_dec_test >/dev/null 2>&1; then
-  echo ""
-  echo "=== offline mpi_dec_test replay ==="
   mpi_dec_test -t 7 -i /tmp/rx_capture.h264 -n 0 -o /tmp/rx_capture_replay.yuv
   PKTS=$(wc -l < /tmp/rx_capture.idx)
   FR=$(python3 -c "import os; s=os.path.getsize('/tmp/rx_capture_replay.yuv'); print(int(s/(1920*1080*3//2)))")
@@ -86,7 +91,7 @@ fi
 echo ""
 echo "=== check_pts_idx ==="
 if [ -f /tmp/rx_capture.idx ]; then
-  python3 tests/check_pts_idx.py /tmp/rx_capture.idx --fps 23.976 --max-zero-pct 0 || true
+  python3 tests/check_pts_idx.py /tmp/rx_capture.idx --fps 60.0 --max-zero-pct 0 || true
 else
   echo "SKIP: /tmp/rx_capture.idx missing"
 fi

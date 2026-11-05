@@ -1,10 +1,11 @@
 # RK3588 交叉编译进度归档（DPDK + MTL 库 + libxdp + rk3588 应用）
 
-> 最后更新：2026-11-02
+> 最后更新：2026-11-05
 > 目标：在 x86_64 上为 RK3588（aarch64，板端 glibc 2.31 / Debian 11 5.10 内核）交叉编译 Media-Transport-Library 及其 rk3588 应用。
 > 关联文档：
 > - `docs/dev/compile/dpdk-cross-compile-pitfalls.md`（DPDK 踩坑详录，含三件套完整内容）
 > - `docs/dev/compile/5.10-debian-cross-compile.md`（应用层交叉编译总流程）
+> - `docs/plan/rk3588/RK3588_ENCODE_DECODE_ROLE_REFACTOR.md`（编码/解码角色重构：ingest 只产流，playout 只收流）
 
 ---
 
@@ -16,8 +17,8 @@
 | MTL 核心库（lib/） | ✅ 52/52，0 错误，产出 `libmtl.so`（ARM aarch64，纯 aarch64 依赖）；已 `meson install --prefix=/usr` 装入 sysroot |
 | libxdp（XDP 后端依赖） | ✅ 1.6.3 装入 sysroot，MTL 启用 **AF_XDP 后端**（动态链同一个 libbpf 1.4.0） |
 | MTL **release** 构建（devs） | ✅ 52/52，0 错误（`-Werror` 对未用变量类告警降级，详见 §6） |
-| rk3588 应用 | ✅ **rk3588_live_ingest**（live_ingest + 测试）与 **rk3588_file_playout**（file_playout_tx/rx + 测试）均在 devs 交叉编译通过 |
-| 环境同步 | ✅ sysroot/工具链/bin 已在本地 Arch 机 `/home/kkkqkx/mtl/` 镜像；libxdp 与增强包装脚本已**回写** devs |
+| rk3588 应用（角色重构后） | ✅ **rk3588_live_ingest** 编码发送端（TX-only）与 **rk3588_file_playout** 解码接收端（RX-only）均完成交叉配置验证（见 §6.4）；`x86` 桌面构建分支已删除，全部硬件依赖改为必需 |
+| 环境同步 | ✅ sysroot/工具链/bin 已在本地 Arch 机 `/home/kkkqkx/mtl/` 镜像；libxdp 与增强包装脚本已**回写** devs；wrapper 系 sysroot 独缺的 `mtl` 三件套已从 devs `/data/kkkqkx/mtl/sysroot` 同步补齐（见 §1.3） |
 
 **结论**：DPDK → libbpf/libxdp → MTL 库 → rk3588 应用的完整交叉编译链路已打通，并在 devs 完成正式 release 验证。
 
@@ -29,7 +30,25 @@
 - **devs**（编译服务器，Ubuntu 18.04 x86_64）：工作区 `/data/kkkqkx/mtl/`；交叉文件 `sysroot/aarch64.ini`；包装脚本 `bin/`；工具链 `/data/kkkqkx/arm-gnu-toolchain-13.3...`；buildroot host meson/ninja 在 `/data/kkkqkx/rk3588bsp/.../host`。**正式大规模编译在此验证**。
 - **本地 Arch 机**（x86_64）：仓库 `/home/kkkqqx/code/Media-Transport-Library`；环境镜像于 `/home/kkkqkx/code/mtl/`；本地 meson 1.12.1 / ninja 1.13.2 / clang 23（支持 `bpf` 目标）。
 
-### 1.2 本地环境布局（`/home/kkkqkx/code/mtl/`）
+### 1.2 sysroot 清单与缺件同步（2026-11-05）
+
+本地共三处 sysroot 镜像，分工不同：
+
+- 仓库内 `sysroot/`：内容最全（含 `libmtl.so` 双份相同拷贝、`mtl.pc 26.09.0.DEV`、`usr/include/mtl/` 头、`rockchip_mpp 1.3.9`、`librga 2.1.0`、`libdrm`、`alsa`、`FFmpeg 58.45/58.91/56.51` 未版本化软链、`json-c`），应用构建以它为准。
+- `/home/kkkqkx/mtl/sysroot`：wrapper 三件套环境（`bin/aarch64-cc-wrap`、`mtl-pkg-config`、`aarch64.ini` 指向 wrapper），其余硬件依赖齐备，**独缺 `mtl` 三件套**（库、头、`mtl.pc` 均无）。
+- `/home/kkkqkx/code/mtl/sysroot`：早期环境镜像，同样缺 `mtl` 三件套，仅作备份参考。
+
+缺件来源以 devs 的 `/data/kkkqkx/mtl/sysroot` 为准（`usr/lib/libmtl.so`、`usr/lib/pkgconfig/mtl.pc`、`usr/include/mtl/` 头齐备），**不用 rk3588bsp 的 3rdparty 拷贝**。同步方式按既有惯例手动 `rsync`（devs → 本地，系统库不在 `sync_to_devs.sh` 范围内）：
+
+```bash
+rsync -avz devs:/data/kkkqkx/mtl/sysroot/usr/lib/libmtl.so /home/kkkqkx/mtl/sysroot/usr/lib/
+rsync -avz devs:/data/kkkqkx/mtl/sysroot/usr/lib/pkgconfig/mtl.pc /home/kkkqkx/mtl/sysroot/usr/lib/pkgconfig/
+rsync -avz devs:/data/kkkqkx/mtl/sysroot/usr/include/mtl/ /home/kkkqkx/mtl/sysroot/usr/include/mtl/
+```
+
+另有一个本机验证坑：仓库内 `sysroot/aarch64.ini` 用裸 `pkg-config`，meson 会把 `.pc` 的 `-I/usr/include` 当宿主路径丢弃，导致 MPP 链接测试报头缺失。本地验证必须走 wrapper 三件套交叉文件（`/home/kkkqkx/mtl/sysroot/aarch64.ini`，`mtl-pkg-config` 锁定 sysroot），并把 ARM GNU 13.3 工具链 `bin` 加入 `PATH`（`aarch64-none-linux-gnu-ar` 等）。
+
+### 1.3 本地环境布局（`/home/kkkqkx/code/mtl/`）
 ```
 mtl/
 ├── sysroot/                 # 板端 rootfs（含 libdpdk.pc / libbpf / libxdp / mpp / rga / drm / alsa / ffmpeg / numa / json-c / libbsd 等）
@@ -99,9 +118,15 @@ make -C lib/libxdp libxdp.so libxdp.pc        # 仅 .so + .pc
 1. **应用源码缺 `#include <stdbool.h>`**：交叉环境下 `bool`/`true`/`false` 不再被间接引入（板端原生编译碰巧引入）。已在两个应用约 40 个 `.c` 顶部补 `#include <stdbool.h>`（标准头、幂等、不影响原生构建）。**这是源码改动，建议提交。**
 2. **FFmpeg 软链**：sysroot 已有 `libavformat.so.58.91.100` 等，但需未版本化 `libavformat.so`/`libavcodec.so`/`libavutil.so` 软链才能被 `-lavformat` 解析（从板拷贝时符号链接被压平所致，与 MPP/RGA 同源）。已在 sysroot 补齐。
 
-### 6.3 结果
+### 6.3 结果（重构前快照，TX+RX 双向时期）
 - end2end：23/23，0 错误 → `live_ingest`/`test_pipeline`/`test_io`/`test_codec`/`test_hal`/`test_sps_vui`（ARM aarch64）。
 - file_playout：57/57，0 错误 → `file_playout_tx`/`file_playout_rx`/`rx_minimal` 及测试（ARM aarch64；`file_playout_rx` NEEDED 含 libmtl/libasound/libavformat/libavcodec/librockchip_mpp/libdrm）。
+
+### 6.4 角色重构后复验（2026-11-05，本地 wrapper 三件套配置验证）
+
+重构内容见 `docs/plan/rk3588/RK3588_ENCODE_DECODE_ROLE_REFACTOR.md`：`live_ingest` 收为编码发送单入口（删 RX/解码/显示），`file_playout` 收为解码接收单入口（删 TX 发送传输与 `build_tx` 开关，`mp4_demux`/`extradata_handler` 作为解码辅助搬到 `shared/`），`x86` 分支删除，硬件依赖全部必需。`dvs_media` 引用路径随搬移更新（两处）。
+
+验证为配置验证（未执行编译；`PATH` 需含 ARM GNU 13.3 工具链 `bin`，交叉文件用 wrapper 三件套 `/home/kkkqkx/mtl/sysroot/aarch64.ini`）：两包 `meson setup` 均通过。`live_ingest` 8 targets，依赖 `libdrm`/`threads`/`rockchip_mpp 1.3.9`/`librga 2.1.0`/`mtl 26.09.0.DEV`/`json-c 0.15` 全 `found`；`file_playout` 9 targets，`mtl`/`FFmpeg 58.45/58.91/56.51`/`json-c`/`rockchip_mpp`（**link test: YES**）/`libdrm`/`alsa 1.2.4` 全 `found`。另做一次全仓 `files()` 路径与相对 `#include` 可解析检查，结论通过。正式 `ninja` 全量编译与单板冒烟仍在编译服务器执行。
 
 ---
 
@@ -110,7 +135,7 @@ make -C lib/libxdp libxdp.so libxdp.pc        # 仅 .so + .pc
 1. **板端运行时依赖**：应用运行于 RK3588 时，需板端具备 libmtl.so 及其 NEEDED（DPDK/libbpf/libxdp 已在 sysroot；FFmpeg 的私有依赖 xml2/bz2/gnutls 等由 libavformat.so 自身拉取，板端已具备）。
 2. **源码改动待提交**：应用 `stdbool.h` 补 include 是真正的代码改动，建议 commit。
 3. **libxdp BPF 对象**：当前未编 `xdp-dispatcher.bpf.o`（运行期默认 dispatcher）；若 RK3588 路线需要，本地 clang 23 已支持 `-target bpf` 可补编。
-4. **本地环境再同步**：devs 此后在 sysroot 新增了 libxdp、MTL 安装产物、FFmpeg 软链、numaif.h 补丁；若要在本地 Arch 机构建应用，需把更新后的 sysroot 再 rsync 回本地（当前本地仅有 libxdp + 早期状态）。
+4. **本地环境再同步（2026-11-05 已补 `mtl` 三件套）**：devs 此后在 sysroot 新增了 libxdp、MTL 安装产物、FFmpeg 软链、numaif.h 补丁；wrapper 系 sysroot（`/home/kkkqkx/mtl/sysroot`）独缺的 `mtl` 三件套已按 §1.3 从 devs `/data/kkkqkx/mtl/sysroot` 同步补齐，后续新增产物沿用同样手动 `rsync`。
 
 ---
 

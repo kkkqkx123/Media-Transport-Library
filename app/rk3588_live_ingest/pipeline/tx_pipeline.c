@@ -8,7 +8,7 @@
  *   Core cpu_capture: V4L2 DQBUF → ring_push(CAP2ENC)
  *   Core cpu_encode:  ring_pop(CAP2ENC) → RGA → MPP enc → SEI → ring_push(ENC2DEC)
  *
- * The ENC2DEC ring is consumed by rx_pipeline (Phase 4) or MTL ST22 (Phase 5).
+ * The ENC2DEC ring stages coded packets for the MTL ST22 direct-write sink.
  */
 
 #include "tx_pipeline.h"

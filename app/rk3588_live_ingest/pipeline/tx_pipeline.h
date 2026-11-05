@@ -79,7 +79,7 @@ int   tx_pipeline_start(struct tx_pipeline* tp);
 /** Signal threads to stop and join them. */
 void  tx_pipeline_stop(struct tx_pipeline* tp);
 
-/** Get the output ring (ENC2DEC). Consumer (rx_pipeline) pops from it. */
+/** Get the output ring (ENC2MTL staging). Consumer pops coded packets when no MTL sink is set. */
 struct ring_buffer* tx_pipeline_get_output_ring(struct tx_pipeline* tp);
 /** Get the shared slab pool for coded data lifecycle management. */
 struct slab_pool*  tx_pipeline_get_slab_pool(struct tx_pipeline* tp);

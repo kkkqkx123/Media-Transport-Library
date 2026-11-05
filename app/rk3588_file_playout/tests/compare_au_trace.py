@@ -222,7 +222,7 @@ def main() -> int:
 
     if not tx:
         print()
-        print("NOTE: tx.csv missing — use file_playout_both.sh, or run TX with FILE_PLAYOUT_AU_TRACE")
+        print("NOTE: tx.csv missing — sender is the encode package (live_ingest); run it with FILE_PLAYOUT_AU_TRACE")
     return 0
 
 

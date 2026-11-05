@@ -2,7 +2,7 @@
 #include "drm_mode.h"
 #include "display_layout.h"
 #include "ptp_time.h"
-#include "tx/mp4_demux.h"
+#include "shared/mp4_demux.h"
 #include <errno.h>
 #include <json-c/json.h>
 #include <stdio.h>
@@ -13,7 +13,7 @@
 /* ---- defaults ---- */
 void file_playout_cfg_defaults(file_playout_cfg* cfg) {
     memset(cfg, 0, sizeof(*cfg));
-    cfg->mode             = FILE_PLAYOUT_MODE_BOTH;
+    cfg->mode             = FILE_PLAYOUT_MODE_RX;
     cfg->test_time        = 30;
     strcpy(cfg->tx_port,   "native_af_xdp:enP3p49s0");
     strcpy(cfg->rx_port,   "native_af_xdp:eth0");
@@ -238,60 +238,8 @@ int file_playout_config_load(const char* json_path, file_playout_cfg* cfg) {
         }
     }
 
-    struct json_object* tx_arr = NULL;
-    if (json_object_object_get_ex(root, "tx_streams", &tx_arr) && tx_arr &&
-        json_object_is_type(tx_arr, json_type_array)) {
-        int n = (int)json_object_array_length(tx_arr);
-        if (n > MP4_PIP_MAX_LANES)
-            n = MP4_PIP_MAX_LANES;
-        cfg->tx_stream_count = 0;
-        for (int i = 0; i < n; i++) {
-            struct json_object* elem = json_object_array_get_idx(tx_arr, i);
-            if (!elem)
-                continue;
-            file_playout_tx_stream* s = &cfg->tx_streams[cfg->tx_stream_count];
-            memset(s, 0, sizeof(*s));
-            if (json_object_object_get_ex(elem, "main", &val))
-                s->main = json_object_get_boolean(val);
-            if (json_object_object_get_ex(elem, "mp4_file", &val))
-                snprintf(s->mp4_file, sizeof(s->mp4_file), "%s",
-                         json_object_get_string(val));
-            if (json_object_object_get_ex(elem, "udp_port", &val))
-                s->udp_port = (uint16_t)json_object_get_int(val);
-            if (json_object_object_get_ex(elem, "audio_udp_port", &val))
-                s->audio_udp_port = (uint16_t)json_object_get_int(val);
-            if (json_object_object_get_ex(elem, "width", &val))
-                s->width = json_object_get_int(val);
-            if (json_object_object_get_ex(elem, "height", &val))
-                s->height = json_object_get_int(val);
-            if (json_object_object_get_ex(elem, "fps", &val))
-                s->fps = (float)json_object_get_double(val);
-            if (json_object_object_get_ex(elem, "codestream_size", &val))
-                s->codestream_size = (size_t)json_object_get_int64(val);
-            if (json_object_object_get_ex(elem, "loop", &val))
-                s->loop = json_object_get_boolean(val);
-            if (json_object_object_get_ex(elem, "seek_ms", &val))
-                s->seek_ms = (int64_t)json_object_get_int64(val);
-            cfg->tx_stream_count++;
-        }
-    }
-
     json_object_put(root);
     return 0;
-}
-
-/* ---- CLI parser ---- */
-void file_playout_tx_usage(const char* prog) {
-    fprintf(stderr,
-        "Usage:\n"
-        "  %s [sec] [--config FILE] [--port P] [--lip IP] [--dip IP]"
-        " [--udp PORT] [--audio-udp PORT] [--mp4 FILE]... [--no-loop]"
-        " [--seek-ms MS] [--width W] [--height H] [--fps FPS]\n"
-        "\n"
-        "  --mtl-log-level: debug|info|notice|warning|error (default: notice)\n"
-        "  --ptp-mode: external|builtin|monotonic (default: external)\n"
-        "  --ptp-utc-offset: seconds subtracted from TAI (default: 0)\n",
-        prog);
 }
 
 void file_playout_rx_usage(const char* prog) {
@@ -346,12 +294,6 @@ int file_playout_apply_mp4_probe(file_playout_cfg* cfg) {
 
     printf("probe: %s → %dx%d @ %.3ffps\n", path, w, h, (double)fps);
     return 0;
-}
-
-void file_playout_print_rx_hint(const file_playout_cfg* cfg, const char* prog) {
-    printf("\nSuggested RX command (match TX fps):\n");
-    printf("  %s %d --config config/rx_dual_host.json --fps %.3f\n",
-           prog, cfg->test_time, (double)cfg->fps);
 }
 
 int file_playout_warn_probe_mismatch(const file_playout_cfg* cfg) {
@@ -426,47 +368,6 @@ int file_playout_mode_dims(const file_playout_cfg* cfg, int* mode_w, int* mode_h
     return 0;
 }
 
-int file_playout_tx_streams_probe(file_playout_cfg* cfg) {
-    if (!cfg || cfg->tx_stream_count <= 0)
-        return -EINVAL;
-
-    for (int i = 0; i < cfg->tx_stream_count; i++) {
-        file_playout_tx_stream* s = &cfg->tx_streams[i];
-        if (!s->mp4_file[0])
-            return -EINVAL;
-
-        if (s->width > 0 && s->height > 0 && s->fps > 0.0f)
-            continue;
-
-        int w = 0, h = 0;
-        float fps = 0.0f;
-        int ret = mp4_probe_file(s->mp4_file, &w, &h, &fps);
-        if (ret < 0) {
-            fprintf(stderr, "probe: cannot probe tx_streams[%d] %s: %d\n",
-                    i, s->mp4_file, ret);
-            return ret;
-        }
-        if (s->width <= 0)
-            s->width = w;
-        if (s->height <= 0)
-            s->height = h;
-        if (s->fps <= 0.0f)
-            s->fps = fps;
-
-        printf("probe: tx_streams[%d] %s → %dx%d @ %.3ffps\n",
-               i, s->mp4_file, s->width, s->height, (double)s->fps);
-    }
-
-    for (int i = 0; i < cfg->tx_stream_count; i++) {
-        file_playout_tx_stream* s = &cfg->tx_streams[i];
-        if (!s->codestream_size && cfg->codestream_size)
-            s->codestream_size = cfg->codestream_size;
-        if (!s->audio_udp_port && s->main && cfg->audio_udp_port)
-            s->audio_udp_port = cfg->audio_udp_port;
-    }
-    return 0;
-}
-
 static int file_playout_parse_mtl_log_level(const char* level, enum mtl_log_level* out) {
     if (!strcmp(level, "debug"))
         *out = MTL_LOG_LEVEL_DEBUG;
@@ -515,15 +416,9 @@ static int file_playout_config_parse_args(file_playout_cfg* cfg, int argc, char*
         if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
             if (file_playout_config_load(argv[++i], cfg) != 0) return -1;
         } else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
-            if (cfg->mode == FILE_PLAYOUT_MODE_RX)
-                snprintf(cfg->rx_port, sizeof(cfg->rx_port), "%s", argv[++i]);
-            else
-                snprintf(cfg->tx_port, sizeof(cfg->tx_port), "%s", argv[++i]);
+            snprintf(cfg->rx_port, sizeof(cfg->rx_port), "%s", argv[++i]);
         } else if (strcmp(argv[i], "--lip") == 0 && i + 1 < argc) {
-            if (cfg->mode == FILE_PLAYOUT_MODE_RX)
-                snprintf(cfg->rx_lip, sizeof(cfg->rx_lip), "%s", argv[++i]);
-            else
-                snprintf(cfg->tx_lip, sizeof(cfg->tx_lip), "%s", argv[++i]);
+            snprintf(cfg->rx_lip, sizeof(cfg->rx_lip), "%s", argv[++i]);
         } else if (strcmp(argv[i], "--dip") == 0 && i + 1 < argc) {
             snprintf(cfg->tx_dip, sizeof(cfg->tx_dip), "%s", argv[++i]);
         } else if (strcmp(argv[i], "--sip") == 0 && i + 1 < argc) {
@@ -615,15 +510,6 @@ static int file_playout_config_parse_cli_common(int argc, char** argv,
     return file_playout_config_parse_args(cfg, argc, argv, i);
 }
 
-int file_playout_config_parse_tx_cli(int argc, char** argv, file_playout_cfg* cfg) {
-    if (argc < 1) {
-        file_playout_tx_usage("file_playout_tx");
-        return -1;
-    }
-    return file_playout_config_parse_cli_common(argc, argv, cfg, FILE_PLAYOUT_MODE_TX,
-                                            file_playout_tx_usage);
-}
-
 int file_playout_config_parse_rx_cli(int argc, char** argv, file_playout_cfg* cfg) {
     if (argc < 1) {
         file_playout_rx_usage("file_playout_rx");
@@ -673,16 +559,6 @@ void file_playout_config_print(const file_playout_cfg* cfg) {
                    s->audio_udp_port);
         }
     }
-    if (cfg->tx_stream_count > 0) {
-        printf("  tx_streams: %d lane(s)\n", cfg->tx_stream_count);
-        for (int i = 0; i < cfg->tx_stream_count; i++) {
-            const file_playout_tx_stream* s = &cfg->tx_streams[i];
-            printf("    [%d] %s udp=%u %dx%d@%.3ffps main=%s audio=%u loop=%s\n",
-                   i, s->mp4_file, s->udp_port, s->width, s->height,
-                   (double)s->fps, s->main ? "yes" : "no", s->audio_udp_port,
-                   s->loop ? "on" : "off");
-        }
-    }
     printf("  playout_delay:   %d ms\n", cfg->playout_delay_ms);
     printf("  ALSA: %s\n", cfg->alsa_device);
     printf("  CPU pthread: bridge=%d decode=%d render=%d audio=%d\n",
@@ -690,9 +566,6 @@ void file_playout_config_print(const file_playout_cfg* cfg) {
     printf("  MTL lcores:  rx=%s tx=%s",
            cfg->mtl_lcores_rx[0] ? cfg->mtl_lcores_rx : "(auto)",
            cfg->mtl_lcores_tx[0] ? cfg->mtl_lcores_tx : "(auto)");
-    if (cfg->mode == FILE_PLAYOUT_MODE_BOTH &&
-        strcmp(cfg->mtl_lcores_rx, cfg->mtl_lcores_tx) != 0)
-        printf("  [WARN: both-mode should use same mtl_lcores for MtlManager]");
     printf("\n");
     printf("  mtl_log_level:   %d\n", cfg->mtl_log_level);
     printf("  ptp_mode:        %s (utc_offset=%d)\n",

@@ -73,13 +73,9 @@ typedef struct file_playout_cfg {
     /** Phase A PiP viewport; disabled = fullscreen (default). Phase B: multi-layer. */
     file_playout_display_viewport display_viewport;
 
-    /** Phase B multi-stream PiP; count==0 → legacy single-stream rx_pipeline. */
+    /** Phase B multi-stream PiP; count==0 → single-stream rx_pipeline. */
     file_playout_pip_stream pip_streams[MP4_PIP_MAX_LANES];
     int                  pip_stream_count;
-
-    /** One ST22 TX lane (tx_streams[]); count==0 → legacy single mp4_file path. */
-    file_playout_tx_stream tx_streams[MP4_PIP_MAX_LANES];
-    int                tx_stream_count;
 
     /* RX audio */
     char   alsa_device[FILE_PLAYOUT_MAX_NAME_LEN];
@@ -109,7 +105,6 @@ typedef struct file_playout_cfg {
     int e2e_report_interval_s;
 
     /* statistics */
-    atomic_ullong stat_tx_frames;
     atomic_ullong stat_rx_frames;
     atomic_ullong stat_rx_bytes;
     atomic_uint   stat_rx_drops;

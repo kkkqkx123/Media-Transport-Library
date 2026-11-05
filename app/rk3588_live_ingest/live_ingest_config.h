@@ -17,14 +17,9 @@ struct live_ingest_cfg {
     const char* tx_port;
     const char* tx_lip;
     const char* tx_dip;
-    const char* rx_port;
-    const char* rx_lip;
-    const char* rx_sip;
     const char* v4l2_device;
     const char* drm_device;
-    const char* drm_connector;
-    const char* drm_mode;
-    int         cpu_capture, cpu_encode, cpu_bridge, cpu_decode;
+    int         cpu_capture, cpu_encode;
     const char* log_level;
 };
 

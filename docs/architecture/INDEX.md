@@ -14,6 +14,7 @@
 | `FEATURES.md` | ST 2110 协议能力、 pacing、冗余、生态插件、绑定层 |
 | `MODULES.md` | 目录与模块职责、公共 API、关键源文件映射 |
 | `AF_XDP_EBPF.md` | AF_XDP 数据面与 eBPF 过滤程序的工作方式，以及 RK3588 应用的集成清单 |
+| `DPDK_USAGE.md` | MTL 使用 DPDK 的方式：EAL、ethdev、队列/mempool/ring、pacing、flow/RSS、timesync、DMA |
 | `PTP_TIME_SYNC.md` | 内置 PTP 从时钟实现：时间源选择、t1–t4 测量、伺服调整（步进/PI/phc2sys）、漂移系数、对外 API 与限制 |
 | `lib/` | `lib/src/` 根目录逐文件分析（实例/调度/网络服务/支撑服务/平台头），入口见 [lib/README.md](lib/README.md) |
 

@@ -26,8 +26,8 @@ V4L2 采集 (io/v4l2_capturer)           ST2110 RX (mtl_rx)
 | `io/` | 输入输出：`v4l2_capturer`（V4L2 采集，DMA-BUF 导出）、`drm_renderer`（DRM/KMS 显示） |
 | `pipeline/` | 流水线：`tx_pipeline` / `rx_pipeline`（线程编排）、`ring_buffer`（帧队列）、`slice_reassembler`（码流切片重组） |
 | `mtl_tx.c` / `mtl_rx.c` / `mtl_rx_bridge.c` | MTL 会话层封装：初始化参数、TX/RX 会话创建、桥接回调 |
-| `live_ingest.c` | 入口：模式解析、`e2e_cfg` 配置、TX/RX 栈生命周期 |
-| `e2e_config.c` | JSON 配置加载（分辨率、帧率、UDP 端口、slice 数、码率、GOP、插帧刷新、CPU 绑核、DRM 模式、日志级别等） |
+| `live_ingest_app.c` | 入口：模式解析、`live_ingest_cfg` 配置、TX/RX 栈生命周期 |
+| `live_ingest_config.c` | JSON 配置加载（分辨率、帧率、UDP 端口、slice 数、码率、GOP、插帧刷新、CPU 绑核、DRM 模式、日志级别等） |
 | `tests/` | codec / hal / io / pipeline 四组单测 |
 | `ref/` | MPP 参考实现（`mpi_dec_test` 及工具函数），调试编解码问题时对照用 |
 
@@ -49,5 +49,7 @@ meson setup build && ninja -C build
 ./build/live_ingest rx                   # 仅接收
 ```
 
-先准备环境：hugepages、网卡 VF 绑定 DPDK（`script/nicctl.sh`），见仓库主文档
-"Runtime setup"。ARM 平台使用软件 pacing（TSC）。
+先准备环境：RK3588 无 DPDK poll-mode NIC，传输后端统一使用 **`native_af_xdp`**
+（软件 pacing，无 NIC 硬件限速），需先启动 `MtlManager` 并配置 hugepages（同仓库 README /
+`docs/env/RK3588_BOARD_ENV.md`），**无需** `script/nicctl.sh` 的 VF 绑定流程。`mtl_pmd_from_port()`
+按端口名前缀（`native_af_xdp:` / `kernel:` / `dpdk_af_xdp:` 等）选择 PMD。

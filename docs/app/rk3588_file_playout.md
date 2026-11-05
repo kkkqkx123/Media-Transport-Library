@@ -50,6 +50,10 @@ meson 选项（`meson_options.txt`）：
   （`config/rx_dual_host.json`），两机间需 PTP 时间同步
   （`start_ptp_dual_host.sh` + `config/ptp/` 单播配置）。
 
+传输后端：RK3588 无 DPDK poll-mode NIC，默认使用 **`native_af_xdp`**（软件 pacing），需
+`MtlManager` + hugepages；PMD 也可按端口名前缀选择 `kernel:` / `dpdk_af_xdp:` 等。详细见该目录
+`README.md`。
+
 ## 与 rk3588_live_ingest 的关系
 
 面向"文件分发 + 多路播放"场景，链路更长（解复用、playout、AV 同步、拼板），

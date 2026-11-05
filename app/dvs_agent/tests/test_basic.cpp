@@ -170,6 +170,53 @@ static void test_bundle_contract() {
   if (evs) json_object_put(evs);
 }
 
+static void test_media_ipc_health_and_gate() {
+  /* Failure accounting without an engine: every transport miss bumps the
+   * streak and remembers its code; a good answer would reset it. */
+  MediaIpcClient bad("/tmp/dvs_agent_test_nonexistent.sock");
+  CHECK(bad.fail_streak() == 0, "fresh client has no failures");
+  CHECK(bad.last_ok_ms() == 0, "fresh client never succeeded");
+  std::string br = bad.hello();
+  (void)br;
+  CHECK(bad.fail_streak() == 1, "unreachable hello bumps fail streak");
+  CHECK(bad.last_code() == "MEDIA_ENGINE_UNREACHABLE", "last code remembers UNREACHABLE");
+  CHECK(bad.last_err_ms() > 0, "error time recorded");
+  /* Blocking result wait on a dead socket returns promptly with no match. */
+  std::string st, lanes;
+  CHECK(!bad.wait_prepare_result("op-missing", 200, st, lanes),
+        "wait on unreachable finds no result");
+  CHECK(!bad.wait_prepare_result("", 200, st, lanes),
+        "wait with empty operation id refuses");
+  /* Hello verdict matrix for the version gate. */
+  {
+    bool answered = false, match = false;
+    std::string eb;
+    int ei = -1;
+    CHECK(MediaIpcClient::parse_hello(
+              "{\"ok\":true,\"data\":{\"ipcVersion\":1,\"bundleVersion\":\"1\"}}",
+              answered, match, eb, ei) &&
+              answered && match && eb == "1" && ei == 1,
+          "co-released hello matches");
+    CHECK(MediaIpcClient::parse_hello(
+              "{\"ok\":true,\"data\":{\"ipcVersion\":2,\"bundleVersion\":\"1\"}}",
+              answered, match, eb, ei) &&
+              answered && !match,
+          "ipc generation drift is answered but mismatched");
+    CHECK(MediaIpcClient::parse_hello(
+              "{\"ok\":true,\"data\":{\"ipcVersion\":1,\"bundleVersion\":\"9\"}}",
+              answered, match, eb, ei) &&
+              answered && !match,
+          "bundle drift is answered but mismatched");
+    CHECK(MediaIpcClient::parse_hello(
+              "{\"ok\":false,\"code\":\"MEDIA_ENGINE_UNREACHABLE\"}", answered,
+              match, eb, ei) &&
+              !answered,
+          "transport error envelope is not an answer");
+    CHECK(!MediaIpcClient::parse_hello("not json", answered, match, eb, ei),
+          "garbage hello is unparsable");
+  }
+}
+
 static void test_http_client_empty_url() {
   HttpClient cli;
   std::string resp;
@@ -378,6 +425,7 @@ int main() {
   test_node_store_persistence();
   test_registration_local_mode();
   test_bundle_contract();
+  test_media_ipc_health_and_gate();
   test_http_client_empty_url();
   test_channel_contract();
   test_network_apply_parsers();

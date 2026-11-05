@@ -98,7 +98,7 @@ static int send_envelope(dvs_client_t* c, const char* request_id, int status,
   return rc;
 }
 
-/* Per-connection messageId replay cache. Only the owning reader thread
+/* Per-connection requestId replay cache. Only the owning reader thread
  * touches it, so no extra lock is needed. */
 static const char* idem_lookup(dvs_client_t* c, const char* rid) {
   for (int i = 0; i < c->idem_count; i++) {
@@ -144,10 +144,11 @@ static int respond_cached(dvs_client_t* c, const char* rid, int cacheable,
   return rc;
 }
 
-static void broadcast_event(const char* type, const char* data_json) {
+static void broadcast_event(const char* type, const char* data_json,
+                            const char* request_id) {
   char buf[8192];
-  snprintf(buf, sizeof(buf), "{\"type\":\"%s\",\"data\":%s}", type,
-           data_json ? data_json : "{}");
+  snprintf(buf, sizeof(buf), "{\"type\":\"%s\",\"requestId\":\"%s\",\"data\":%s}",
+           type, request_id ? request_id : "", data_json ? data_json : "{}");
   /* Snapshot the active clients so a slow reader cannot hold the global
    * table lock across blocking writes; each write still takes its own
    * per-connection lock. A client that disconnects mid-broadcast simply
@@ -164,7 +165,7 @@ static void broadcast_event(const char* type, const char* data_json) {
     write_line_locked(targets[i], buf);
 }
 
-static void broadcast_state_changed(void) {
+static void broadcast_state_changed(const char* request_id) {
   dvs_state_t snap;
   dvs_state_snapshot(&snap);
   const char* name = "idle";
@@ -177,7 +178,7 @@ static void broadcast_state_changed(void) {
   snprintf(ev, sizeof(ev),
            "{\"operationId\":\"%s\",\"revision\":%d,\"state\":\"%s\",\"opState\":%d}",
            snap.operation_id, snap.revision, name, (int)snap.op_state);
-  broadcast_event("media.state_changed", ev);
+  broadcast_event("media.state_changed", ev, request_id);
 }
 
 /* ------------------------------------------------------------------ */
@@ -199,7 +200,7 @@ static int int_field(struct json_object* o, const char* key, int def) {
 }
 
 /* Business body: agent nests fields under payload, older callers use the top
- * level. type/messageId stay top-level; everything else reads from the body. */
+ * level. type/requestId stay top-level; everything else reads from the body. */
 static struct json_object* body_of(struct json_object* req) {
   struct json_object* p = NULL;
   if (req && json_object_object_get_ex(req, "payload", &p) && p &&
@@ -233,12 +234,25 @@ static void* prepare_worker(void* arg) {
 
   int rc = dvs_state_finish_prepare(job->opid);
   if (rc != 0) dvs_state_fail_prepare(job->opid);
-  char ev[600];
-  snprintf(ev, sizeof(ev),
-           "{\"type\":\"media.prepare.result\",\"requestId\":\"%s\","
-           "\"data\":{\"operationId\":\"%s\",\"revision\":%d,\"status\":\"%s\"}}",
-           job->request_id, job->opid, job->revision,
-           (rc == 0) ? "ready" : "blocked");
+  /* The result carries the channel summary so the barrier can check per
+   * lane, not just per node. Empty when the engine exposes no lane source;
+   * readiness itself stays simulated until the pending layout stages real
+   * sessions. */
+  json_object* lanes = (g_hooks.lane_stats) ? g_hooks.lane_stats() : NULL;
+  if (!lanes) lanes = json_object_new_array();
+  json_object* datao = json_object_new_object();
+  json_object_object_add(datao, "operationId", json_object_new_string(job->opid));
+  json_object_object_add(datao, "revision", json_object_new_int(job->revision));
+  json_object_object_add(datao, "status",
+                         json_object_new_string((rc == 0) ? "ready" : "blocked"));
+  json_object_object_add(datao, "lanes", lanes);
+  json_object* evo = json_object_new_object();
+  json_object_object_add(evo, "type", json_object_new_string("media.prepare.result"));
+  json_object_object_add(evo, "requestId", json_object_new_string(job->request_id));
+  json_object_object_add(evo, "data", datao);
+  const char* es = json_object_to_json_string(evo);
+  char* ev = es ? strdup(es) : NULL;
+  json_object_put(evo);
 
   pthread_mutex_lock(&g_clients_mu);
   int ok = (job->slot >= 0 && job->slot < DVS_IPC_MAX_CLIENTS &&
@@ -247,13 +261,14 @@ static void* prepare_worker(void* arg) {
   dvs_client_t* c = ok ? &g_clients[job->slot] : NULL;
   if (c) pthread_mutex_lock(&c->wmu);
   pthread_mutex_unlock(&g_clients_mu);
-  if (c) {
+  if (c && ev) {
     ssize_t n = write(c->fd, ev, strlen(ev));
     ssize_t r = (n > 0) ? write(c->fd, "\n", 1) : -1;
     (void)r;
     pthread_mutex_unlock(&c->wmu);
   }
 
+  free(ev);
   free(job);
   return NULL;
 }
@@ -415,7 +430,7 @@ static int handle_line(dvs_client_t* c, char* line) {
     return 0;
   }
   const char* type = str_field(req, "type");
-  const char* msg_id = str_field(req, "messageId");
+  const char* msg_id = str_field(req, "requestId");
 
   char rid[64];
   int cacheable = (msg_id && msg_id[0]) ? 1 : 0;
@@ -589,8 +604,8 @@ static int handle_line(dvs_client_t* c, char* line) {
     snprintf(ev, sizeof(ev),
              "{\"operationId\":\"%s\",\"revision\":%d,\"status\":\"applied\"}", opid,
              applied);
-    broadcast_event("media.layout_applied", ev);
-    broadcast_state_changed();
+    broadcast_event("media.layout_applied", ev, rid);
+    broadcast_state_changed(rid);
   } else if (strcmp(type, "abort") == 0) {
     const char* opid = str_field(body, "operationId");
     int rc = dvs_state_abort(opid);
@@ -606,7 +621,7 @@ static int handle_line(dvs_client_t* c, char* line) {
     }
     if (g_hooks.abort) g_hooks.abort();
     respond_cached(c, rid, cacheable, 200, "OK", "aborted", NULL);
-    broadcast_state_changed();
+    broadcast_state_changed(rid);
   } else if (strcmp(type, "clear") == 0) {
     exec_job_t req, res;
     memset(&req, 0, sizeof(req));
@@ -623,7 +638,7 @@ static int handle_line(dvs_client_t* c, char* line) {
       goto done;
     }
     respond_cached(c, rid, cacheable, 200, "OK", "cleared", NULL);
-    broadcast_state_changed();
+    broadcast_state_changed(rid);
   } else if (strcmp(type, "tx_start") == 0) {
     if (!g_hooks.tx_start) {
       respond_cached(c, rid, cacheable, 501, "NOT_IMPLEMENTED",
@@ -840,6 +855,29 @@ int dvs_ipc_server_run(const char* sock_path) {
       if (errno == EINTR) continue;
       perror("accept");
       continue;
+    }
+
+    /* Peer authentication: the agent and the engine run as one node unit
+     * under the same user. Any other local uid is refused before it gets a
+     * slot, so high-risk verbs never reach an arbitrary same-host process. */
+    {
+      struct ucred cred;
+      socklen_t clen = sizeof(cred);
+      if (getsockopt(client, SOL_SOCKET, SO_PEERCRED, &cred, &clen) != 0 ||
+          clen != sizeof(cred)) {
+        fprintf(stderr, "dvs-media: ipc accept without peer credential, refused\n");
+        close(client);
+        continue;
+      }
+      if (cred.uid != getuid()) {
+        fprintf(stderr,
+                "dvs-media: ipc peer uid=%u pid=%d refused (want uid=%u)\n",
+                (unsigned)cred.uid, (int)cred.pid, (unsigned)getuid());
+        close(client);
+        continue;
+      }
+      fprintf(stderr, "dvs-media: ipc accept pid=%d uid=%u\n", (int)cred.pid,
+              (unsigned)cred.uid);
     }
 
     int idx = -1;

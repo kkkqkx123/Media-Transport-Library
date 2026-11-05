@@ -32,7 +32,11 @@
 #include <sys/stat.h>
 
 static NodeStore* g_store = nullptr;
+/* Command channel: layout and config mutations plus their async results. */
 static MediaIpcClient* g_media = nullptr;
+/* Query channel: status and capability reads share nothing with commands so
+ * a slow query never holds up a layout verb. Both dial the same socket. */
+static MediaIpcClient* g_media_q = nullptr;
 static Maintenance* g_maint = nullptr;
 static Registration* g_reg = nullptr;
 static std::string g_web_root;
@@ -271,13 +275,185 @@ static bool intent_log_network(const std::string& intent, std::string& err) {
     return true;
 }
 
+static long long agent_now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+/* Continuous version gate. Warn-only at startup (the engine may start
+ * later), but layout-affecting verbs are refused while the reachable engine
+ * reports a different bundle contract. Queries and abort stay open so
+ * observability and the two-phase escape hatch keep working. */
+static std::mutex g_ver_mu;
+static bool g_ver_known = false;
+static bool g_ver_match = false;
+static long long g_ver_at = 0;
+static const long long kVerCacheMs = 5000;
+
+static bool media_layout_allowed(std::string& reason_out) {
+    reason_out.clear();
+    if (!g_media_q) return true;
+    {
+        std::lock_guard<std::mutex> lk(g_ver_mu);
+        if (g_ver_known && agent_now_ms() - g_ver_at < kVerCacheMs) {
+            if (!g_ver_match)
+                reason_out = "VERSION_MISMATCH: media engine bundle differs";
+            return g_ver_match;
+        }
+    }
+    bool answered = false, match = false;
+    std::string eb;
+    int ei = -1;
+    MediaIpcClient::parse_hello(g_media_q->hello(), answered, match, eb, ei);
+    std::lock_guard<std::mutex> lk(g_ver_mu);
+    g_ver_at = agent_now_ms();
+    if (!answered) {
+        /* Engine silent: unknown, not mismatched. Let the verb itself
+         * report the transport error instead of masking it here. */
+        return true;
+    }
+    g_ver_known = true;
+    g_ver_match = match;
+    if (!match) {
+        char buf[160];
+        snprintf(buf, sizeof(buf),
+                 "VERSION_MISMATCH: engine bundle %s ipc %d, want %s/%d",
+                 eb.empty() ? "?" : eb.c_str(), ei, DVS_NODE_BUNDLE_VERSION,
+                 DVS_MEDIA_IPC_VERSION);
+        reason_out = buf;
+        fprintf(stderr, "dvs-agent: %s\n", buf);
+    }
+    return match;
+}
+
+static std::string gated_envelope(const std::string& reason) {
+    std::string code = "OK";
+    std::string msg = reason;
+    size_t colon = reason.find(':');
+    if (colon != std::string::npos) {
+        code = reason.substr(0, colon);
+        msg = reason.substr(colon + 1);
+        while (!msg.empty() && msg[0] == ' ') msg.erase(0, 1);
+    }
+    json_object* o = json_object_new_object();
+    json_object_object_add(o, "ok", json_object_new_boolean(0));
+    json_object_object_add(o, "status", json_object_new_int(409));
+    json_object_object_add(o, "code", json_object_new_string(code.c_str()));
+    json_object_object_add(o, "msg", json_object_new_string(msg.c_str()));
+    json_object_object_add(o, "data", json_object_new_object());
+    json_object_object_add(o, "requestId", json_object_new_string("gate"));
+    const char* s = json_object_to_json_string(o);
+    std::string out(s ? s : "{}");
+    json_object_put(o);
+    return out;
+}
+
+/* Picture-affecting verbs go through the two-phase path; a configure body
+ * carrying layout keys is a caller-side model error, refused locally. */
+static bool configure_has_layout_keys(json_object* payload) {
+    if (!payload || !json_object_is_type(payload, json_type_object)) return false;
+    json_object* t = nullptr;
+    return (json_object_object_get_ex(payload, "streams", &t) && t) ||
+           (json_object_object_get_ex(payload, "windows", &t) && t) ||
+           (json_object_object_get_ex(payload, "layout", &t) && t);
+}
+
+/* Mutating verbs on the command channel, guarded by the version gate.
+ * Abort is the escape hatch and bypasses the gate (call g_media directly). */
+static std::string media_cmd(const std::string& type, json_object* payload,
+                             int timeout_ms = 2000) {
+    if (!g_media) return gated_envelope("MEDIA_ENGINE_UNCONFIGURED: no IPC client");
+    if (type == "prepare" || type == "commit" || type == "configure" ||
+        type == "clear" || type == "tx_start" || type == "tx_stop" ||
+        type == "set_sources") {
+        std::string reason;
+        if (!media_layout_allowed(reason)) return gated_envelope(reason);
+        if (type == "configure" && configure_has_layout_keys(payload))
+            return gated_envelope(
+                "INVALID_ARGUMENT: picture changes must use prepare/commit");
+    }
+    return g_media->request(type, payload, timeout_ms);
+}
+
+/* Read-only verbs on the query channel; never gated. */
+static std::string media_query(const std::string& type, json_object* payload,
+                               int timeout_ms = 2000) {
+    if (!g_media_q) return gated_envelope("MEDIA_ENGINE_UNCONFIGURED: no IPC client");
+    return g_media_q->request(type, payload, timeout_ms);
+}
+
+/* Single shared判定 for config outcomes: a stale answer (a newer save
+ * landed while the engine worked) is dropped, never overwriting fresh
+ * state. Both the synchronous input path and the background output path
+ * report through here. */
+static int config_desired_revision(const std::string& scope,
+                                   const std::string& node_id) {
+    int want_rev = 0;
+    json_object* cur = g_store->get_config(scope, node_id);
+    json_object* drv = nullptr;
+    if (cur && json_object_object_get_ex(cur, "desiredRevision", &drv) && drv)
+        want_rev = json_object_get_int(drv);
+    if (cur) json_object_put(cur);
+    return want_rev;
+}
+
+static void apply_media_config_outcome(const std::string& scope,
+                                       const std::string& node_id, int want_rev,
+                                       bool ok, const std::string& code,
+                                       const std::string& msg) {
+    int cur_rev = config_desired_revision(scope, node_id);
+    if (cur_rev != want_rev) {
+        fprintf(stderr,
+                "dvs-agent: media configure (%s) stale rev %d vs %d, skip\n",
+                scope.c_str(), want_rev, cur_rev);
+        return;
+    }
+    if (!ok) {
+        g_store->mark_failed(scope, code.empty() ? "MEDIA_CONFIGURE_FAILED" : code.c_str(),
+                             msg.empty() ? "media engine refused config" : msg.c_str());
+        fprintf(stderr, "dvs-agent: media configure (%s) failed code=%s msg=%s\n",
+                scope.c_str(), code.c_str(), msg.c_str());
+    } else {
+        g_store->mark_applied(scope, 0);
+        fprintf(stderr, "dvs-agent: media configure (%s) ok\n", scope.c_str());
+    }
+}
+
+/* Engine link derived from the query channel counters, no extra probes.
+ * Transitions are audit-logged; the shape stays local to /version so the
+ * platform heartbeat contract never shifts under this change. */
+static std::string g_link_logged = "unknown";
+static std::string engine_link_state() {
+    if (!g_media_q) return "unknown";
+    int streak = g_media_q->fail_streak();
+    long long ok_age = -1;
+    if (g_media_q->last_ok_ms() > 0) ok_age = agent_now_ms() - g_media_q->last_ok_ms();
+    std::string st;
+    if (streak >= 3) st = "offline";
+    else if (streak > 0) st = "degraded";
+    else if (ok_age >= 0) st = "online";
+    else st = "unknown";
+    if (st != g_link_logged && (st == "offline" || g_link_logged == "offline")) {
+        fprintf(stderr, "dvs-agent: engine link %s -> %s (streak=%d)\n",
+                g_link_logged.c_str(), st.c_str(), streak);
+        g_link_logged = st;
+    } else if (g_link_logged == "unknown" && st != "unknown") {
+        g_link_logged = st;
+    }
+    return st;
+}
+
+static long long g_cap_ok_ms = 0;
+static const long long kCapStaleMs = 30000;
+
 /* Pull engine capability once and merge into node.capabilities. Engine
  * unreachable keeps the stored value; an engine that clearly reports an
  * empty port array propagates the empty array so the frontend can show the
  * honest empty state instead of a synthesized port. Log-only. */
 static void refresh_capability_from_media() {
-    if (!g_media || !g_store) return;
-    std::string cr = g_media->request("capability", nullptr);
+    if (!g_media_q || !g_store) return;
+    std::string cr = g_media_q->request("capability", nullptr);
     json_object* co = json_tokener_parse(cr.c_str());
     if (!co) { fprintf(stderr, "dvs-agent: startup capability pull failed (unparsable)\n"); return; }
     json_object* okv = nullptr;
@@ -294,6 +470,7 @@ static void refresh_capability_from_media() {
         json_object_object_add(patch, "capabilities", merged);
         g_store->update_node(patch);
         json_object_put(patch);
+        g_cap_ok_ms = agent_now_ms();
         fprintf(stderr, "dvs-agent: startup capability merged\n");
     } else {
         fprintf(stderr, "dvs-agent: startup capability pull returned error\n");
@@ -438,46 +615,32 @@ static std::string get_str(json_object* o, const char* key) {
 
 /* Background reporter. After the agent forwards a platform sub-layout to the
  * media engine (prepare IPC), the engine emits a prepare-result event once
- * it has readied its RX sessions. This thread watches the IPC event ring,
- * finds the matching operation, and calls the platform commit endpoint so
- * the barrier can collect this node's reply and switch at the target time.
- * Runs detached; never blocks the HTTP handler. Only ready/blocked leave
- * this node; anything else (including timeouts) is reported as blocked. */
+ * it has readied its RX sessions. This thread waits for the matching
+ * operation on the command channel, then closes the local two-phase
+ * operation (commit on ready, abort otherwise) before uplinking so the
+ * barrier can collect this node's reply. Runs detached; never blocks the
+ * HTTP handler. Only ready/blocked leave this node; anything else
+ * (including timeouts) is reported as blocked. */
 static void agent_report_commit(const std::string& opid, int rev,
                                 int64_t applyAtNs, const std::string& nodeId,
                                 const std::string& platform_url) {
     (void)applyAtNs;  // reserved for barrier diagnostics
-    std::string status = "ready";
+    std::string status = "blocked";
     std::string lanes_json = "[]";
     bool done = false;
-    for (int i = 0; i < 50 && !done; i++) {  // up to 5s
-        json_object* evs = g_media->drain_events();
-        int n = json_object_array_length(evs);
-        for (int j = 0; j < n; j++) {
-            json_object* e = json_object_array_get_idx(evs, j);
-            std::string t = get_str(e, "type");
-            if (t == "media.prepare.result") {
-                json_object* dd = nullptr;
-                if (json_object_object_get_ex(e, "data", &dd) && dd) {
-                    if (get_str(dd, "operationId") == opid) {
-                        std::string s = get_str(dd, "status");
-                        status = (s == "ready") ? "ready" : "blocked";
-                        json_object* lj = nullptr;
-                        if (json_object_object_get_ex(dd, "lanes", &lj) && lj) {
-                            const char* ls = json_object_to_json_string(lj);
-                            if (ls) lanes_json = ls;
-                        }
-                        done = true;
-                    }
-                }
-            }
+    if (g_media) {
+        std::string ev_status, ev_lanes;
+        /* Blocking wait with early match: no fixed sleep grid, and the
+         * client lock is released while polling so other verbs interleave. */
+        if (g_media->wait_prepare_result(opid, 5000, ev_status, ev_lanes)) {
+            status = ev_status;
+            lanes_json = ev_lanes;
+            done = true;
         }
-        json_object_put(evs);
-        if (!done) std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     /* fallback: if the event was missed (e.g. drained elsewhere), probe state */
     if (!done) {
-        std::string qs = g_media->query_state();
+        std::string qs = media_query("query_state", nullptr);
         json_object* st = json_tokener_parse(qs.c_str());
         if (st) {
             json_object* d = nullptr;
@@ -501,12 +664,13 @@ static void agent_report_commit(const std::string& opid, int rev,
     if (lanes_json != "[]") lanes = json_tokener_parse(lanes_json.c_str());
     /* Close the local two-phase operation so the media engine returns to
      * idle; otherwise the next prepare is rejected as "another operation
-     * in progress". Commit on ready, abort otherwise, before uplinking. */
+     * in progress". Commit on ready, abort otherwise, before uplinking.
+     * Abort always bypasses the version gate: it is the escape hatch. */
     {
         json_object* term = json_object_new_object();
         json_object_object_add(term, "operationId", json_object_new_string(opid.c_str()));
         json_object_object_add(term, "revision", json_object_new_int(rev));
-        std::string tr = (status == "ready") ? g_media->request("commit", term)
+        std::string tr = (status == "ready") ? media_cmd("commit", term)
                                                : g_media->request("abort", term);
         json_object_put(term);
         json_object* to = json_tokener_parse(tr.c_str());
@@ -556,29 +720,24 @@ int main(int argc, char** argv) {
 
     g_store = new NodeStore(db_path);
     g_media = new MediaIpcClient(media_sock);
+    g_media_q = new MediaIpcClient(media_sock);
     g_maint = new Maintenance(g_store, g_media);
 
     // Bundle handshake: confirm the local media engine is a co-released
     // peer. Warn-only; the engine may simply start later than the agent.
+    // The verdict seeds the continuous version gate below.
     {
-        std::string hr = g_media->hello();
-        json_object* ho = json_tokener_parse(hr.c_str());
-        bool match = false;
-        if (ho) {
-            json_object* okv = nullptr;
-            json_object* data = nullptr;
-            if (json_object_object_get_ex(ho, "ok", &okv) && okv &&
-                json_object_get_boolean(okv) &&
-                json_object_object_get_ex(ho, "data", &data) && data) {
-                json_object* iv = nullptr;
-                json_object* bv = nullptr;
-                json_object_object_get_ex(data, "ipcVersion", &iv);
-                json_object_object_get_ex(data, "bundleVersion", &bv);
-                match = iv && json_object_get_int(iv) == DVS_MEDIA_IPC_VERSION &&
-                        bv && std::string(json_object_get_string(bv)) ==
-                                  DVS_NODE_BUNDLE_VERSION;
+        bool answered = false, match = false;
+        std::string eb;
+        int ei = -1;
+        MediaIpcClient::parse_hello(media_query("hello", nullptr), answered, match, eb, ei);
+        {
+            std::lock_guard<std::mutex> lk(g_ver_mu);
+            g_ver_at = agent_now_ms();
+            if (answered) {
+                g_ver_known = true;
+                g_ver_match = match;
             }
-            json_object_put(ho);
         }
         if (match)
             printf("dvs-agent: media engine bundle %s ipc %d confirmed\n",
@@ -605,7 +764,7 @@ int main(int argc, char** argv) {
         }
         agent_base = "http://" + ip + ":" + std::to_string(port);
     }
-    g_reg = new Registration(g_store, g_media, platform_url, 3000, agent_base);
+    g_reg = new Registration(g_store, g_media_q, platform_url, 3000, agent_base);
     // WS 下行分发：布局/配置/升级经长连接到达，与短连接同语义。
     g_reg->set_downlink_handler([&](const std::string& type, json_object* data,
                                     const std::string& msg_id) {
@@ -632,7 +791,7 @@ int main(int argc, char** argv) {
             json_object* geo = nullptr;
             if (json_object_object_get_ex(data, "geometry", &geo))
                 json_object_object_add(prep, "geometry", json_object_get(geo));
-            std::string r = g_media->request("prepare", prep);
+            std::string r = media_cmd("prepare", prep);
             json_object_put(prep);
             (void)r;
             std::string nodeId = get_str(g_store->node(), "id");
@@ -973,11 +1132,11 @@ int main(int argc, char** argv) {
                                     json_object* rval = json_object_new_object();
                                     json_object_object_add(rval, "role", json_object_new_string(cur_role.c_str()));
                                     json_object_object_add(rv, "value", rval);
-                                    std::string rr = g_media->request("configure", rv);
+                                    std::string rr = media_cmd("configure", rv);
                                     (void)rr;  // role sync is best-effort; tx_start is authoritative
                                     json_object_put(rv);
                                     json_object* payload = tx_start_payload(txp);
-                                    std::string tr = g_media->request("tx_start", payload);
+                                    std::string tr = media_cmd("tx_start", payload);
                                     json_object_put(payload);
                                     json_object* to = json_tokener_parse(tr.c_str());
                                     bool ok = false;
@@ -1244,19 +1403,12 @@ int main(int argc, char** argv) {
                     // stale answer from overwriting a newer save.
                     if (forward_media && fwd) {
                         if (scope == "output") {
-                            int want_rev = 0;
-                            {
-                                json_object* cur = g_store->get_config(scope, node_id);
-                                json_object* drv = nullptr;
-                                if (cur && json_object_object_get_ex(cur, "desiredRevision", &drv) && drv)
-                                    want_rev = json_object_get_int(drv);
-                                if (cur) json_object_put(cur);
-                            }
+                            int want_rev = config_desired_revision(scope, node_id);
                             json_object* fwd_bg = json_object_get(fwd);
                             std::string sc = scope;
                             std::string nid = node_id;
                             std::thread([fwd_bg, sc, nid, want_rev]() {
-                                std::string fr = g_media->request("configure", fwd_bg);
+                                std::string fr = media_cmd("configure", fwd_bg);
                                 json_object* fo = json_tokener_parse(fr.c_str());
                                 bool ok = false;
                                 std::string code, msg;
@@ -1275,31 +1427,12 @@ int main(int argc, char** argv) {
                                     code = "MEDIA_CONFIGURE_UNPARSABLE";
                                     msg = "media engine response unparsable";
                                 }
-                                int cur_rev = want_rev;
-                                {
-                                    json_object* cur = g_store->get_config(sc, nid);
-                                    json_object* drv = nullptr;
-                                    if (cur && json_object_object_get_ex(cur, "desiredRevision", &drv) && drv)
-                                        cur_rev = json_object_get_int(drv);
-                                    if (cur) json_object_put(cur);
-                                }
-                                if (cur_rev != want_rev) {
-                                    fprintf(stderr, "dvs-agent: media configure (%s) stale rev %d vs %d, skip\n",
-                                            sc.c_str(), want_rev, cur_rev);
-                                } else if (!ok) {
-                                    g_store->mark_failed(sc, code.empty() ? "MEDIA_CONFIGURE_FAILED" : code.c_str(),
-                                                         msg.empty() ? "media engine refused output config" : msg.c_str());
-                                    fprintf(stderr, "dvs-agent: media configure (%s) failed code=%s msg=%s\n",
-                                            sc.c_str(), code.c_str(), msg.c_str());
-                                } else {
-                                    g_store->mark_applied(sc, 0);
-                                    fprintf(stderr, "dvs-agent: media configure (%s) ok (background)\n", sc.c_str());
-                                }
+                                apply_media_config_outcome(sc, nid, want_rev, ok, code, msg);
                                 json_object_put(fwd_bg);
                             }).detach();
                             json_object_put(fwd);
                         } else {
-                            std::string fr = g_media->request("configure", fwd);
+                            std::string fr = media_cmd("configure", fwd);
                             json_object* fo = json_tokener_parse(fr.c_str());
                             if (fo) {
                                 json_object* okv = nullptr;
@@ -1313,16 +1446,15 @@ int main(int argc, char** argv) {
                                 json_object* msgv = nullptr;
                                 if (json_object_object_get_ex(fo, "msg", &msgv) && msgv)
                                     msg = json_object_get_string(msgv);
-                                if (!ok) {
-                                    g_store->mark_failed(scope, code.empty() ? "MEDIA_CONFIGURE_FAILED" : code.c_str(),
-                                                         msg.empty() ? "media engine refused config" : msg.c_str());
-                                    fprintf(stderr, "dvs-agent: media configure (%s) failed code=%s msg=%s\n",
-                                            scope.c_str(), code.c_str(), msg.c_str());
-                                }
+                                int want_rev = config_desired_revision(scope, node_id);
+                                apply_media_config_outcome(scope, node_id, want_rev, ok,
+                                                         code, msg);
                                 json_object_put(fo);
                             } else {
-                                g_store->mark_failed(scope, "MEDIA_CONFIGURE_UNPARSABLE", "media engine response unparsable");
-                                fprintf(stderr, "dvs-agent: media configure (%s) unparsable\n", scope.c_str());
+                                int want_rev = config_desired_revision(scope, node_id);
+                                apply_media_config_outcome(scope, node_id, want_rev, false,
+                                                         "MEDIA_CONFIGURE_UNPARSABLE",
+                                                         "media engine response unparsable");
                             }
                             json_object_put(fwd);
                         }
@@ -1461,19 +1593,30 @@ int main(int argc, char** argv) {
         // media endpoints
         if (req.method == "GET" && req.path == "/api/v1/node/media/status") {
             // pass through the engine response (or structured error envelope)
-            std::string r = g_media->query_state();
+            std::string r = media_query("query_state", nullptr);
             json_object* o = json_tokener_parse(r.c_str());
             if (!o) o = json_object_new_object();
             send_json(res, o); // already a full envelope from the media engine
             return;
         }
         if (req.method == "GET" && req.path == "/api/v1/node/media/events") {
-            send_json(res, envelope_ok(g_media->drain_events(), ""));
+            /* Both channels hear broadcasts; merge without losing either. */
+            json_object* merged = json_object_new_array();
+            json_object* a = g_media ? g_media->drain_events() : nullptr;
+            json_object* b = g_media_q ? g_media_q->drain_events() : nullptr;
+            for (json_object* src : {a, b}) {
+                if (!src) continue;
+                int n = json_object_array_length(src);
+                for (int i = 0; i < n; i++)
+                    json_object_array_add(merged, json_object_get(json_object_array_get_idx(src, i)));
+                json_object_put(src);
+            }
+            send_json(res, envelope_ok(merged, ""));
             return;
         }
         if (req.method == "POST" && req.path == "/api/v1/node/media/prepare") {
             json_object* body = json_tokener_parse(req.body.c_str());
-            std::string r = g_media->request("prepare", body);
+            std::string r = media_cmd("prepare", body);
             if (body) json_object_put(body);
             json_object* o = json_tokener_parse(r.c_str());
             if (!o) o = json_object_new_object();
@@ -1484,7 +1627,7 @@ int main(int argc, char** argv) {
         // operation can be finished by hand when the barrier path is down.
         if (req.method == "POST" && req.path == "/api/v1/node/media/commit") {
             json_object* body = json_tokener_parse(req.body.c_str());
-            std::string r = g_media->request("commit", body);
+            std::string r = media_cmd("commit", body);
             if (body) json_object_put(body);
             json_object* o = json_tokener_parse(r.c_str());
             if (!o) o = json_object_new_object();
@@ -1545,7 +1688,7 @@ int main(int argc, char** argv) {
             json_object* geo = nullptr;
             if (body && json_object_object_get_ex(body, "geometry", &geo))
                 json_object_object_add(prep, "geometry", json_object_get(geo));
-            std::string r = g_media->request("prepare", prep);
+            std::string r = media_cmd("prepare", prep);
             json_object_put(prep);
             std::string nodeId = get_str(g_store->node(), "id");
             if (nodeId.empty()) nodeId = "local-node";
@@ -1561,7 +1704,7 @@ int main(int argc, char** argv) {
         }
         // Expose per-lane RX readiness from the engine for barrier checks.
         if (req.method == "GET" && req.path == "/api/v1/node/media/lanes") {
-            std::string r = g_media->query_state();
+            std::string r = media_query("query_state", nullptr);
             json_object* o = json_tokener_parse(r.c_str());
             json_object* d = nullptr;
             json_object* lanes = nullptr;
@@ -1576,7 +1719,7 @@ int main(int argc, char** argv) {
         // running/failed. An unreachable engine yields its error envelope
         // instead of an empty object, so unknown is never misread as idle.
         if (req.method == "GET" && req.path == "/api/v1/node/media/tx") {
-            std::string r = g_media->query_state();
+            std::string r = media_query("query_state", nullptr);
             json_object* o = json_tokener_parse(r.c_str());
             json_object* okv = nullptr;
             bool ok = o && json_object_object_get_ex(o, "ok", &okv) && okv &&
@@ -1661,7 +1804,7 @@ int main(int argc, char** argv) {
             return;
         }
         if (req.method == "GET" && req.path == "/api/v1/node/capability") {
-            std::string cr = g_media->request("capability", nullptr);
+            std::string cr = media_query("capability", nullptr);
             json_object* co = json_tokener_parse(cr.c_str());
             if (co) {
                 json_object* okv = nullptr;
@@ -1678,13 +1821,21 @@ int main(int argc, char** argv) {
                     json_object_object_add(patch, "capabilities", merged);
                     g_store->update_node(patch);
                     json_object_put(patch);
+                    g_cap_ok_ms = agent_now_ms();
                 }
                 json_object_put(co);
             }
             json_object* n = g_store->node();
             json_object* cap = nullptr;
             json_object_object_get_ex(n, "capabilities", &cap);
-            send_json(res, envelope_ok(cap ? json_object_get(cap) : json_object_new_object(), ""));
+            json_object* cap_out = cap ? json_object_get(cap) : json_object_new_object();
+            /* Freshness is served, never stored: an engine that went silent
+             * leaves an explicitly expired snapshot instead of a fresh look. */
+            long long age = (g_cap_ok_ms > 0) ? agent_now_ms() - g_cap_ok_ms : -1;
+            bool stale = (age < 0) || (age > kCapStaleMs);
+            json_object_object_add(cap_out, "capStale", json_object_new_boolean(stale ? 1 : 0));
+            json_object_object_add(cap_out, "capAgeMs", json_object_new_int64(age));
+            send_json(res, envelope_ok(cap_out, ""));
             return;
         }
         if (req.method == "POST" && req.path == "/api/v1/node/register") {
@@ -1727,7 +1878,23 @@ int main(int argc, char** argv) {
         if (req.method == "GET" && req.path == "/api/v1/node/version") {
             // Bundle contract report: this agent's versions plus the live
             // media engine hello, so ops can confirm a co-released pair.
-            std::string hr = g_media->hello();
+            // The gate verdict rides along: layout verbs are refused while
+            // a reachable engine disagrees, queries stay open.
+            std::string hr = media_query("hello", nullptr);
+            bool answered = false, match = false;
+            std::string eb;
+            int ei = -1;
+            MediaIpcClient::parse_hello(hr, answered, match, eb, ei);
+            {
+                std::lock_guard<std::mutex> lk(g_ver_mu);
+                g_ver_at = agent_now_ms();
+                if (answered) {
+                    g_ver_known = true;
+                    g_ver_match = match;
+                }
+            }
+            std::string gate_reason;
+            bool allowed = media_layout_allowed(gate_reason);
             json_object* ho = json_tokener_parse(hr.c_str());
             json_object* d = json_object_new_object();
             json_object_object_add(d, "bundleVersion",
@@ -1736,6 +1903,19 @@ int main(int argc, char** argv) {
                                   json_object_new_int(DVS_MEDIA_IPC_VERSION));
             json_object_object_add(d, "media",
                                   ho ? ho : json_object_new_object());
+            json_object_object_add(d, "match", json_object_new_boolean(match ? 1 : 0));
+            json_object_object_add(d, "gateBlocked", json_object_new_boolean(allowed ? 0 : 1));
+            json_object_object_add(d, "gateReason", json_object_new_string(gate_reason.c_str()));
+            json_object* link = json_object_new_object();
+            json_object_object_add(link, "state",
+                                  json_object_new_string(engine_link_state().c_str()));
+            json_object_object_add(link, "failStreak",
+                                  json_object_new_int(g_media_q ? g_media_q->fail_streak() : 0));
+            long long ok_age = -1;
+            if (g_media_q && g_media_q->last_ok_ms() > 0)
+                ok_age = agent_now_ms() - g_media_q->last_ok_ms();
+            json_object_object_add(link, "lastOkAgeMs", json_object_new_int64(ok_age));
+            json_object_object_add(d, "engineLink", link);
             send_json(res, envelope_ok(d, ""));
             return;
         }

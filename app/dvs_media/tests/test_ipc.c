@@ -1,5 +1,5 @@
 /* Integration-style unit test for the dvs_media IPC server.
- * Drives the socket protocol end-to-end: messageId echo, async prepare,
+ * Drives the socket protocol end-to-end: requestId echo, async prepare,
  * event push, revision validation. */
 #include "../ipc/ipc_server.h"
 #include "../ipc/state_machine.h"
@@ -70,10 +70,10 @@ static struct json_object* request_on(int fd, const char* type, const char* msg_
                                       const char* extra_json) {
   char line[2048];
   if (extra_json)
-    snprintf(line, sizeof(line), "{\"type\":\"%s\",\"messageId\":\"%s\",%s", type,
+    snprintf(line, sizeof(line), "{\"type\":\"%s\",\"requestId\":\"%s\",%s", type,
              msg_id, extra_json);
   else
-    snprintf(line, sizeof(line), "{\"type\":\"%s\",\"messageId\":\"%s\"}", type,
+    snprintf(line, sizeof(line), "{\"type\":\"%s\",\"requestId\":\"%s\"}", type,
              msg_id);
   /* note: extra_json must include its own trailing '}' */
   (void)write(fd, line, strlen(line));
@@ -90,7 +90,7 @@ static struct json_object* request_payload(const char* type, const char* msg_id,
                                            const char* payload_json) {
   char line[2048];
   snprintf(line, sizeof(line),
-           "{\"type\":\"%s\",\"messageId\":\"%s\",\"payload\":%s}", type, msg_id,
+           "{\"type\":\"%s\",\"requestId\":\"%s\",\"payload\":%s}", type, msg_id,
            payload_json);
   (void)write(conn_fd, line, strlen(line));
   (void)write(conn_fd, "\n", 1);
@@ -166,20 +166,20 @@ int main(void) {
   conn_fd = connect_sock();
   CHECK(conn_fd >= 0, "client connected");
 
-  /* 1. messageId echo */
+  /* 1. requestId echo */
   struct json_object* r = request("query_state", "m-1", NULL);
   CHECK(r && jstr(r, "requestId") && strcmp(jstr(r, "requestId"), "m-1") == 0,
-        "response echoes messageId");
+        "response echoes requestId");
   json_object_put(r);
 
-  /* 1b. duplicate messageId replays the cached response */
+  /* 1b. duplicate requestId replays the cached response */
   r = request("query_state", "m-1dup", NULL);
   CHECK(r && jint(r, "status") == 200, "first query ok");
   json_object_put(r);
   r = request("query_state", "m-1dup", NULL);
   CHECK(r && jint(r, "status") == 200 && jstr(r, "requestId") &&
         strcmp(jstr(r, "requestId"), "m-1dup") == 0,
-        "duplicate messageId replayed");
+        "duplicate requestId replayed");
   json_object_put(r);
 
   /* 1c. second connection is served while the first stays open */
@@ -219,6 +219,16 @@ int main(void) {
   const char* ev_type = ev ? jstr(ev, "type") : NULL;
   CHECK(ev && ev_type && strcmp(ev_type, "media.prepare.result") == 0,
         "prepare result event pushed");
+  {
+    struct json_object* evd = NULL;
+    struct json_object* evlanes = NULL;
+    if (ev) json_object_object_get_ex(ev, "data", &evd);
+    if (evd) json_object_object_get_ex(evd, "lanes", &evlanes);
+    CHECK(evlanes && json_object_is_type(evlanes, json_type_array),
+          "prepare result carries channel summary");
+    CHECK(ev && jstr(ev, "requestId") && jstr(ev, "requestId")[0],
+          "prepare result carries requestId");
+  }
   json_object_put(ev);
   ev = read_line(conn_fd, 400);
   CHECK(ev == NULL, "no duplicate prepare event");
@@ -232,6 +242,8 @@ int main(void) {
   ev = read_line(conn_fd, 2000);
   CHECK(ev && jstr(ev, "type") && strcmp(jstr(ev, "type"), "media.layout_applied") == 0,
         "layout applied event broadcast");
+  CHECK(ev && jstr(ev, "requestId") && strcmp(jstr(ev, "requestId"), "m-3") == 0,
+        "layout applied echoes the commit requestId");
   json_object_put(ev);
   ev = read_line(conn_fd, 2000);
   CHECK(ev && jstr(ev, "type") && strcmp(jstr(ev, "type"), "media.state_changed") == 0,

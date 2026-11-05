@@ -17,6 +17,17 @@ static void set_err(char* err, size_t errlen, const char* msg) {
   if (err && errlen > 0) snprintf(err, errlen, "%s", msg);
 }
 
+/* Single shared revision guard for every verb that moves the operation
+ * forward. Caller holds g_lock. Returns 0 when the revision may proceed,
+ * DVS_ERR_STALE_REVISION otherwise. */
+static int check_stale_locked(int revision, char* err, size_t errlen) {
+  if (revision < g_state.revision) {
+    set_err(err, errlen, "stale revision");
+    return DVS_ERR_STALE_REVISION;
+  }
+  return 0;
+}
+
 int dvs_state_begin_prepare(const char* opid, int revision, char* err, size_t errlen) {
   if (!opid || !opid[0]) {
     set_err(err, errlen, "missing operationId");
@@ -35,10 +46,10 @@ int dvs_state_begin_prepare(const char* opid, int revision, char* err, size_t er
       return 0;
     }
   }
-  if (revision < g_state.revision) {
+  int stale = check_stale_locked(revision, err, errlen);
+  if (stale != 0) {
     pthread_mutex_unlock(&g_lock);
-    set_err(err, errlen, "stale revision");
-    return DVS_ERR_STALE_REVISION;
+    return stale;
   }
   if (g_state.op_state != DVS_OP_IDLE) {
     /* a different operation is in flight */
@@ -91,10 +102,10 @@ int dvs_state_commit(const char* opid, int revision, int* applied_rev,
     pthread_mutex_unlock(&g_lock);
     return 0;
   }
-  if (revision < g_state.revision) {
+  int stale = check_stale_locked(revision, err, errlen);
+  if (stale != 0) {
     pthread_mutex_unlock(&g_lock);
-    set_err(err, errlen, "stale revision");
-    return DVS_ERR_STALE_REVISION;
+    return stale;
   }
   if (g_state.op_state != DVS_OP_PREPARED || strcmp(g_state.operation_id, opid) != 0) {
     pthread_mutex_unlock(&g_lock);

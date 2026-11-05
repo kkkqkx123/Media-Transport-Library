@@ -1,8 +1,7 @@
 # 借鉴 ZLMediaKit 的三点增量设计：会话注册视图、线程收敛、管线分层对齐
 
-> 输入：`docs/archive/dvs_agent_media_no_merge_no_epoll_decision.md`、
-> `docs/analysis/dvs_agent_media_separation.md`、
-> `docs/plan/dvs/DVS_AGENT_MEDIA_IPC_FOLLOWUP_ANALYSIS.md`。
+> 输入：`docs/archive/dvs_agent_media_role_decision.md`、
+> > `docs/plan/dvs/DVS_AGENT_MEDIA_IPC_FOLLOWUP_ANALYSIS.md`。
 > 约束：只改原模块，不起替代性新模块；不做兼容层；版本保持为 `1`；
 > 设计只用自然语言描述，不贴完整代码。
 

@@ -2,7 +2,7 @@
 
 > **状态**: 待实施  
 > **日期**: 2026-06-17  
-> **范围**: `app/rk3588_file_playout/` RX 播放优化 + 流参数兼容性  
+> **范围**: `app/rk3588_playout_rx/` RX 播放优化 + 流参数兼容性  
 > **前置**: drain 修复、lcore pinning 已完成  
 > **存档**: 详细背景见 `TMP_RX_PLAYOUT_OPTIMIZATION_PLAN.md`
 

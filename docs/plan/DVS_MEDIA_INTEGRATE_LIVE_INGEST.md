@@ -1,7 +1,7 @@
-# dvs_media 是否应集成 rk3588_live_ingest —— 分析与设计方案
+# dvs_media 是否应集成 rk3588_live_tx —— 分析与设计方案
 
 > 关联分析：`docs/analysis/DVS_MEDIA_RK3588_INTEGRATION.md`
-> 关联代码：`app/dvs_media/`（现状）、`app/rk3588_live_ingest/`（donor）、`app/rk3588_file_playout/`（已复用 RX 源）
+> 关联代码：`app/dvs_media/`（现状）、`app/rk3588_live_tx/`（donor）、`app/rk3588_playout_rx/`（已复用 RX 源）
 > 状态：已落地，待单板冒烟；**结论：应当集成**，以使节点后台可在解码（output）与编码（input）角色间切换。
 
 ---
@@ -18,7 +18,7 @@
 
 理由：
 
-1. **需求硬要求**：角色切换意味着 input role 必须有能工作的捕获→编码→发送链路。该链路在仓库内只有 `rk3588_live_ingest` 完整实现（V4L2 → RGA → MPP encode → MTL ST22 TX），没有理由重新造一套。
+1. **需求硬要求**：角色切换意味着 input role 必须有能工作的捕获→编码→发送链路。该链路在仓库内只有 `rk3588_live_tx` 完整实现（V4L2 → RGA → MPP encode → MTL ST22 TX），没有理由重新造一套。
 2. **复用成本低、风险可控**：live_ingest 已是纯 C、模块化（hal / io / codec / pipeline / mtl_tx），且自身就 **in-tree 复用 `rk3588_common`**（timer/slab/ring_buffer），与 dvs_media 现有的基础库来源一致，不存在第三套重复。
 3. **MTL 实例天然可共享**：`mtl_tx_params.st` 是外部传入的 `mtl_handle`，dvs_media 已有 `e->st`，可直接复用同一 MTL 实例（一个进程只能 `mtl_init` 一次），无需为 TX 另起 MTL。
 4. **编排层即插即用**：live_ingest 的 `tx_pipeline` 通过 `tx_mtl_sink_ops`（acquire_fb/publish_fb/abort_fb 回调）把编码结果喂给 MTL，正好对接 `mtl_tx`，dvs_media 只需在 backend 里把两者 glue 起来，不必改写 pipeline 内部。
@@ -29,7 +29,7 @@
 
 ## 3. live_ingest TX 链路拆解（可复用组件）
 
-来自 `app/rk3588_live_ingest/meson.build` 与头文件：
+来自 `app/rk3588_live_tx/meson.build` 与头文件：
 
 | 组件 | 文件 | 职责 | 是否引入 dvs_media |
 |---|---|---|---|
@@ -53,7 +53,7 @@
 
 ### 4.1 复用策略（沿用 in-tree）
 
-与现有 file_playout 复用方式一致：**不复制源码**，在 `app/dvs_media/meson.build` 新增一个 `dvs_tx` 静态库，in-tree 编译上述 live_ingest 源文件，链接进 `dvs_media` 可执行文件。include 路径追加 `../rk3588_live_ingest` 与 `../rk3588_live_ingest/codec`（codec_plugin.h 来自 rk3588_common，已含；rga/mpp encoder 头在 live_ingest 本地）。
+与现有 file_playout 复用方式一致：**不复制源码**，在 `app/dvs_media/meson.build` 新增一个 `dvs_tx` 静态库，in-tree 编译上述 live_ingest 源文件，链接进 `dvs_media` 可执行文件。include 路径追加 `../rk3588_live_tx` 与 `../rk3588_live_tx/codec`（codec_plugin.h 来自 rk3588_common，已含；rga/mpp encoder 头在 live_ingest 本地）。
 
 新增 meson 依赖：`librga` 按 `required: false` 探测；缺席时 TX 后端不链接、整机仍可构建并跑 RX 与单测，TX 诚实报 pending。单板 input 角色需要 RGA。
 

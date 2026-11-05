@@ -13,7 +13,7 @@ common_c_args = ['-D_GNU_SOURCE', '-DALLOW_EXPERIMENTAL_API', '-Wno-pedantic']
 
 common_inc = include_directories('../rk3588_common/include',
                                 '../rk3588_common/include/rk3588_common')
-file_playout_root  = '../rk3588_file_playout'
+file_playout_root  = '../rk3588_playout_rx'
 file_playout_inc   = [include_directories(file_playout_root), common_inc,
              include_directories(file_playout_root + '/shared')]
 
@@ -96,7 +96,7 @@ dvs_rx = static_library('dvs_rx',
   include_directories: file_playout_inc,
 )
 
-live_ingest_root = '../rk3588_live_ingest'
+live_ingest_root = '../rk3588_live_tx'
 live_ingest_inc = [include_directories(live_ingest_root),
                    include_directories(live_ingest_root + '/codec'),
                    common_inc]

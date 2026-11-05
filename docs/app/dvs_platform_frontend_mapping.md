@@ -1,7 +1,7 @@
 # dvs_platform 平台前端功能与 dvs / rk3588 app 功能映射分析
 
 > 范围：`app/dvs_platform/web/src/pages/platform/*.html` 平台后台功能，
-> 映射到 `app/dvs_platform` 自身控制面、`app/dvs_agent` 节点代理、`app/dvs_media` 节点媒体引擎、以及 `app/rk3588_file_playout` / `app/rk3588_live_ingest` 数据面 app。
+> 映射到 `app/dvs_platform` 自身控制面、`app/dvs_agent` 节点代理、`app/dvs_media` 节点媒体引擎、以及 `app/rk3588_playout_rx` / `app/rk3588_live_tx` 数据面 app。
 > 目标：区分“平台文档/编排”与“节点媒体执行”边界，明确哪些前端操作最终落到 MTL/MPP/DRM。
 
 ## 1. 分层约定
@@ -12,7 +12,7 @@
 | 平台服务 | `app/dvs_platform/main.cpp`、`platform_store.cpp`、`layout.cpp`、`ops.cpp` | 文档 CRUD、节点网关、布局拆分、两阶段提交、升级、墓碑 |
 | 节点代理 | `app/dvs_agent` | 注册/心跳、本机 HTTP、配置状态机、IPC 驱动媒体引擎 |
 | 节点媒体引擎 | `app/dvs_media` | MTL RX、白名单准入、布局 apply、DRM/ALSA、PTP |
-| rk3588 数据面 | `rk3588_file_playout`、`rk3588_live_ingest` | MTL ST22/ST30 收发、MPP、DRM、ALSA、PTP |
+| rk3588 数据面 | `rk3588_playout_rx`、`rk3588_live_tx` | MTL ST22/ST30 收发、MPP、DRM、ALSA、PTP |
 
 ## 2. 前端页面 → 后端映射总表
 
@@ -45,7 +45,7 @@
 - `config-push` 只推送 `geometry` 与 `role` 到代理；代理 `config/sync` 只应用 `geometry`/`role`，其他键忽略。
 - `layout.cpp` `fragment_for_node` 按节点 geometry 把全局窗口拆成节点局部窗口（win/src 坐标）。
 - dvs_media：布局 commit 时用拆分后的 windows 创建/更新 compositor lane。
-- rk3588：`rk3588_file_playout` 的 `display_layout_from_pip_streams` 与 `rx_compositor` lane/DRM plane；`rk3588_live_ingest` 的 DRM 渲染。平台拆分结果最终应映射到这些 plane 坐标。
+- rk3588：`rk3588_playout_rx` 的 `display_layout_from_pip_streams` 与 `rx_compositor` lane/DRM plane；`rk3588_live_tx` 的 DRM 渲染。平台拆分结果最终应映射到这些 plane 坐标。
 
 ### 3.3 传输配置（白名单）
 
@@ -53,7 +53,7 @@
 - 平台：kind `whitelist` 文档；prepare 时随 wall/windows 下发？当前 prepare 主要下发 windows；白名单未在 prepare 链路中显式下发。
 - 代理：scope `input` 保存时 IPC `configure { whitelist }`。
 - dvs_media：`session_admit` 白名单 + LRU（`DVS_MAX_SESSIONS=8`）。
-- rk3588：`rk3588_file_playout` 无动态白名单控制；`rk3588_live_ingest` MTL TX 源地址固定由配置提供。白名单执行最终发生在 dvs_media 的 RX 准入层。
+- rk3588：`rk3588_playout_rx` 无动态白名单控制；`rk3588_live_tx` MTL TX 源地址固定由配置提供。白名单执行最终发生在 dvs_media 的 RX 准入层。
 
 ### 3.4 画面调度（核心媒体链路）
 
@@ -61,7 +61,7 @@
 - 平台：`/api/v1/ops/prepare` 创建 Operation，计算 apply_at；后台线程按成员节点调用 `/api/v1/node/media/layout`，下发 fragment + geometry + applyAtNs。
 - 代理：`/api/v1/node/media/layout` 转为 IPC `prepare`，并异步向平台回执 commit（ready/blocked）。
 - dvs_media：IPC `prepare` 开始异步准备；`commit` 应用 pending layout；`rx_compositor_try_fast_apply` 尝试快速应用；失败 rollback。
-- rk3588：`rk3588_file_playout` `rx_compositor_create` 创建 lane 与 MTL RX session；`display_layout` 解析 lane 坐标；`mtl_rx_mp4` 接收 ST22；`mtl_rx_bridge`/`rx_pipeline` 解码送 DRM。`rk3588_live_ingest` 提供 TX 侧码流来源（V4L2→MPP→MTL TX）。
+- rk3588：`rk3588_playout_rx` `rx_compositor_create` 创建 lane 与 MTL RX session；`display_layout` 解析 lane 坐标；`mtl_rx_mp4` 接收 ST22；`mtl_rx_bridge`/`rx_pipeline` 解码送 DRM。`rk3588_live_tx` 提供 TX 侧码流来源（V4L2→MPP→MTL TX）。
 
 ### 3.5 设备管理
 
@@ -77,7 +77,7 @@
 - 平台：kind `playback-tasks` 文档；八态任务状态机。
 - 代理：`/api/v1/node/media/status` 投影 `currentPlayback`。
 - dvs_media：`query_state` 返回 rx sessions/decoding/layers/ptp。
-- rk3588：`rk3588_file_playout` 的 playout buffer/av_sync 提供播放连续性；`rk3588_live_ingest` 提供实时源。
+- rk3588：`rk3588_playout_rx` 的 playout buffer/av_sync 提供播放连续性；`rk3588_live_tx` 提供实时源。
 
 ### 3.7 能力与 PTP
 
@@ -85,7 +85,7 @@
 - 平台：节点 doc capabilities/geometry。
 - 代理：`/api/v1/node/capability`、`/node/capacity`。
 - dvs_media：`capability.c` 探测 DRM connector/mode、max_decode_sessions、max_layers、PTP、MTL 版本。
-- rk3588：`rk3588_file_playout` lane 上限 8、NV12 直通 4 路；`shared/ptp_time.c` 读取 PTP；`rk3588_live_ingest` PTP。当前 dvs_media PTP 状态在 hook 中固定为 `synced` 且 offset 0，前端“跨节点同帧：需控制服务与统一时钟联调”。
+- rk3588：`rk3588_playout_rx` lane 上限 8、NV12 直通 4 路；`shared/ptp_time.c` 读取 PTP；`rk3588_live_tx` PTP。当前 dvs_media PTP 状态在 hook 中固定为 `synced` 且 offset 0，前端“跨节点同帧：需控制服务与统一时钟联调”。
 
 ## 4. 缺口与结论
 

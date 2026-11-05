@@ -2,15 +2,15 @@
 
 ## 结论
 
-- `rk3588_live_ingest` 与 `rk3588_file_playout` 都支持收发，适合开发、联调和回环验证。
+- `rk3588_live_tx` 与 `rk3588_playout_rx` 都支持收发，适合开发、联调和回环验证。
 - 生产节点角色互斥：输入盒（编码/TX）与输出盒（解码/RX）。
 - 应按角色拆分部署包，而不是让一个节点包同时收发。
 
 ## 角色归属
 
-- `rk3588_live_ingest`：更偏输入盒/编码参考实现，包含 V4L2 采集、RGA、MPP 编码、MTL TX；RX 侧主要用于回环验证。
-- `rk3588_file_playout`：更偏输出盒/解码参考实现，包含 MTL RX、MPP 解码、DRM/ALSA；TX 侧是文件源播放。
-- `dvs_media` 由 `rk3588_file_playout` 的 RX 侧演进，是生产输出盒媒体引擎。
+- `rk3588_live_tx`：更偏输入盒/编码参考实现，包含 V4L2 采集、RGA、MPP 编码、MTL TX；RX 侧主要用于回环验证。
+- `rk3588_playout_rx`：更偏输出盒/解码参考实现，包含 MTL RX、MPP 解码、DRM/ALSA；TX 侧是文件源播放。
+- `dvs_media` 由 `rk3588_playout_rx` 的 RX 侧演进，是生产输出盒媒体引擎。
 
 ## 打包建议
 

@@ -15,7 +15,7 @@
 | BPF 库 | `libbpf.so.1.4.0` + 软链 `libbpf.so.1` | `sysroot/usr/lib/aarch64-linux-gnu/` | 与 MTL 内 DPDK 用的 libbpf 1.4.0 一致 |
 | DPDK 运行时 | `librte_*.so*` 全部 | `sysroot/usr/lib/librte_*.so*` | DPDK 26.07 共享库（`libmtl.so` 的 NEEDED） |
 | 应用 | `live_ingest` `file_playout_tx` `file_playout_rx` `rx_minimal` + `test_*` | `app/rk3588_{end2end,file_playout}/build/` | 各为独立可执行文件 |
-| 配置 | `config/`（file_playout 的 `ptp/`、`*.json.example`） | `app/rk3588_file_playout/config/` | 运行时以 `--config config/xxx.json` 传入（相对路径） |
+| 配置 | `config/`（file_playout 的 `ptp/`、`*.json.example`） | `app/rk3588_playout_rx/config/` | 运行时以 `--config config/xxx.json` 传入（相对路径） |
 
 > **注意**：板端**已具备** `libnuma` `libjson-c` `libasound` `librockchip_mpp` `librga` `libdrm` `libavformat/codec/util` `libelf` `libbsd` 等；缺的只有上表的 MTL / XDP / BPF / DPDK 全家桶。
 
@@ -40,7 +40,7 @@ ldconfig
 ```
 /opt/mtl-rk3588/
   bin/      live_ingest  file_playout_tx  file_playout_rx  rx_minimal  test_*
-  config/   (复制 app/rk3588_file_playout/config/)
+  config/   (复制 app/rk3588_playout_rx/config/)
 ```
 应用以 `--config` 读取相对 `config/` 的 JSON，因此在该目录下运行：
 ```bash

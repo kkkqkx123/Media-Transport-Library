@@ -2,7 +2,7 @@
 
 > **状态**: 规划稿，待实施（**实施以 `IMPLEMENTATION_PLAN.md` 融合版为准**）  
 > **日期**: 2026-06-16  
-> **范围**: `app/rk3588_file_playout/` RX 路径（ST22 视频 + ST30 音频 + MPP 解码 + DRM 渲染）  
+> **范围**: `app/rk3588_playout_rx/` RX 路径（ST22 视频 + ST30 音频 + MPP 解码 + DRM 渲染）  
 > **测试文件**: `InTheGrey.mp4` (1920×1080, 23.976fps, H.264 High+B, AAC 48kHz)
 
 本文档汇总多轮排查与讨论结论，供后续实施时回顾。按优先级递进，每阶段有独立验收标准。

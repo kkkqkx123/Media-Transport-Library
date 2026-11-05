@@ -230,7 +230,7 @@ patch_stdbool() {
 	python3 - "$repo_dir" <<'PY'
 import os, glob
 root = __import__('sys').argv[1]
-for app in ('app/rk3588_live_ingest', 'app/rk3588_file_playout'):
+for app in ('app/rk3588_live_tx', 'app/rk3588_playout_rx'):
     base = os.path.join(root, app)
     for dp,_,fs in os.walk(base):
         for f in fs:
@@ -361,14 +361,14 @@ build_apps() {
 	run_stage apps || return 0
 	if [[ "$PATCH_BOOL" == "1" ]]; then patch_stdbool; fi
 	# live_ingest
-	cd "$repo_dir/app/rk3588_live_ingest"
+	cd "$repo_dir/app/rk3588_live_tx"
 	if [[ "$CLEAN" == "1" ]]; then rm -rf build-aarch64; fi
 	if [[ ! -f build-aarch64/build.ninja ]]; then
 		meson setup build-aarch64 --cross-file "$CROSS_FILE"
 	fi
 	ninja -C build-aarch64 -j"$JOBS"
 	# file_playout
-	cd "$repo_dir/app/rk3588_file_playout"
+	cd "$repo_dir/app/rk3588_playout_rx"
 	if [[ "$CLEAN" == "1" ]]; then rm -rf build-aarch64; fi
 	local opts="-Dbuild_tx=true"
 	[[ "$MP4_RX" == "1" ]] && opts="$opts -Dbuild_rx=true" || opts="$opts -Dbuild_rx=false"
@@ -384,9 +384,9 @@ assert_products() {
 	log_info "asserting products..."
 	test -f "$SYSROOT/usr/lib/aarch64-linux-gnu/libmtl.so" || { log_error "libmtl.so missing"; exit 1; }
 	if run_stage apps; then
-		test -x "$repo_dir/app/rk3588_live_ingest/build-aarch64/live_ingest" || log_warning "live_ingest not built (dependency missing?)"
-		test -x "$repo_dir/app/rk3588_file_playout/build-aarch64/file_playout_tx" || log_warning "file_playout_tx not built"
-		[[ "$MP4_RX" == "1" ]] && { test -x "$repo_dir/app/rk3588_file_playout/build-aarch64/file_playout_rx" || log_warning "file_playout_rx not built"; }
+		test -x "$repo_dir/app/rk3588_live_tx/build-aarch64/live_ingest" || log_warning "live_ingest not built (dependency missing?)"
+		test -x "$repo_dir/app/rk3588_playout_rx/build-aarch64/file_playout_tx" || log_warning "file_playout_tx not built"
+		[[ "$MP4_RX" == "1" ]] && { test -x "$repo_dir/app/rk3588_playout_rx/build-aarch64/file_playout_rx" || log_warning "file_playout_rx not built"; }
 	fi
 	file "$SYSROOT/usr/lib/aarch64-linux-gnu/libmtl.so" 2>/dev/null | grep -q aarch64 && log_success "libmtl.so is aarch64"
 }

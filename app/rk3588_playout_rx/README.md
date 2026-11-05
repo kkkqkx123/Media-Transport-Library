@@ -1,13 +1,13 @@
 # file_playout — MTL ST2110 解码接收端（RK3588）
 
-MTL ST2110-22（视频）/ ST2110-30（音频）接收；MPP 硬解码 + DRM 显示 + ALSA 播放；支持单流与多路合成（`rx_compositor`）、播放缓冲、AV 同步。本包只收流，不产流；发送端由编码包 `rk3588_live_ingest` 经网络供给，两侧帧率与分辨率显式对齐。
+MTL ST2110-22（视频）/ ST2110-30（音频）接收；MPP 硬解码 + DRM 显示 + ALSA 播放；支持单流与多路合成（`rx_compositor`）、播放缓冲、AV 同步。本包只收流，不产流；发送端由编码包 `rk3588_live_tx` 经网络供给，两侧帧率与分辨率显式对齐。
 
 参考流参数探针固定用仓库内 **`InTheGrey.mp4`**（1920×1080 @ 23.976fps，路径为 `../InTheGrey.mp4`）做期望流描述；实际网流由编码端产生，`--fps/--width/--height` 必须与发送端一致。
 
 ## 应用架构
 
 ```
-编码端 (rk3588_live_ingest)              网络 UDP                  接收端 (file_playout_rx)
+编码端 (rk3588_live_tx)              网络 UDP                  接收端 (file_playout_rx)
 ─────────────────────────              ───────────              ─────────────────────────
 V4L2 → RGA → MPP编码 → MTL TX  ──►  ST2110-22 视频码流  ──►  ST22 RX → bridge
                                                           → MPP 解码 → DRM
@@ -47,7 +47,7 @@ sudo apt install libavformat-dev libavcodec-dev libavutil-dev libjson-c-dev libb
 本工程为 **独立 meson 项目**，需先安装 MTL 主库。**在编译服务器上构建**：
 
 ```bash
-cd app/rk3588_file_playout
+cd app/rk3588_playout_rx
 meson setup build
 ninja -C build
 
@@ -79,7 +79,7 @@ ls build/file_playout_rx
 
 ```bash
 # 终端 1 — PC/Master
-cd app/rk3588_file_playout
+cd app/rk3588_playout_rx
 chmod +x scripts/start_ptp_dual_host.sh
 ./scripts/start_ptp_dual_host.sh master enp1s0
 
@@ -115,13 +115,13 @@ chmod +x scripts/start_ptp_dual_host.sh
 先起 RX，等 2 秒，再起编码端发送（帧率与分辨率两侧对齐）：
 
 ```bash
-cd app/rk3588_file_playout
+cd app/rk3588_playout_rx
 
 # 接收（另开终端）
 ./build/file_playout_rx 120 --config config/rx_dual_host.json.example --fps 60 --width 1920 --height 1080 &
 sleep 2
 # 发送（编码包，需 HDMI 信号）
-../rk3588_live_ingest/build/live_ingest 120 --udp 15000 --dip 192.168.80.212
+../rk3588_live_tx/build/live_ingest 120 --udp 15000 --dip 192.168.80.212
 ```
 
 可选 trace（AU 对齐分析）：

@@ -1,7 +1,7 @@
 # MTL 应用层使用情况与整改方案
 
 整理日期：2026-11-04
-范围：`app/rk3588_live_ingest`、`app/rk3588_file_playout`、`app/dvs_media`、`app/dvs_agent`、`app/dvs_platform`
+范围：`app/rk3588_live_tx`、`app/rk3588_playout_rx`、`app/dvs_media`、`app/dvs_agent`、`app/dvs_platform`
 
 本文先概述三类应用如何使用 MTL，再列出已确认的问题与分阶段整改方案。
 长篇设计论证见既有 `docs/plan` 下各专项计划，本文只收敛与本次改动直接相关的结论。
@@ -83,6 +83,6 @@ live_ingest 后端写死。端口类型固定为原生 AF_XDP，不支持按端�
 ## 5. 验证结果（devs 编译服务器）
 
 使用 `arm-gnu-toolchain-13.3` 与既有 `build-aarch64` 目录，三应用均编译链接成功：
-`rk3588_live_ingest/live_ingest`、`rk3588_file_playout/file_playout_tx`、
-`rk3588_file_playout/file_playout_rx`、`dvs_media/dvs_media`。
+`rk3588_live_tx/live_ingest`、`rk3588_playout_rx/file_playout_tx`、
+`rk3588_playout_rx/file_playout_rx`、`dvs_media/dvs_media`。
 `test_pipeline` 也通过补充 `mtl_rx.c`/`mtl_rx_bridge.c` 源文件完成链接。

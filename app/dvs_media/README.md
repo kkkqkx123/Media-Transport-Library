@@ -1,8 +1,8 @@
 # dvs_media — DVS 节点媒体引擎
 
-节点侧媒体引擎（纯 C），由 `rk3588_file_playout` 的 RX 侧演进而来，并已接入 `rk3588_live_ingest` 的 TX 链路：output角色接收 MTL ST 2110 流（视频+音频），解码合成后 DRM 显示、ALSA 出声；input角色经 V4L2 捕获→RGA→MPP 编码→MTL ST22 发送。与 file_playout 的区别在于**受控运行**：支持 IPC `configure / prepare / commit / abort / clear / query_state`，布局可热更新，并对外上报节点能力（DRM/MPP/MTL 探测）。
+节点侧媒体引擎（纯 C），由 `rk3588_playout_rx` 的 RX 侧演进而来，并已接入 `rk3588_live_tx` 的 TX 链路：output角色接收 MTL ST 2110 流（视频+音频），解码合成后 DRM 显示、ALSA 出声；input角色经 V4L2 捕获→RGA→MPP 编码→MTL ST22 发送。与 file_playout 的区别在于**受控运行**：支持 IPC `configure / prepare / commit / abort / clear / query_state`，布局可热更新，并对外上报节点能力（DRM/MPP/MTL 探测）。
 
-复用 `rk3588_common` 与 `rk3588_file_playout` 的 `rx/`、`shared/`（含 `mp4_demux` 探针与 `extradata_handler` 解码辅助）源码，以及 `rk3588_live_ingest` 的捕获/编码/发送链路（`hal`/`io/v4l2_capturer`/`codec`编码侧/`pipeline/tx_pipeline`/`mtl_tx`，meson in-tree 编译，不复制），依赖 MTL、Rockchip MPP（必需）、libdrm、ALSA、json-c、FFmpeg（libavformat/avcodec/avutil）。缺 RGA 时 TX 后端不链接，TX 只报 `configured+pending`；需在编译服务器上构建：
+复用 `rk3588_common` 与 `rk3588_playout_rx` 的 `rx/`、`shared/`（含 `mp4_demux` 探针与 `extradata_handler` 解码辅助）源码，以及 `rk3588_live_tx` 的捕获/编码/发送链路（`hal`/`io/v4l2_capturer`/`codec`编码侧/`pipeline/tx_pipeline`/`mtl_tx`，meson in-tree 编译，不复制），依赖 MTL、Rockchip MPP（必需）、libdrm、ALSA、json-c、FFmpeg（libavformat/avcodec/avutil）。缺 RGA 时 TX 后端不链接，TX 只报 `configured+pending`；需在编译服务器上构建：
 
 ```bash
 cd app/dvs_media && meson setup build && ninja -C build

@@ -1,6 +1,6 @@
-# rk3588_file_playout — MP4 文件分发应用
+# rk3588_playout_rx — MP4 文件分发应用
 
-`app/rk3588_file_playout/`：将 MP4 文件（H.264 + AAC）通过 **ST2110-22（视频）/
+`app/rk3588_playout_rx/`：将 MP4 文件（H.264 + AAC）通过 **ST2110-22（视频）/
 ST2110-30（音频）** 实时分发；接收端 MPP 硬解码 + DRM 显示 + ALSA 播放。
 支持单板回环与 PC（TX）/ RK3588（RX）双机部署。详细运行说明见该目录内的
 `README.md`。
@@ -32,7 +32,7 @@ FFmpeg 解复用 (tx/mp4_demux)        ST2110-22 视频              ST22 RX →
 ## 构建
 
 ```bash
-cd app/rk3588_file_playout
+cd app/rk3588_playout_rx
 meson setup build && ninja -C build
 ```
 
@@ -54,7 +54,7 @@ meson 选项（`meson_options.txt`）：
 `MtlManager` + hugepages；PMD 也可按端口名前缀选择 `kernel:` / `dpdk_af_xdp:` 等。详细见该目录
 `README.md`。
 
-## 与 rk3588_live_ingest 的关系
+## 与 rk3588_live_tx 的关系
 
 面向"文件分发 + 多路播放"场景，链路更长（解复用、playout、AV 同步、拼板），
 延迟目标比 end2end 的直播链路宽松；基础模块（MPP 解码、DRM 渲染、ring buffer、

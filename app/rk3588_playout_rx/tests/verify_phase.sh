@@ -30,7 +30,7 @@ pass() { echo "PASS: $*"; }
 l1_p0() {
     echo "=== P0: toolchain + cross-package binaries ==="
     [ -x ./build/file_playout_rx ] || fail "build/file_playout_rx missing — run: meson setup build && ninja -C build"
-    [ -x ../rk3588_live_ingest/build/live_ingest ] || fail "live_ingest missing — build the encode package first"
+    [ -x ../rk3588_live_tx/build/live_ingest ] || fail "live_ingest missing — build the encode package first"
     [ -f tests/run_single_board_plan_a.sh ] || fail "run_single_board_plan_a.sh missing"
     [ -f tests/check_pts_idx.py ] || fail "check_pts_idx.py missing"
     [ -f IMPLEMENTATION_PLAN.md ] || fail "IMPLEMENTATION_PLAN.md missing"
@@ -70,7 +70,7 @@ l2_run() {
         --width 1920 --height 1080 --fps "$fps" 2>&1 | tee "$LOG" &
     RX_PID=$!
     sleep 2
-    ../rk3588_live_ingest/build/live_ingest "$sec" --udp 15000 \
+    ../rk3588_live_tx/build/live_ingest "$sec" --udp 15000 \
         --dip 192.168.80.212 2>&1 | tee -a "$LOG" &
     TX_PID=$!
     wait "$RX_PID" || true

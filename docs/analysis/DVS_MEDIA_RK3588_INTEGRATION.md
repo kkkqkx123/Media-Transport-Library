@@ -1,14 +1,14 @@
 # dvs_media 与 rk3588 app 的集成分析
 
 > 分析对象：`app/dvs_media`（DVS 节点媒体引擎，纯 C）
-> 对照对象：`app/rk3588_file_playout`、`app/rk3588_live_ingest`、`app/rk3588_common`
-> 结论先行：**dvs_media 由 `rk3588_file_playout` 的 RX 侧演进而来，通过 meson in-tree 编译直接复用其源码（非复制）；`rk3588_live_ingest` 的 TX 数据面已接入，input 角色经 V4L2 捕获→RGA→MPP 编码→MTL 发送出流。**
+> 对照对象：`app/rk3588_playout_rx`、`app/rk3588_live_tx`、`app/rk3588_common`
+> 结论先行：**dvs_media 由 `rk3588_playout_rx` 的 RX 侧演进而来，通过 meson in-tree 编译直接复用其源码（非复制）；`rk3588_live_tx` 的 TX 数据面已接入，input 角色经 V4L2 捕获→RGA→MPP 编码→MTL 发送出流。**
 
 ---
 
 ## 1. 集成方式：in-tree 编译复用，不复制源码
 
-`app/dvs_media/meson.build` 是一个**独立的 meson 工程**（不是 `app/meson.build` 的子工程）。它不把 `rk3588_file_playout` / `rk3588_common` 的源文件复制到本地，而是直接用相对路径 `files('../rk3588_file_playout/...')` 把上游源码编进本工程的 `static_library`，再链接到 `dvs_media` 可执行文件。
+`app/dvs_media/meson.build` 是一个**独立的 meson 工程**（不是 `app/meson.build` 的子工程）。它不把 `rk3588_playout_rx` / `rk3588_common` 的源文件复制到本地，而是直接用相对路径 `files('../rk3588_playout_rx/...')` 把上游源码编进本工程的 `static_library`，再链接到 `dvs_media` 可执行文件。
 
 这种"借用源码 + 本工程额外封装一层控制面"的模式，正是 AGENTS.md 中描述的"由 file_playout 演进而来"的工程落地。
 
@@ -16,10 +16,10 @@
 
 | 静态库 | 来源 | 内容 |
 |---|---|---|
-| `dvs_shared` | `rk3588_common/src/*` + `rk3588_file_playout/shared/*` | 无锁环、slab 池、定时器、DRM 模式、布局、PTP、E2E 时间戳等基础组件 |
-| `file_playout_probe` | `rk3588_file_playout/tx/mp4_demux.c` | FFmpeg 解封装（MP4 probe） |
-| `dvs_rx` | `rk3588_file_playout/rx/*` + 部分 `shared/*` + `tx/extradata_handler.c` | 接收/解码/合成/播放缓冲/AV 同步/ALSA 出声的完整 RX 数据面 |
-| `dvs_tx`（有 MPP+RGA 时链接） | `rk3588_common/src`时间戳相关 + `rk3588_live_ingest/hal`、`io/v4l2_capturer`、编码侧 `codec`、`pipeline/tx_pipeline`、`mtl_tx` | 捕获/RGA 转换/MPP 编码/MTL 发送的完整 TX 数据面，环/ slab /定时器经 `dvs_shared` 复用，不重复编译 |
+| `dvs_shared` | `rk3588_common/src/*` + `rk3588_playout_rx/shared/*` | 无锁环、slab 池、定时器、DRM 模式、布局、PTP、E2E 时间戳等基础组件 |
+| `file_playout_probe` | `rk3588_playout_rx/tx/mp4_demux.c` | FFmpeg 解封装（MP4 probe） |
+| `dvs_rx` | `rk3588_playout_rx/rx/*` + 部分 `shared/*` + `tx/extradata_handler.c` | 接收/解码/合成/播放缓冲/AV 同步/ALSA 出声的完整 RX 数据面 |
+| `dvs_tx`（有 MPP+RGA 时链接） | `rk3588_common/src`时间戳相关 + `rk3588_live_tx/hal`、`io/v4l2_capturer`、编码侧 `codec`、`pipeline/tx_pipeline`、`mtl_tx` | 捕获/RGA 转换/MPP 编码/MTL 发送的完整 TX 数据面，环/ slab /定时器经 `dvs_shared` 复用，不重复编译 |
 
 最终 `dvs_media` 可执行文件链接 `dvs_shared + dvs_rx + file_playout_probe`，有 MPP+RGA 时再链接 `dvs_tx`，并额外编译本工程 `engine/` 与 `ipc/`。
 
@@ -33,17 +33,17 @@
 - `ring_buffer.c` `slab_pool.c` `timer.c` `sps_vui.c` `sei_timestamp.c` `display_layout.c` `drm_mode.c` `ptp_time.c`
 - 可选依赖 MTL（找到时以 `-DHAVE_MTL=1` 编译，见 `rk3588_common/meson.build`）
 
-**`rk3588_file_playout/shared/`（跨应用共享的 RX/解码/显示辅助）**
+**`rk3588_playout_rx/shared/`（跨应用共享的 RX/解码/显示辅助）**
 - `au_trace.c` `tx_tai_ts.c` `e2e_stamp.c` `rx_e2e_stats.c`
 - `mpp_decoder.c`（MPP 解码封装）`drm_renderer.c`（DRM 渲染）
 
-**`rk3588_file_playout/rx/`（RX 数据面核心）**
+**`rk3588_playout_rx/rx/`（RX 数据面核心）**
 - `alsa_audio.c` `playout_buffer.c` `av_sync.c` `media_clk.c` `mtl_rx_mp4.c` `mtl_rx_bridge.c` `mtl_rx_audio.c` `h264_prep.c` `rx_pipeline.c` `rx_compositor.c`
 
-**`rk3588_file_playout/tx/`（仅取与 RX 路径共用的部分）**
+**`rk3588_playout_rx/tx/`（仅取与 RX 路径共用的部分）**
 - `mp4_demux.c`（编入 `file_playout_probe`）`extradata_handler.c`（编入 `dvs_rx`）
 
-**`rk3588_live_ingest/`（TX 数据面，已接入 `dvs_tx`）**
+**`rk3588_live_tx/`（TX 数据面，已接入 `dvs_tx`）**
 - `hal/dma_allocator.c` `hal/dma32_allocator.c`（DMA 分配）
 - `io/v4l2_capturer.c`（V4L2 捕获）
 - `codec/rga_converter.c` `codec/mpp_encoder.c`（RGA 转换 + MPP 编码，仅编码侧；解码器不引入，dvs_media 只用 file_playout 的解码实现）
@@ -53,7 +53,7 @@
 - 应用编排 `live_ingest_app.c` 不引入，由 dvs_media 自身后端编排代替
 
 **根级配置**
-- `rk3588_file_playout/file_playout_config.c`（编入 `dvs_media` 主目标，提供双口 MTL 初始化与 DRM 模式辅助）
+- `rk3588_playout_rx/file_playout_config.c`（编入 `dvs_media` 主目标，提供双口 MTL 初始化与 DRM 模式辅助）
 
 ---
 
@@ -74,7 +74,7 @@ dvs_media 自身只写"控制面 + IPC"，所有数据面动作都委托给 file
 
 ---
 
-## 4. 与 rk3588_live_ingest 的关系：TX 数据面已接入
+## 4. 与 rk3588_live_tx 的关系：TX 数据面已接入
 
 - `app/dvs_media/meson.build` 以 `dvs_tx` 静态库 in-tree 编译 live_ingest 的捕获/编码/发送链路（hal DMA、V4L2 捕获、RGA + MPP 编码、`tx_pipeline`、`mtl_tx`），解码器与应用编排不引入。
 - `engine/tx_session.c` 仍是纯参数校验 + 状态机（无 MTL/MPP 依赖，x86 可单测）；`engine/tx_backend_live_ingest.c` 实现数据面入口，`engine_ctx.c` 在创建时安装、启动前下发 MTL 句柄与端口配置、各 teardown 路径统一停止。
@@ -129,13 +129,13 @@ dvs_media 与 dvs_agent **同包发布**，版本契约在 `app/dvs_common/inclu
 
 1. **AGENTS.md 描述与代码不一致（重要）**：AGENTS.md 称 file_playout 的 `shared/` "each app carries its own copy"（各自持有一份副本）。但 dvs_media 实际是 **in-tree 直接 `#include`/编译 file_playout 的 `shared/` 与 `rx/` 源码**，并非复制。涉及这两处改动时，影响面会跨 app，需同步验证 file_playout 与 dvs_media。建议修正 AGENTS.md 或统一为复制。
 
-2. **rx_compositor 来源**：dvs_media 复用的是 `rk3588_file_playout/rx/rx_compositor.c`，不要与 `io/drm_renderer.c` 或 file_playout 的 `shared/drm_renderer.c` 混淆（AGENTS.md 已提示存在近似重复模块）。改 `dvs_media` 的渲染/合成行为时确认目标文件是 `rx/rx_compositor.c`。
+2. **rx_compositor 来源**：dvs_media 复用的是 `rk3588_playout_rx/rx/rx_compositor.c`，不要与 `io/drm_renderer.c` 或 file_playout 的 `shared/drm_renderer.c` 混淆（AGENTS.md 已提示存在近似重复模块）。改 `dvs_media` 的渲染/合成行为时确认目标文件是 `rx/rx_compositor.c`。
 
 3. **强耦合 donor 内部头**：`engine_ctx.c` 直接引用 `file_playout_config.h` / `display_layout.h`（后者已上移 `rk3588_common`），任一 donor 重构这些头都会直接破坏 dvs_media。
 
 4. **TX 已闭环，余量是 HW 冒烟**：output 回归、input 出流、output→input→output 往返切换需在单板验证；`dvs_tx_set_backend` 的 fake 后端只留在 `tests/test_tx_session.c` 单测里。
 
-5. **donor 源码跨 app 引用**：`rk3588_common/src/` 同时被三处引用；`rk3588_file_playout/shared/` 余下部分仍被 file_playout 自己与 dvs_media 引用。新增引用前先确认归属，避免回搬。
+5. **donor 源码跨 app 引用**：`rk3588_common/src/` 同时被三处引用；`rk3588_playout_rx/shared/` 余下部分仍被 file_playout 自己与 dvs_media 引用。新增引用前先确认归属，避免回搬。
 
 ---
 
@@ -146,10 +146,10 @@ dvs_media 与 dvs_agent **同包发布**，版本契约在 `app/dvs_common/inclu
                           ▲
                           │ in-tree 编译
                           │
-   rk3588_file_playout ───┤  rx/*  shared/*  tx/mp4_demux  file_playout_config
+   rk3588_playout_rx ───┤  rx/*  shared/*  tx/mp4_demux  file_playout_config
                           │  (RX 数据面 + 配置，被借用)
                           │
-   rk3588_live_ingest ────┤  (TX 数据面，经 dvs_tx + 后端入口接入)
+   rk3588_live_tx ────┤  (TX 数据面，经 dvs_tx + 后端入口接入)
                           │
                   ┌───────┴───────────────┐
                   │     dvs_media         │

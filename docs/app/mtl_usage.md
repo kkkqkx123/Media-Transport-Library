@@ -8,8 +8,8 @@ framebuffer、接入 PTP 时间与 pacing**，以及各组件之间的差异。
 
 | 组件 | 是否直接使用 MTL | 使用形态 | ST 会话类型 | PTP/时间 |
 |------|------------------|----------|-------------|----------|
-| `rk3588_live_ingest` | 是 | 单进程 TX 或 RX，`both` 模式 fork 两个进程 | ST22 TX/RX（帧级，H.264 码流） | `mtl_ptp_read_time` 作为 TX/RX 流水线时钟 |
-| `rk3588_file_playout` | 是 | TX 与 RX 可分离进程/双机 | ST22 TX/RX（视频）+ ST30 TX/RX（音频） | 外部 PTP/monotonic/built-in 三种模式；TX 使用 TAI 时间戳 + 用户 pacing |
+| `rk3588_live_tx` | 是 | 单进程 TX 或 RX，`both` 模式 fork 两个进程 | ST22 TX/RX（帧级，H.264 码流） | `mtl_ptp_read_time` 作为 TX/RX 流水线时钟 |
+| `rk3588_playout_rx` | 是 | TX 与 RX 可分离进程/双机 | ST22 TX/RX（视频）+ ST30 TX/RX（音频） | 外部 PTP/monotonic/built-in 三种模式；TX 使用 TAI 时间戳 + 用户 pacing |
 | `dvs_media` | 是（复用 file_playout RX 管线；已新增 TX 会话） | RX/显示节点 + TX 输入节点（角色互斥）；MTL 由引擎懒初始化 | ST22 RX（经 `rx_compositor` 多路）+ ST30 RX（音频）；TX 经 `dvs_tx` 会话（后端当前为桩） | `mtl_ptp_read_time` 用于布局定时与能力上报 |
 | `dvs_agent` | 否 | 仅通过 UDS 查询 `dvs_media` 状态 | 无 | 心跳中转发 `query_state` 返回的 PTP 状态 |
 | `dvs_platform` | 否 | 平台编排服务，不接触媒体传输 | 无 | 无 |
@@ -32,7 +32,7 @@ framebuffer、接入 PTP 时间与 pacing**，以及各组件之间的差异。
 
 ### 1.1 live_ingest
 
-文件：`app/rk3588_live_ingest/live_ingest_app.c`
+文件：`app/rk3588_live_tx/live_ingest_app.c`
 
 - `mtl_setup_single()` 构造 `mtl_init_params`：
   - `num_ports = 1`，端口名写入 `port[MTL_PORT_P]`
@@ -46,7 +46,7 @@ framebuffer、接入 PTP 时间与 pacing**，以及各组件之间的差异。
 
 ### 1.2 file_playout
 
-文件：`app/rk3588_file_playout/file_playout_config.c` (`file_playout_mtl_init()`)
+文件：`app/rk3588_playout_rx/file_playout_config.c` (`file_playout_mtl_init()`)
 
 - 与 live_ingest 相同的单端口/static IP/PMD 模式。
 - 增加 PTP 模式分支：
@@ -70,9 +70,9 @@ framebuffer、接入 PTP 时间与 pacing**，以及各组件之间的差异。
 - `dvs_engine_stop()` 调用 `mtl_stop()` + `mtl_uninit()`。
 - `dvs_engine` 持有 `mtl_handle st`，传递给 `rx_compositor` 与 PTP 读取。
 
-## 2. rk3588_live_ingest 的 MTL 使用
+## 2. rk3588_live_tx 的 MTL 使用
 
-### 2.1 TX (`app/rk3588_live_ingest/mtl_tx.c`)
+### 2.1 TX (`app/rk3588_live_tx/mtl_tx.c`)
 
 - `mtl_tx_create()` 调用 `st22_tx_create(p->st, &ops)`。
 - 会话参数：
@@ -93,7 +93,7 @@ framebuffer、接入 PTP 时间与 pacing**，以及各组件之间的差异。
   - `tx_notify_frame_done()` 把 fb 标记回 `FREE` 并唤醒等待线程。
 - `mtl_tx_start/stop` 只切换 `running` 原子标志，不直接操作 MTL。
 
-### 2.2 RX (`app/rk3588_live_ingest/mtl_rx.c`)
+### 2.2 RX (`app/rk3588_live_tx/mtl_rx.c`)
 
 - `mtl_rx_create()` 调用 `st22_rx_create(p->st, &ops)`。
 - 会话参数：
@@ -125,7 +125,7 @@ framebuffer、接入 PTP 时间与 pacing**，以及各组件之间的差异。
 - 原因：DPDK EAL 不能在同一进程重复初始化；r8168 单队列也无法在一个 handle
   上同时跑 TX/RX。因此 **每个进程各自调用一次 `mtl_init`**。
 
-## 3. rk3588_file_playout 的 MTL 使用
+## 3. rk3588_playout_rx 的 MTL 使用
 
 ### 3.1 TX 视频 (`tx/mtl_tx_video.c`)
 
@@ -179,7 +179,7 @@ framebuffer、接入 PTP 时间与 pacing**，以及各组件之间的差异。
 
 ### 4.1 dvs_media
 
-- 本质是 RX/显示节点，复用 `rk3588_file_playout` 的 RX 管线静态库
+- 本质是 RX/显示节点，复用 `rk3588_playout_rx` 的 RX 管线静态库
   (`dvs_rx` + `dvs_shared`)。
 - MTL 生命周期：
   - `--config` 静态模式：`dvs_engine_start()` → `dvs_engine_apply_layout()`，
@@ -251,7 +251,7 @@ framebuffer、接入 PTP 时间与 pacing**，以及各组件之间的差异。
    用户 pacing；RX 用 `media_clk` 把 MTL timestamp 转为 TAI/ns 供 playout/AV sync。
 7. **dvs 的 TX 仍在演进**：`dvs_media` 以 RX/显示链路为主，但已引入 `dvs_tx` 会话
    （`engine/tx_session.c`）；该 TX 在节点角色为 `input` 时可启动，当前数据面 backend 为桩
-   （`backend_pending`），尚未建立真正的 ST22 TX，发送端实际仍由 `rk3588_file_playout`
+   （`backend_pending`），尚未建立真正的 ST22 TX，发送端实际仍由 `rk3588_playout_rx`
    或其它 TX 节点承担。
 
 ## 7. 当前缺口（与 dvs 相关）

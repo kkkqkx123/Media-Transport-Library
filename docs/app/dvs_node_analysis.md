@@ -24,7 +24,7 @@
 
 - IPC `prepare/commit` 只改状态机字符串,**不创建会话、不预解码、不切布局**;`query_state` 返回的 `rxSessions/decoding/layers/ptp` 全部是硬编码 0/`unknown`。
 - req 04 §3 的八条 IPC 消息**名称齐、语义空**;S1 退出标准(单节点 4 路窗口 IPC 增删、帧边界切换、abort 回滚、kill 恢复)一条都未达成。
-- 真正能跑的媒体能力仍停留在它复用的 `rk3588_file_playout`(按 MP4 分发的静态管线),dvs_media 自身是"壳"。
+- 真正能跑的媒体能力仍停留在它复用的 `rk3588_playout_rx`(按 MP4 分发的静态管线),dvs_media 自身是"壳"。
 
 ## 2. dvs_agent(节点代理)现状
 

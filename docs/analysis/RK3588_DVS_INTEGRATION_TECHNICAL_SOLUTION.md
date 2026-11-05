@@ -2,7 +2,7 @@
 
 > 位置：`docs/analysis/RK3588_DVS_INTEGRATION_TECHNICAL_SOLUTION.md`
 > 基准：仓库当前工作树（`feat/rk3588-apps` 之后的 DVS 阶段），MTL `26.09.0.DEV`
-> 输入：`app/rk3588_live_ingest`、`app/rk3588_file_playout`、`app/rk3588_common`、`app/dvs_media`、`app/dvs_agent`、`app/dvs_platform`、`app/dvs_common`，以及 `docs/req`、`docs/plan`、`docs/analysis`
+> 输入：`app/rk3588_live_tx`、`app/rk3588_playout_rx`、`app/rk3588_common`、`app/dvs_media`、`app/dvs_agent`、`app/dvs_platform`、`app/dvs_common`，以及 `docs/req`、`docs/plan`、`docs/analysis`
 > 目的：把 RK3588 媒体基座、DVS 节点媒体引擎、节点代理、平台服务四层的职责、生产架构、实施顺序与验收标准收敛成一份可执行的技术方案
 
 ---
@@ -24,8 +24,8 @@
 
 当前仓库存在三个 RK3588 相关应用：
 
-- `rk3588_live_ingest`：HDMI 实时采集、RGA 转换、MPP 编码、MTL TX，以及反向 RX/解码/显示回环验证。
-- `rk3588_file_playout`：MP4 文件分发、多路接收、播放缓冲、AV 同步、DRM 多平面合成、ALSA 播放。
+- `rk3588_live_tx`：HDMI 实时采集、RGA 转换、MPP 编码、MTL TX，以及反向 RX/解码/显示回环验证。
+- `rk3588_playout_rx`：MP4 文件分发、多路接收、播放缓冲、AV 同步、DRM 多平面合成、ALSA 播放。
 - `dvs_media`：由 file_playout RX 侧演进的节点媒体引擎，受 IPC 控制；output 角色基本可用，input 角色已接入 rk3588 app 的 TX 数据面，但 teardown、能力门控与切换验证仍不完整。
 
 当前 `dvs_media` 通过 in-tree 编译复用另外两个应用的源码，output 角色复用 file_playout RX 数据面，input 角色通过 rk3588 app 提供 capture/encode/TX 能力。这种复用方式属于开发与过渡形态，用于加速 bring-up 与验证。

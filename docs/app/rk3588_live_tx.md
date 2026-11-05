@@ -1,6 +1,6 @@
-# rk3588_live_ingest — RK3588 端到端低延迟直播链路
+# rk3588_live_tx — RK3588 端到端低延迟直播链路
 
-`app/rk3588_live_ingest/`：在 RK3588 上跑通 **采集 → 编码 → MTL 传输 → 解码 → 渲染**
+`app/rk3588_live_tx/`：在 RK3588 上跑通 **采集 → 编码 → MTL 传输 → 解码 → 渲染**
 的完整低延迟链路。单二进制 `live_ingest` 支持 `tx` / `rx` / `both`（单板回环）三种模式，
 可选 `--config <json>` 覆盖默认参数。
 
@@ -34,7 +34,7 @@ V4L2 采集 (io/v4l2_capturer)           ST2110 RX (mtl_rx)
 ## 构建
 
 ```bash
-cd app/rk3588_live_ingest
+cd app/rk3588_live_tx
 meson setup build && ninja -C build
 ```
 

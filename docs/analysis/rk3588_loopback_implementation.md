@@ -1,6 +1,6 @@
 # RK3588 应用本机回环实现说明
 
-## rk3588_live_ingest
+## rk3588_live_tx
 
 入口：`./build/live_ingest both [秒] [--config ...]`
 
@@ -16,7 +16,7 @@
 
 3. 父进程等待两个子进程结束并汇总结果。
 
-## rk3588_file_playout
+## rk3588_playout_rx
 
 入口：`./tests/file_playout_both.sh [秒] [额外参数...]`
 

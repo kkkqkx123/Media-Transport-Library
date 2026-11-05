@@ -5,7 +5,7 @@
 
 ## 0. 一句话结论
 
-RK3588 三个承载实时媒体流的 app（`rk3588_live_ingest`、`rk3588_file_playout`、`dvs_media`）
+RK3588 三个承载实时媒体流的 app（`rk3588_live_tx`、`rk3588_playout_rx`、`dvs_media`）
 **只用 ST2110 的两个 profile**：
 
 - **视频 = ST2110-22（压缩 / mezzanine 码流，frame-level + codestream 打包）**
@@ -22,8 +22,8 @@ RK3588 三个承载实时媒体流的 app（`rk3588_live_ingest`、`rk3588_file_
 
 | App | 角色 | 使用的 profile | 当前数据面状态 |
 |---|---|---|---|
-| `app/rk3588_live_ingest` | 低延迟实时采集→编码→收发→解码→显示 | ST2110-22（TX + RX） | 完整 TX/RX |
-| `app/rk3588_file_playout` | MP4 文件分发 | ST2110-22（TX + RX 视频）+ ST2110-30（TX + RX 音频） | 完整 TX/RX |
+| `app/rk3588_live_tx` | 低延迟实时采集→编码→收发→解码→显示 | ST2110-22（TX + RX） | 完整 TX/RX |
+| `app/rk3588_playout_rx` | MP4 文件分发 | ST2110-22（TX + RX 视频）+ ST2110-30（TX + RX 音频） | 完整 TX/RX |
 | `app/dvs_media` | 演进自 file_playout 的节点媒体引擎 | ST2110-22（RX，多 lane PiP）+ ST2110-30（RX 音频） | RX 完整；TX 后端暂为桩（`backend_pending`） |
 | `app/dvs_agent` / `app/dvs_platform` | 控制面（HTTP/SQLite 配置与编排） | 不涉及 ST2110 | 无 MTL |
 
@@ -76,7 +76,7 @@ RK3588 三个承载实时媒体流的 app（`rk3588_live_ingest`、`rk3588_file_
 
 关键代码片段（TX，`file_playout/tx/mtl_tx_video.c:100-117`）：
 
-```100:117:app/rk3588_file_playout/tx/mtl_tx_video.c
+```100:117:app/rk3588_playout_rx/tx/mtl_tx_video.c
     struct st22_tx_ops ops = {0};
     ops.name               = "file_playout_video_tx";
     ops.priv               = tx;
@@ -248,12 +248,12 @@ ST22 RX(lcore) → notify_frame_ready
 
 | 功能 | 文件 |
 |---|---|
-| 视频 TX 会话（ST22） | `app/rk3588_live_ingest/mtl_tx.c`、`app/rk3588_file_playout/tx/mtl_tx_video.c` |
-| 视频 RX 会话（ST22） | `app/rk3588_live_ingest/mtl_rx.c`、`app/rk3588_file_playout/rx/mtl_rx_mp4.c` |
-| 音频 TX 会话（ST30） | `app/rk3588_file_playout/tx/mtl_tx_audio.c` |
-| 音频 RX 会话（ST30） | `app/rk3588_file_playout/rx/mtl_rx_audio.c` |
-| RX→解码桥接 / 背压 | `app/rk3588_live_ingest/mtl_rx_bridge.c`、`app/rk3588_file_playout/rx/rx_compositor.c` |
-| MTL 初始化与 PTP/PMD/Flag | `app/rk3588_live_ingest/live_ingest_app.c:77-128`、`app/rk3588_file_playout/file_playout_config.c:705-868` |
-| TAI 锚定 / 时间戳换算 | `app/rk3588_file_playout/shared/tx_tai_ts.c`、`shared/ptp_time.c`、`rx/media_clk.c` |
-| SEI 时间戳（live） | `app/rk3588_live_ingest/hal/sei_timestamp.*`、`pipeline/rx_pipeline.c:283-294` |
+| 视频 TX 会话（ST22） | `app/rk3588_live_tx/mtl_tx.c`、`app/rk3588_playout_rx/tx/mtl_tx_video.c` |
+| 视频 RX 会话（ST22） | `app/rk3588_live_tx/mtl_rx.c`、`app/rk3588_playout_rx/rx/mtl_rx_mp4.c` |
+| 音频 TX 会话（ST30） | `app/rk3588_playout_rx/tx/mtl_tx_audio.c` |
+| 音频 RX 会话（ST30） | `app/rk3588_playout_rx/rx/mtl_rx_audio.c` |
+| RX→解码桥接 / 背压 | `app/rk3588_live_tx/mtl_rx_bridge.c`、`app/rk3588_playout_rx/rx/rx_compositor.c` |
+| MTL 初始化与 PTP/PMD/Flag | `app/rk3588_live_tx/live_ingest_app.c:77-128`、`app/rk3588_playout_rx/file_playout_config.c:705-868` |
+| TAI 锚定 / 时间戳换算 | `app/rk3588_playout_rx/shared/tx_tai_ts.c`、`shared/ptp_time.c`、`rx/media_clk.c` |
+| SEI 时间戳（live） | `app/rk3588_live_tx/hal/sei_timestamp.*`、`pipeline/rx_pipeline.c:283-294` |
 | dvs TX 桩 | `app/dvs_media/engine/tx_session.c` |

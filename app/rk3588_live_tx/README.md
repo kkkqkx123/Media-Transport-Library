@@ -1,6 +1,6 @@
-# rk3588_live_ingest — RK3588 编码发送端
+# rk3588_live_tx — RK3588 编码发送端
 
-HDMI 实时采集→编码→MTL 发送的编码侧链路：V4L2 采集 → RGA 色彩转换 → MPP 硬件编码（H.264）→ MTL TX（ST 2110-22）。本包只产流，不收流；回环验证与解码呈现由 `rk3588_file_playout` 进程经网络互通完成，不在本包内自环。
+HDMI 实时采集→编码→MTL 发送的编码侧链路：V4L2 采集 → RGA 色彩转换 → MPP 硬件编码（H.264）→ MTL TX（ST 2110-22）。本包只产流，不收流；回环验证与解码呈现由 `rk3588_playout_rx` 进程经网络互通完成，不在本包内自环。
 
 依赖 Rockchip MPP、librga、libdrm、V4L2、MTL；独立 meson 工程，**不接入 `app/meson.build`**，需在其目录内单独构建（交叉编译服务器）：
 
@@ -22,4 +22,4 @@ meson setup build && ninja -C build
 
 ## 回环验证（跨包）
 
-本包只运行发送端，另起 `rk3588_file_playout` 的接收进程收流显示。两侧帧率与分辨率显式对齐后方可互通。
+本包只运行发送端，另起 `rk3588_playout_rx` 的接收进程收流显示。两侧帧率与分辨率显式对齐后方可互通。

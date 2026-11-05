@@ -74,9 +74,9 @@ MTL 把 AF_XDP 作为除 DPDK PMD 之外的"生产级"数据面后端：用户�
 
 两个应用**均已按 native AF_XDP 配置**，不是"将来要用"，而是"已写好、待环境满足"：
 
-- `app/rk3588_live_ingest/e2e_config.c`：`tx_port = "native_af_xdp:enP3p49s0"`、`rx_port = "native_af_xdp:eth0"`；`live_ingest.c: mtl_setup_single()` 固定 `pmd[MTL_PORT_P] = MTL_PMD_NATIVE_AF_XDP`，`net_proto = MTL_PROTO_STATIC`，且注释明确了单队列约束：TX-only 也要 `rx_queues_cnt=1` 才能在 `mt_dev.c` 选 1q 路径。
+- `app/rk3588_live_tx/e2e_config.c`：`tx_port = "native_af_xdp:enP3p49s0"`、`rx_port = "native_af_xdp:eth0"`；`live_ingest.c: mtl_setup_single()` 固定 `pmd[MTL_PORT_P] = MTL_PMD_NATIVE_AF_XDP`，`net_proto = MTL_PROTO_STATIC`，且注释明确了单队列约束：TX-only 也要 `rx_queues_cnt=1` 才能在 `mt_dev.c` 选 1q 路径。
   - **板上实测校正**：网卡**不是 r8168/RTL8125**，两个口都是 **Motorcomm yt6801**（builtin，`drivers/ztl/yt6801`）。`enP3p49s0` 就是 **eth1**，当前**未插网线（NO-CARRIER）**；唯一有链路的是 **eth0 = `enP2p33s0`**，且只协商到 **100 Mb/s**——单路 1080p 需 ~1.2 Gbps，物理链路先决。队列实测 **RX 4 / TX 1**，"单队列"只在 TX 侧成立，代码里 `rx_queues_cnt=1` 的写法仍安全但理由已变。
-- `app/rk3588_file_playout/file_playout_config.c`：`file_playout_pmd_from_port()` 按端口名前缀解析（`native_af_xdp:` → NATIVE_AF_XDP，`kernel:` → KERNEL_SOCKET，`dpdk_af_xdp:` → DPDK_AF_XDP），`file_playout_mtl_init()` 额外处理了两个单队列关键点：
+- `app/rk3588_playout_rx/file_playout_config.c`：`file_playout_pmd_from_port()` 按端口名前缀解析（`native_af_xdp:` → NATIVE_AF_XDP，`kernel:` → KERNEL_SOCKET，`dpdk_af_xdp:` → DPDK_AF_XDP），`file_playout_mtl_init()` 额外处理了两个单队列关键点：
   - ST22 视频 + ST30 音频同端口时必须 `MTL_FLAG_SHARED_RX_QUEUE`/`MTL_FLAG_SHARED_TX_QUEUE`（rsq/tsq demux），否则第二个会话覆盖 xdp queue 的 `rx_entry`，音频 tasklet 在 `mt_rxq_burst` SIGSEGV；
   - PTP 走 `ptp_get_time_fn` 外部 CLOCK_TAI（linuxptp），因为板载网卡无 HW timesync（**实测**：`ethtool -T eth0` 只有 `software-receive`/`software-system-clock`，PTP Hardware Clock = none，且板上无 `/dev/ptp*`、未装 `ptp4l`/`phc2sys` → 该方案当前不可用，需装 linuxptp 或改用系统时钟）。
 

@@ -1,7 +1,7 @@
 # RK3588 功能验证方案
 
 > 最后更新：2026-11-02
-> 适用：在 RK3588 板端对 MTL 库与 `rk3588_live_ingest` / `rk3588_file_playout` 应用做功能完整性验证。
+> 适用：在 RK3588 板端对 MTL 库与 `rk3588_live_tx` / `rk3588_playout_rx` 应用做功能完整性验证。
 > 部署前提见 `docs/dev/RK3588_DEPLOYMENT.md`，交叉编译链路见 `docs/archive/RK3588_CROSS_COMPILE_PROGRESS.md`。
 
 ---

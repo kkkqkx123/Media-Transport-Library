@@ -17,7 +17,7 @@
 | MTL 核心库（lib/） | ✅ 52/52，0 错误，产出 `libmtl.so`（ARM aarch64，纯 aarch64 依赖）；已 `meson install --prefix=/usr` 装入 sysroot |
 | libxdp（XDP 后端依赖） | ✅ 1.6.3 装入 sysroot，MTL 启用 **AF_XDP 后端**（动态链同一个 libbpf 1.4.0） |
 | MTL **release** 构建（devs） | ✅ 52/52，0 错误（`-Werror` 对未用变量类告警降级，详见 §6） |
-| rk3588 应用（角色重构后） | ✅ **rk3588_live_ingest** 编码发送端（TX-only）与 **rk3588_file_playout** 解码接收端（RX-only）均完成交叉配置验证（见 §6.4）；`x86` 桌面构建分支已删除，全部硬件依赖改为必需 |
+| rk3588 应用（角色重构后） | ✅ **rk3588_live_tx** 编码发送端（TX-only）与 **rk3588_playout_rx** 解码接收端（RX-only）均完成交叉配置验证（见 §6.4）；`x86` 桌面构建分支已删除，全部硬件依赖改为必需 |
 | 环境同步 | ✅ sysroot/工具链/bin 已在本地 Arch 机 `/home/kkkqkx/mtl/` 镜像；libxdp 与增强包装脚本已**回写** devs；wrapper 系 sysroot 独缺的 `mtl` 三件套已从 devs `/data/kkkqkx/mtl/sysroot` 同步补齐（见 §1.3） |
 
 **结论**：DPDK → libbpf/libxdp → MTL 库 → rk3588 应用的完整交叉编译链路已打通，并在 devs 完成正式 release 验证。
@@ -108,7 +108,7 @@ make -C lib/libxdp libxdp.so libxdp.pc        # 仅 .so + .pc
 
 ## 6. rk3588 应用构建（devs 验证）
 
-两个独立 meson 工程（`app/rk3588_live_ingest`、`app/rk3588_file_playout`），各自 `meson setup build && ninja -C build`，传同一 `--cross-file sysroot/aarch64.ini`。
+两个独立 meson 工程（`app/rk3588_live_tx`、`app/rk3588_playout_rx`），各自 `meson setup build && ninja -C build`，传同一 `--cross-file sysroot/aarch64.ini`。
 
 ### 6.1 依赖（均经 `mtl-pkg-config` 从 sysroot 解析）
 - end2end：`libdrm` / `threads` / `rockchip_mpp 1.3.9` / `mtl 26.09` / `json-c 0.15` / `librga 2.1.0` —— 全 `found`，live_ingest 全阶段构建。

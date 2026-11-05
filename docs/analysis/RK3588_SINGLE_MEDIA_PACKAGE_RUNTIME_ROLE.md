@@ -1,6 +1,6 @@
 # 单一 media 包 + 运行时角色选择的可行性分析
 
-> 分析对象：`app/dvs_media` 当前实现、`app/rk3588_live_ingest` donor chain、`app/rk3588_file_playout` donor chain
+> 分析对象：`app/dvs_media` 当前实现、`app/rk3588_live_tx` donor chain、`app/rk3588_playout_rx` donor chain
 > 结论先行：**从架构与工程可行性看，最终节点应采用单一 `dvs_media` 包并在运行时选择 input/output 角色；但这不意味着合并 donor 应用，而是把两类数据面能力收敛到同一个受控媒体引擎中。当前代码已经朝这个方向前进（`HAVE_TX_BACKEND=1`、`dvs_engine_set_role`、`file_playout_mtl_init_dual`），剩余工作集中在角色切换的完整 teardown、能力门控和验证。**
 
 ---
@@ -19,7 +19,7 @@
 
 基本支持，且已经接入 TX donor：
 
-- `dvs_media/meson.build` 已 in-tree 编译 `rk3588_live_ingest` 的 capture/encode/TX donor，并定义 `HAVE_TX_BACKEND=1`。
+- `dvs_media/meson.build` 已 in-tree 编译 `rk3588_live_tx` 的 capture/encode/TX donor，并定义 `HAVE_TX_BACKEND=1`。
 - `engine_ctx.c` 已包含 `tx_backend_live_ingest.c`，并调用 `dvs_tx_backend_set_ctx`、`dvs_tx_backend_entry`。
 - `dvs_engine_set_role()` 已实现 `input` / `output` 两种角色。
 - `dvs_engine_init_mtl()` 与 `dvs_engine_apply_layout_at()` 使用 `file_playout_mtl_init_dual()`，说明 MTL 初始化已经按双端口/双角色设计。
@@ -86,7 +86,7 @@ dvs_media (single binary)
 
 单包运行时选择不等于合并 donor 应用：
 
-- `rk3588_live_ingest` 和 `rk3588_file_playout` 仍然是独立验证应用，保留端到端测试入口。
+- `rk3588_live_tx` 和 `rk3588_playout_rx` 仍然是独立验证应用，保留端到端测试入口。
 - `dvs_media` 是生产集成点，in-tree 复用 donor 模块，不复制源码。
 - donor 应用的测试矩阵继续存在，用于定位数据面问题。
 

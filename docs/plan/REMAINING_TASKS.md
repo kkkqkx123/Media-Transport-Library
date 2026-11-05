@@ -74,7 +74,7 @@
 
 | ID | 任务 | 状态 | 依赖 | 退出标准 |
 |----|------|------|------|----------|
-| **A1** | C 档 `drm_renderer`/`mpp_decoder` 合并决策与执行：以 file_playout 接口为基准重设计，end2end 做适配层；或确认 dvs-media 直接消费 `rk3588_file_playout/shared/` 副本（SHARED §2 / FRONTEND S0） | ⬜ | 无 | 决策记录落档；若合并则两 app 仍全绿 |
+| **A1** | C 档 `drm_renderer`/`mpp_decoder` 合并决策与执行：以 file_playout 接口为基准重设计，end2end 做适配层；或确认 dvs-media 直接消费 `rk3588_playout_rx/shared/` 副本（SHARED §2 / FRONTEND S0） | ⬜ | 无 | 决策记录落档；若合并则两 app 仍全绿 |
 | **A2** | D 档模块（`drm_mode`/`display_layout`/`ptp_time`/`e2e_stamp` 等）迁入 common，供 dvs-media 复用（FRONTEND S0） | ⬜ | A1 | dvs-media 能 include common 头并链接静态库 |
 
 ### 4.2 end2end 采集/编码链路改进（IMP）

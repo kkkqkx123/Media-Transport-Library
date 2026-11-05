@@ -1,7 +1,7 @@
 # dvs_agent 前端剩余缺口完整修改方案
 
 > 对应映射文档：`docs/app/dvs_agent_frontend_mapping.md`。
-> 对应代码：`app/dvs_agent`、`app/dvs_media`、`app/rk3588_live_ingest`、`app/rk3588_file_playout`。
+> 对应代码：`app/dvs_agent`、`app/dvs_media`、`app/rk3588_live_tx`、`app/rk3588_playout_rx`。
 > 本方案只描述最终目标与改造步骤，不保留历史过程。
 
 ## 1. 目标
@@ -115,7 +115,7 @@
 - `app/dvs_agent/maintenance.cpp`：重启响应如实标注受控与否，受控时不谎称 rebooting。
 - `app/dvs_agent/web/src/_shared/hardware-capabilities.js`：只用上报端口，加未上报标记与空安全。
 - `app/dvs_agent/web/src/pages/node-admin/node-admin.js`：空端口禁用保存，输出重协商走 pending 轮询，SIP 标注为连通性探测。
-- `app/dvs_media`、`app/rk3588_live_ingest`：本轮无改动，TX 编排与采集能力延期。
+- `app/dvs_media`、`app/rk3588_live_tx`：本轮无改动，TX 编排与采集能力延期。
 
 ## 6. 验证方案
 

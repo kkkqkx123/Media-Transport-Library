@@ -25,7 +25,7 @@ MTL 是“一个库工程 + 多个独立子工程”的 meson 结构：根工程
 | 守护进程 | `manager/` | `MtlManager`（+`mtl.xdp.o`） | 多进程资源仲裁、AF_XDP |
 | ld_preload | `ld_preload/` | 空壳，无构建目标 | — |
 | RxTxApp | `tests/tools/RxTxApp/` | `RxTxApp` | pytest 验收套件 |
-| rk3588 参考应用 | `app/rk3588_live_ingest/`、`app/rk3588_file_playout/` | `live_ingest`、`file_playout_tx/rx` 等 | DVS 节点媒体引擎起点 |
+| rk3588 参考应用 | `app/rk3588_live_tx/`、`app/rk3588_playout_rx/` | `live_ingest`、`file_playout_tx/rx` 等 | DVS 节点媒体引擎起点 |
 
 ### 1.2 `build.sh` 流程
 
@@ -111,7 +111,7 @@ MTL 是“一个库工程 + 多个独立子工程”的 meson 结构：根工程
 
 两者都是**独立 meson 工程，不在 `app/meson.build`、不在 `build.sh`、不在 CI**（`.github/workflows` 无 rk3588/aarch64 job），构建方式固定为在各自目录 `meson setup build && ninja -C build`，并依赖已安装的 `mtl.pc`（注意用 `MTL_INSTALL_PREFIX` 时同步导出 `PKG_CONFIG_PATH`）。
 
-### 5.1 `app/rk3588_live_ingest`（工程名 rk3588_live_ingest，`warning_level=3`）
+### 5.1 `app/rk3588_live_tx`（工程名 rk3588_live_tx，`warning_level=3`）
 
 按阶段组织为 4 个静态库 + 5 个可执行文件，依赖探测决定构建深度：
 
@@ -125,7 +125,7 @@ MTL 是“一个库工程 + 多个独立子工程”的 meson 结构：根工程
 
 风险：`rockchip_mpp`、`librga`、`mtl`、`json-c` 都是 `required: false`，依赖没装齐时 `ninja` 仍“成功”，但 `live_ingest` 根本没构建——**构建脚本必须显式校验 `live_ingest` 产物存在**，不能只看退出码。
 
-### 5.2 `app/rk3588_file_playout`（工程名 file_playout）
+### 5.2 `app/rk3588_playout_rx`（工程名 file_playout）
 
 - `meson_options.txt`：`build_tx`（默认 true）、`build_rx`（默认 true），全关时报错。
 - 公共必需：`threads`、`mtl`（`required: true`）；TX 与 RX 任一开启都必需 `libavformat/libavcodec/libavutil/json-c`（FFmpeg 版本按 versions.env 钉 7.0 的发行版包或自编译）。
@@ -184,13 +184,13 @@ MTL_INSTALL_PREFIX=$PWD/.local_install ./build.sh
 ./build.sh unit
 # 5) 两个参考应用（确保 PKG_CONFIG_PATH 能找到 mtl.pc，注意 bash 赋值不做 glob 展开，用 find 定位）
 export PKG_CONFIG_PATH="$(find $PWD/.local_install -name mtl.pc -printf '%h\n' | head -1):${PKG_CONFIG_PATH:-}"
-( cd app/rk3588_live_ingest  && meson setup build && ninja -C build )
-( cd app/rk3588_file_playout && meson setup build && ninja -C build )
+( cd app/rk3588_live_tx  && meson setup build && ninja -C build )
+( cd app/rk3588_playout_rx && meson setup build && ninja -C build )
 # 6) 产物断言（防 RB5 静默降级）
-test -x app/rk3588_live_ingest/build/live_ingest
-test -x app/rk3588_file_playout/build/file_playout_tx -a -x app/rk3588_file_playout/build/file_playout_rx
+test -x app/rk3588_live_tx/build/live_ingest
+test -x app/rk3588_playout_rx/build/file_playout_tx -a -x app/rk3588_playout_rx/build/file_playout_rx
 ```
 
 ## 9. 参考文件索引
 
-`build.sh`、`meson.build`、`meson_options.txt`、`versions.env`、`VERSION`；`lib/meson.build`、`lib/src/{,datapath,dev,st2110}/meson.build`；`script/build_dpdk.sh`、`script/build_ebpf_xdp.sh`、`script/build_drivers.sh`、`script/check_dpdk_patches.sh`、`script/common.sh`；`manager/meson.build`；`plugins/meson.build`、`plugins/st22_avcodec/meson.build`、`script/build_st22_avcodec_plugin.sh`；`ld_preload/meson.build`；`tests/meson.build`、`tests/unit/meson.build`、`tests/tools/RxTxApp/meson.build`；`app/meson.build`、`app/rk3588_live_ingest/meson.build`、`app/rk3588_file_playout/meson.build(+meson_options.txt)`；`doc/build.md`；`docs/req/02-MTL基座分析.md` §6、`docs/req/05-实施路线与验证.md` P0/§13。
+`build.sh`、`meson.build`、`meson_options.txt`、`versions.env`、`VERSION`；`lib/meson.build`、`lib/src/{,datapath,dev,st2110}/meson.build`；`script/build_dpdk.sh`、`script/build_ebpf_xdp.sh`、`script/build_drivers.sh`、`script/check_dpdk_patches.sh`、`script/common.sh`；`manager/meson.build`；`plugins/meson.build`、`plugins/st22_avcodec/meson.build`、`script/build_st22_avcodec_plugin.sh`；`ld_preload/meson.build`；`tests/meson.build`、`tests/unit/meson.build`、`tests/tools/RxTxApp/meson.build`；`app/meson.build`、`app/rk3588_live_tx/meson.build`、`app/rk3588_playout_rx/meson.build(+meson_options.txt)`；`doc/build.md`；`docs/req/02-MTL基座分析.md` §6、`docs/req/05-实施路线与验证.md` P0/§13。

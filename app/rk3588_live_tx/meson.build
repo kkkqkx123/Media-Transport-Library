@@ -5,7 +5,7 @@
 #
 #   meson setup build && ninja -C build
 
-project('rk3588_live_ingest', 'c', default_options: ['buildtype=release', 'warning_level=3'])
+project('rk3588_live_tx', 'c', default_options: ['buildtype=release', 'warning_level=3'])
 
 cc = meson.get_compiler('c')
 

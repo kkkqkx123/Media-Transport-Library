@@ -1,7 +1,7 @@
 # RK3588 Live Ingest 接收/解码链路改进设计方案
 
 对照基线：TX 链路已落地的模式（代际归还、HangGuard 看门狗、防风暴重建、1s 聚合日志、DMA32 堆、VUI 注入）。
-被改进对象：`app/rk3588_live_ingest/`（`mtl_rx.c`、`mtl_rx_bridge.c`、`pipeline/rx_pipeline.c`、`pipeline/slice_reassembler.c`、`codec/mpp_decoder.c`、`io/drm_renderer.c`）。
+被改进对象：`app/rk3588_live_tx/`（`mtl_rx.c`、`mtl_rx_bridge.c`、`pipeline/rx_pipeline.c`、`pipeline/slice_reassembler.c`、`codec/mpp_decoder.c`、`io/drm_renderer.c`）。
 
 ## 1. 现状对照总结
 
@@ -98,7 +98,7 @@ meson 使其在 x86 可编译运行，与 sps_vui 单测对等。
 ## 4. 验证方式
 
 - 纯逻辑模块（序号 gap 计数、SEI 偏移、重组 flush）进
-  `app/rk3588_live_ingest/tests/`，参照既有单测风格，可 x86 运行。
+  `app/rk3588_live_tx/tests/`，参照既有单测风格，可 x86 运行。
 - GEM 句柄修复用长稳前后句柄计数对比验证，不等修复后增长。
 - 板上 24h 长稳观察 1s 日志：丢帧率有界，延迟窗口稳定，无挂死误报。
 - 断网、无信号、分辨率切换演练：网损与解码挂死告警可区分，恢复后自愈。

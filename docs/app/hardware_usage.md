@@ -4,12 +4,12 @@
 
 | 应用 | 定位 | 数据链路 |
 |---|---|---|
-| `app/rk3588_live_ingest/` | 低延迟实时采集-编码-传输-解码-渲染 | V4L2 采集 → RGA 转换 → MPP 编码 → MTL TX/RX → MPP 解码 → DRM 显示 |
-| `app/rk3588_file_playout/` | MP4 文件分发（多窗口/PvD） | FFmpeg demux → MTL TX/RX（视频+音频）→ MPP 解码 → DRM 多 plane 显示 + ALSA 音频 |
+| `app/rk3588_live_tx/` | 低延迟实时采集-编码-传输-解码-渲染 | V4L2 采集 → RGA 转换 → MPP 编码 → MTL TX/RX → MPP 解码 → DRM 显示 |
+| `app/rk3588_playout_rx/` | MP4 文件分发（多窗口/PvD） | FFmpeg demux → MTL TX/RX（视频+音频）→ MPP 解码 → DRM 多 plane 显示 + ALSA 音频 |
 
 硬件覆盖总览：
 
-| 硬件 | rk3588_live_ingest | rk3588_file_playout |
+| 硬件 | rk3588_live_tx | rk3588_playout_rx |
 |---|---|---|
 | V4L2 采集（rk_hdmirx） | ✅ /dev/video0 | — |
 | MPP VENC（H.264 编码） | ✅ | —（TX 直发码流，无编码） |
@@ -23,7 +23,7 @@
 
 ---
 
-## 1. rk3588_live_ingest
+## 1. rk3588_live_tx
 
 ### 1.1 V4L2 视频采集（rk_hdmirx）
 
@@ -110,7 +110,7 @@ RX: native_af_xdp (eth0) ST22 收帧
 
 ---
 
-## 2. rk3588_file_playout
+## 2. rk3588_playout_rx
 
 ### 2.1 MP4 解封装（纯软件，FFmpeg libavformat）
 

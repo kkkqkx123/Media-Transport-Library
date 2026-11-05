@@ -19,11 +19,11 @@ shift || true
 LOG="/tmp/run1.log"
 BASE="/tmp/run1"
 CD="$(cd "$(dirname "$0")/.." && pwd)"
-LIVE_INGEST="$CD/../rk3588_live_ingest/build/live_ingest"
+LIVE_INGEST="$CD/../rk3588_live_tx/build/live_ingest"
 
 cd "$CD"
 [ -x ./build/file_playout_rx ] || { echo "run: ninja -C build first"; exit 1; }
-[ -x "$LIVE_INGEST" ] || { echo "run: build rk3588_live_ingest first (encode sender)"; exit 1; }
+[ -x "$LIVE_INGEST" ] || { echo "run: build rk3588_live_tx first (encode sender)"; exit 1; }
 
 echo "=== clean old trace/dump (avoid NUL/corrupt csv) ==="
 rm -f "${BASE}.rx_mtl.csv" "${BASE}.rx_br.csv" \

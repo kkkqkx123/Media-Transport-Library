@@ -7,7 +7,7 @@
 - 主构建系统为 **Meson + Ninja**，顶层 `build.sh` 串行编排多个独立 meson 项目。
 - 核心产物是 **`libmtl`**（`libmtl.so` / Windows `libmtl.dll`），所有媒体、应用、插件、测试包最终都围绕它链接。
 - 顶层 `meson.build` 只构建库本体、头文件、unit/fuzz 子目录；`app/`、`tests/`、`plugins/`、`manager/`、`ld_preload/`、`tests/tools/RxTxApp/` 都是独立 meson 项目，通过已安装的 `mtl.pc` 发现 libmtl。
-- RK3588 应用族（`rk3588_live_ingest`、`rk3588_file_playout`、`dvs_media`、`dvs_agent`、`dvs_platform`、`rk3588_common`、`dvs_common`）也是独立 meson 项目，不纳入顶层 `build.sh`，需在各自目录单独 `meson setup build && ninja`。
+- RK3588 应用族（`rk3588_live_tx`、`rk3588_playout_rx`、`dvs_media`、`dvs_agent`、`dvs_platform`、`rk3588_common`、`dvs_common`）也是独立 meson 项目，不纳入顶层 `build.sh`，需在各自目录单独 `meson setup build && ninja`。
 - Rust 绑定、Python SWIG 绑定、eBPF/抓包/调度仿真工具使用 Cargo / setuptools / Makefile，不参与 Meson 主流程。
 
 ## 2. 构建入口与编排
@@ -49,7 +49,7 @@
 | GStreamer 工具 | `gstreamer_mtl_tools` | C | 独立 | `libancgenerator`、`libtimeinserter` |
 | GPU Direct | `mtl_gpu_direct` | C | 独立 | `libmtl_gpu_direct.so` |
 | RK3588 common | `rk3588_common` | C | 独立 | `librk3588_common.a` |
-| live_ingest | `rk3588_live_ingest` | C | 独立 | `live_ingest` 及测试 |
+| live_ingest | `rk3588_live_tx` | C | 独立 | `live_ingest` 及测试 |
 | file_playout | `file_playout` | C | 独立 | `file_playout_tx`、`file_playout_rx` |
 | dvs_media | `dvs_media` | C | 独立 | `dvs_media` |
 | dvs_agent | `dvs_agent` | C++17/C | 独立 | `dvs_agent` |
@@ -224,7 +224,7 @@ Windows：
 
 ### 10.2 live_ingest
 
-- 项目 `rk3588_live_ingest`，C。
+- 项目 `rk3588_live_tx`，C。
 - 必需：`libdrm`、`threads`。
 - 可选：`rockchip_mpp`、`librga`、`mtl`、`json-c`。
 - 构建分阶段：
@@ -255,10 +255,10 @@ Windows：
 - 必需：MTL、threads、MPP、DRM、ALSA、json-c、FFmpeg。
 - 不复制 file_playout 源码，而是 **in-tree 相对路径直接编译**：
   - `rk3588_common/src/*`
-  - `rk3588_file_playout/shared/*`
-  - `rk3588_file_playout/tx/mp4_demux.c`
-  - `rk3588_file_playout/rx/*`
-  - `rk3588_file_playout/shared/mpp_decoder.c`、`drm_renderer.c`
+  - `rk3588_playout_rx/shared/*`
+  - `rk3588_playout_rx/tx/mp4_demux.c`
+  - `rk3588_playout_rx/rx/*`
+  - `rk3588_playout_rx/shared/mpp_decoder.c`、`drm_renderer.c`
 - 静态库：`dvs_shared`、`dvs_rx`。
 - 可执行文件：`dvs_media`，链接 `dvs_shared`、`dvs_rx`、`file_playout_probe`。
 - 测试：`test_state_machine`、`test_ipc`、`test_session_admit`、`test_tx_session`。
@@ -405,6 +405,6 @@ GStreamer
 
 - `ld_preload/meson.build` 当前只声明依赖，没有最终目标；不要假设 `build/ld_preload` 会产出预加载库。
 - `dvs_common` 的静态库只是语法检查目标；`dvs_agent` / `dvs_platform` 直接编译相同源码，修改 common 源码会影响两者。
-- `dvs_media` 直接 in-tree 编译 `rk3588_file_playout` 的 RX/shared/MP4 demux 源码，修改这些文件会影响 file_playout 与 dvs_media 两套构建。
+- `dvs_media` 直接 in-tree 编译 `rk3588_playout_rx` 的 RX/shared/MP4 demux 源码，修改这些文件会影响 file_playout 与 dvs_media 两套构建。
 - RK3588 应用不被顶层 `build.sh` 覆盖，需单独构建；部分目标按依赖存在与否条件跳过。
 - Rust/Python 绑定需要先安装 libmtl 并配置 pkg-config/SWIG 路径。

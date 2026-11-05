@@ -45,12 +45,12 @@
 
 - `rk3588_common`：`ring_buffer`、`slab_pool`、`timer`，头文件 `codec_plugin.h`、`pipeline_common.h`，
   plus 已迁移的 `sps_vui`、`sei_timestamp`、`display_layout`、`drm_mode`、`ptp_time`。
-- `rk3588_live_ingest`：TX 链 `io/v4l2_capturer`、`codec/rga_converter`、`codec/mpp_encoder`、
+- `rk3588_live_tx`：TX 链 `io/v4l2_capturer`、`codec/rga_converter`、`codec/mpp_encoder`、
   `codec/sps_vui`（源已搬，include 仍经 common）、`pipeline/tx_pipeline`（经 `tx_mtl_sink_ops`
   对接 `mtl_tx`）、HAL 的 `dma_allocator`/`dma32_allocator`/`sei_timestamp`（源已搬）。
-- `rk3588_file_playout/shared`：`display_layout`、`drm_mode`、`ptp_time` 源已搬；
+- `rk3588_playout_rx/shared`：`display_layout`、`drm_mode`、`ptp_time` 源已搬；
   `mpp_decoder`、`drm_renderer`、`e2e_stamp`、`au_trace`、`rx_e2e_stats`、`tx_tai_ts` 仍 donor。
-- `rk3588_file_playout/rx`：RX 数据面全套，dvs_media output 角色复用。
+- `rk3588_playout_rx/rx`：RX 数据面全套，dvs_media output 角色复用。
 
 需求侧：
 

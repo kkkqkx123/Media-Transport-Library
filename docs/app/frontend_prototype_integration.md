@@ -1,6 +1,6 @@
 # 前端原型(ref/)与 DVS 需求、RK3588 app 层的对应关系与集成设计
 
-> 输入:`docs/req/`(11 条 REQ 归并分析)、`ref/video-control-platform/`(平台后台原型)、`ref/node-device-admin/`(节点本机后台原型)、`app/rk3588_live_ingest/`、`app/rk3588_file_playout/`。
+> 输入:`docs/req/`(11 条 REQ 归并分析)、`ref/video-control-platform/`(平台后台原型)、`ref/node-device-admin/`(节点本机后台原型)、`app/rk3588_live_tx/`、`app/rk3588_playout_rx/`。
 > 本文回答两个问题:原型页面/数据模型与需求的对应关系;如何把两个原型承载的业务能力集成到现有 rk3588 app 层,形成"平台控制面 + 节点代理 + 节点媒体引擎"的可落地架构。
 > 状态:draft,供评审;不替代 REQ 的验收口径。
 
@@ -64,7 +64,7 @@
 
 详细盘点见附录 A,核心结论:
 
-| 维度 | rk3588_live_ingest | rk3588_file_playout |
+| 维度 | rk3588_live_tx | rk3588_playout_rx |
 | --- | --- | --- |
 | 进程 | `live_ingest` 单进程 tx/rx/both | `file_playout_tx` / `file_playout_rx` 双可执行 |
 | 配置 | argv + JSON(仅单流) | argv + 完整 JSON(pip_streams[]/tx_streams[]、DRM/ALSA/PTP/CPU 亲和) |
@@ -161,7 +161,7 @@ file_playout 是第二代实现,`shared/` 已是事实上的公共库;以它为�
 
 ## 附录 A:rk3588 app 层盘点明细
 
-### A.1 rk3588_live_ingest
+### A.1 rk3588_live_tx
 
 - 入口 `live_ingest.c:459 main()`,模式 `tx/rx/both`(`run_tx_mode:349`、`run_rx_mode:373`、`run_both_mode:410`)。
 - argv 解析 `parse_args(:49-93)`;JSON 配置 `e2e_config.c:82` 仅取 `streams[0]/interfaces[0]`(:98、:115),单流设计。
@@ -169,7 +169,7 @@ file_playout 是第二代实现,`shared/` 已是事实上的公共库;以它为�
 - RX 线程链:MTL RX → bridge(`mtl_rx_bridge.c:121`)→ 解码(`pipeline/rx_pipeline.c:205`)→ DRM。
 - 独有可复用件:`hal/dma_allocator.c`、`hal/dma32_allocator.c`、`hal/sei_timestamp.c`、`codec/rga_converter.c`、`codec/mpp_encoder.c`、`pipeline/slice_reassembler.c`。
 
-### A.2 rk3588_file_playout
+### A.2 rk3588_playout_rx
 
 - TX:`mp4_tx_app.c:25 main()` → `tx/tx_scheduler.c:500、511` 每 lane video 线程 + audio 线程,`tx_streams[]`(`shared/display_layout.h:46-57`)。
 - RX:`mp4_rx_app.c:387 main()`,`pip_stream_count>0` 走 `run_compositor(:114)`,否则 `run_legacy_pipeline(:205)`。

@@ -2,7 +2,7 @@
 
 ## 背景
 
-RK3588 平台同时包含 RGA3 与 RGA2 两类 RGA 核心。`rk3588_live_ingest` 的
+RK3588 平台同时包含 RGA3 与 RGA2 两类 RGA 核心。`rk3588_live_tx` 的
 `rga_converter` 通过 librga 自动调度（`core = 0`）将采集帧转换为 NV12，并把
 NV12 池缓冲区同时提供给 MPP 编码器。
 

@@ -209,6 +209,9 @@ static int tx_encode_publish_ring(struct tx_pipeline* tp,
 
 void* tx_encode_thread(void* arg) {
     struct tx_pipeline* tp = (struct tx_pipeline*)arg;
+#if defined(__linux__) && defined(_GNU_SOURCE)
+    pthread_setname_np(pthread_self(), "tx_enc");
+#endif
     while (atomic_load(&tp->running)) {
         struct dmabuf_frame* f = NULL;
         if (ring_pop_wait(tp->ring_cap2enc, (void**)&f, &tp->running) != 0)

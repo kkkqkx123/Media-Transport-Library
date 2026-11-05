@@ -166,6 +166,9 @@ static int lane_feed_packet(rx_compositor* comp, rx_video_lane* lane, uint8_t* d
 
 static void* decode_thread(void* arg) {
     rx_video_lane* lane = arg;
+#if defined(__linux__) && defined(_GNU_SOURCE)
+    pthread_setname_np(pthread_self(), "rx_dec");
+#endif
     rx_compositor* comp = lane->comp;
     void* dec = lane->decoder->priv;
 
@@ -217,6 +220,9 @@ static void sleep_until_ns(rx_compositor* comp, uint64_t wake_ns) {
 
 static void* render_thread(void* arg) {
     rx_compositor* comp = arg;
+#if defined(__linux__) && defined(_GNU_SOURCE)
+    pthread_setname_np(pthread_self(), "rx_render");
+#endif
     rx_video_lane* main_lane = &comp->lanes[comp->main_lane_idx];
     float fps = main_lane->stream.fps > 0 ? main_lane->stream.fps : 24.0f;
     uint64_t frame_period_ns = (uint64_t)(1000000000.0 / (double)fps);

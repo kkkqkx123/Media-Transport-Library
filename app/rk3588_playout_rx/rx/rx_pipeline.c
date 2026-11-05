@@ -196,6 +196,9 @@ static void sleep_until_ns(rx_pipeline* rp, uint64_t wake_ns) {
 
 static void* render_thread(void* arg) {
     rx_pipeline* rp = (rx_pipeline*)arg;
+#if defined(__linux__) && defined(_GNU_SOURCE)
+    pthread_setname_np(pthread_self(), "rx_render");
+#endif
     float fps = rp->cfg.fps > 0 ? rp->cfg.fps : 24.0f;
     uint64_t frame_period_ns = (uint64_t)(1000000000.0 / (double)fps);
     int wait_ms = (int)(frame_period_ns / 2000000ULL);
@@ -256,6 +259,9 @@ static void* render_thread(void* arg) {
 
 static void* decode_thread(void* arg) {
     rx_pipeline* rp = (rx_pipeline*)arg;
+#if defined(__linux__) && defined(_GNU_SOURCE)
+    pthread_setname_np(pthread_self(), "rx_dec");
+#endif
     void* dec = rp->decoder->priv;
 
     while (atomic_load(&rp->running)) {

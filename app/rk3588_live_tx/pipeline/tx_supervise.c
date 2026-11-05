@@ -110,6 +110,9 @@ int tx_supervise_rebuild(struct tx_pipeline* tp) {
 
 void* tx_supervise_thread(void* arg) {
     struct tx_pipeline* tp = (struct tx_pipeline*)arg;
+#if defined(__linux__) && defined(_GNU_SOURCE)
+    pthread_setname_np(pthread_self(), "tx_sup");
+#endif
     struct tx_tick_state tick;
     memset(&tick, 0, sizeof(tick));
 

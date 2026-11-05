@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -222,6 +223,9 @@ typedef struct {
 
 static void* prepare_worker(void* arg) {
   prepare_job_t* job = arg;
+#if defined(__linux__) && defined(_GNU_SOURCE)
+  pthread_setname_np(pthread_self(), "dvs_prep");
+#endif
 
   /* Simulated preparation work (decode-first-frame wait, plane allocation).
    * Real engine work lands here when engine/session_mgr is wired up. */
@@ -277,6 +281,127 @@ static void spawn_prepare(dvs_client_t* c, int slot, unsigned long gen, int fd,
     return;
   }
   pthread_detach(tid);
+}
+
+/* ------------------------------------------------------------------ */
+/* serial executor for heavy verbs (commit/clear)                       */
+/* ------------------------------------------------------------------ */
+/* commit/clear rebuild or tear down the compositor and can block for
+ * seconds. Running them on the owning reader thread stalls that
+ * connection; running them concurrently from several connections races
+ * the engine swap. This single-slot executor serializes them: at most one
+ * heavy verb runs at a time, a second one gets an immediate retryable
+ * BUSY instead of queueing, and readers keep serving query_state while
+ * the worker runs. Response semantics stay synchronous: the submitting
+ * reader waits for its job result (with timeout) before replying. */
+
+typedef enum { EXEC_COMMIT, EXEC_CLEAR } exec_kind_t;
+
+typedef struct {
+  exec_kind_t kind;
+  char opid[64];
+  int revision;
+  /* result, filled by the worker */
+  int engine_failed; /* hooks.commit failed; state machine untouched */
+  int rc;            /* dvs_state_* code (commit only) */
+  int applied;
+  char err[128];
+} exec_job_t;
+
+static pthread_mutex_t g_exec_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_exec_req = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t g_exec_done = PTHREAD_COND_INITIALIZER;
+static int g_exec_busy = 0;      /* a job occupies the single slot */
+static int g_exec_completed = 0; /* result ready for the waiter */
+static int g_exec_available = 0; /* worker thread up; else run inline */
+static exec_job_t g_exec_job;
+
+static void exec_run_job(const exec_job_t* req, exec_job_t* res) {
+  *res = *req;
+  res->engine_failed = 0;
+  res->rc = 0;
+  res->applied = 0;
+  res->err[0] = '\0';
+  if (req->kind == EXEC_COMMIT) {
+    /* Apply the pending layout before advancing the state machine so an
+     * engine failure leaves the operation prepared (retry/abort) instead
+     * of a falsely committed revision. The executor commit is idempotent. */
+    if (g_hooks.commit) {
+      if (g_hooks.commit() != 0) {
+        res->engine_failed = 1;
+        snprintf(res->err, sizeof(res->err), "layout apply failed");
+        return;
+      }
+    }
+    res->rc = dvs_state_commit(req->opid, req->revision, &res->applied,
+                               res->err, sizeof(res->err));
+  } else {
+    if (g_hooks.clear) g_hooks.clear();
+    dvs_state_clear();
+  }
+}
+
+#define DVS_EXEC_TIMEOUT_MS 15000
+
+/* Submit a heavy verb. Returns 0 with *res filled, -1 when another heavy
+ * verb is running (caller should answer BUSY), -2 on wait timeout. When
+ * the worker thread is unavailable the job runs inline on the caller. */
+static int exec_submit(const exec_job_t* req, exec_job_t* res) {
+  if (!g_exec_available) {
+    exec_run_job(req, res);
+    return 0;
+  }
+  struct timespec deadline;
+  clock_gettime(CLOCK_REALTIME, &deadline);
+  deadline.tv_sec += DVS_EXEC_TIMEOUT_MS / 1000;
+  deadline.tv_nsec += (DVS_EXEC_TIMEOUT_MS % 1000) * 1000000L;
+  if (deadline.tv_nsec >= 1000000000L) {
+    deadline.tv_sec++;
+    deadline.tv_nsec -= 1000000000L;
+  }
+  pthread_mutex_lock(&g_exec_mu);
+  if (g_exec_busy) {
+    pthread_mutex_unlock(&g_exec_mu);
+    return -1;
+  }
+  g_exec_job = *req;
+  g_exec_busy = 1;
+  g_exec_completed = 0;
+  pthread_cond_signal(&g_exec_req);
+  int rc = 0;
+  while (!g_exec_completed && rc == 0)
+    rc = pthread_cond_timedwait(&g_exec_done, &g_exec_mu, &deadline);
+  if (!g_exec_completed) {
+    /* timeout: the worker still owns the slot and will clear it; the
+     * caller reports failure without touching shared state. */
+    pthread_mutex_unlock(&g_exec_mu);
+    return -2;
+  }
+  *res = g_exec_job;
+  pthread_mutex_unlock(&g_exec_mu);
+  return 0;
+}
+
+static void* exec_worker(void* arg) {
+  (void)arg;
+#if defined(__linux__) && defined(_GNU_SOURCE)
+  pthread_setname_np(pthread_self(), "dvs_exec");
+#endif
+  for (;;) {
+    pthread_mutex_lock(&g_exec_mu);
+    while (!g_exec_busy) pthread_cond_wait(&g_exec_req, &g_exec_mu);
+    exec_job_t req = g_exec_job;
+    pthread_mutex_unlock(&g_exec_mu);
+    exec_job_t res;
+    exec_run_job(&req, &res);
+    pthread_mutex_lock(&g_exec_mu);
+    g_exec_job = res;
+    g_exec_busy = 0;
+    g_exec_completed = 1;
+    pthread_cond_signal(&g_exec_done);
+    pthread_mutex_unlock(&g_exec_mu);
+  }
+  return NULL;
 }
 
 /* ------------------------------------------------------------------ */
@@ -410,7 +535,6 @@ static int handle_line(dvs_client_t* c, char* line) {
       revision = (snap.op_state == DVS_OP_PREPARED) ? snap.prepared_revision
                                                     : snap.revision + 1;
     }
-    int applied = 0;
     /* Replay of an already-committed operation answers without touching
      * the engine again; the first commit already applied the layout. */
     {
@@ -423,17 +547,33 @@ static int handle_line(dvs_client_t* c, char* line) {
         goto done;
       }
     }
-    /* Apply the pending layout before advancing the state machine so an
-     * engine failure leaves the operation prepared (retry/abort) instead
-     * of a falsely committed revision. The executor commit is idempotent. */
-    if (g_hooks.commit) {
-      if (g_hooks.commit() != 0) {
-        respond_cached(c, rid, cacheable, 500, "INTERNAL", "layout apply failed",
-                       NULL);
-        goto done;
-      }
+    /* Heavy verb: serialize through the single-slot executor so concurrent
+     * commits from several connections cannot race the engine swap. The
+     * replay check above keeps idempotent retries off the worker. */
+    exec_job_t req, res;
+    memset(&req, 0, sizeof(req));
+    req.kind = EXEC_COMMIT;
+    snprintf(req.opid, sizeof(req.opid), "%s", opid);
+    req.revision = revision;
+    int er = exec_submit(&req, &res);
+    if (er == -1) {
+      respond_cached(c, rid, cacheable, 503, "BUSY", "commit in progress",
+                     NULL);
+      goto done;
     }
-    int rc = dvs_state_commit(opid, revision, &applied, err, sizeof(err));
+    if (er != 0) {
+      respond_cached(c, rid, cacheable, 500, "INTERNAL", "commit timeout",
+                     NULL);
+      goto done;
+    }
+    if (res.engine_failed) {
+      respond_cached(c, rid, cacheable, 500, "INTERNAL", "layout apply failed",
+                     NULL);
+      goto done;
+    }
+    int rc = res.rc;
+    int applied = res.applied;
+    snprintf(err, sizeof(err), "%s", res.err);
     if (rc != 0) {
       int status = 409;
       const char* code = (rc == DVS_ERR_STALE_REVISION) ? "STALE_REVISION"
@@ -468,8 +608,20 @@ static int handle_line(dvs_client_t* c, char* line) {
     respond_cached(c, rid, cacheable, 200, "OK", "aborted", NULL);
     broadcast_state_changed();
   } else if (strcmp(type, "clear") == 0) {
-    if (g_hooks.clear) g_hooks.clear();
-    dvs_state_clear();
+    exec_job_t req, res;
+    memset(&req, 0, sizeof(req));
+    req.kind = EXEC_CLEAR;
+    int er = exec_submit(&req, &res);
+    if (er == -1) {
+      respond_cached(c, rid, cacheable, 503, "BUSY", "clear in progress",
+                     NULL);
+      goto done;
+    }
+    if (er != 0) {
+      respond_cached(c, rid, cacheable, 500, "INTERNAL", "clear timeout",
+                     NULL);
+      goto done;
+    }
     respond_cached(c, rid, cacheable, 200, "OK", "cleared", NULL);
     broadcast_state_changed();
   } else if (strcmp(type, "tx_start") == 0) {
@@ -518,6 +670,13 @@ static int handle_line(dvs_client_t* c, char* line) {
     json_object_object_add(datao, "revision", json_object_new_int(snap.revision));
     json_object_object_add(datao, "operationId", json_object_new_string(snap.operation_id));
     json_object_object_add(datao, "opState", json_object_new_int((int)snap.op_state));
+    /* Fixed merge order for the unified session view: session identity
+     * (lanes, each carrying sip/udp_port plus readiness) first, then the
+     * audio/video counters, then PTP and TX. Missing sources degrade to
+     * empty sets without blocking or caching stale values. */
+    json_object* lanes = (g_hooks.lane_stats) ? g_hooks.lane_stats() : NULL;
+    if (!lanes) lanes = json_object_new_array();
+    json_object_object_add(datao, "lanes", lanes);
     json_object_object_add(datao, "rxSessions", json_object_new_int(rx_sessions));
     json_object_object_add(datao, "decoding", json_object_new_int(decoding));
     json_object_object_add(datao, "layers", json_object_new_int(layers));
@@ -525,9 +684,6 @@ static int handle_line(dvs_client_t* c, char* line) {
     json_object_object_add(ptp, "state", json_object_new_string(ptp_state));
     json_object_object_add(ptp, "offsetUs", json_object_new_int(ptp_off));
     json_object_object_add(datao, "ptp", ptp);
-    json_object* lanes = (g_hooks.lane_stats) ? g_hooks.lane_stats() : NULL;
-    if (!lanes) lanes = json_object_new_array();
-    json_object_object_add(datao, "lanes", lanes);
     /* TX session snapshot. NULL hook (unit test) means idle. */
     json_object* tx = (g_hooks.tx_status) ? g_hooks.tx_status() : NULL;
     if (!tx) {
@@ -579,6 +735,9 @@ done:
 
 static void* client_thread(void* arg) {
   int idx = (int)(intptr_t)arg;
+#if defined(__linux__) && defined(_GNU_SOURCE)
+  pthread_setname_np(pthread_self(), "dvs_ipc");
+#endif
   dvs_client_t* c = &g_clients[idx];
   unsigned long gen;
   int fd;
@@ -663,6 +822,16 @@ int dvs_ipc_server_run(const char* sock_path) {
   for (int i = 0; i < DVS_IPC_MAX_CLIENTS; i++) {
     pthread_mutex_init(&g_clients[i].wmu, NULL);
     g_clients[i].fd = -1;
+  }
+
+  /* Serial executor for heavy verbs. If the worker cannot start, heavy
+   * verbs run inline on the submitting reader (same semantics, no BUSY). */
+  {
+    pthread_t exec_tid;
+    if (pthread_create(&exec_tid, NULL, exec_worker, NULL) == 0) {
+      pthread_detach(exec_tid);
+      g_exec_available = 1;
+    }
   }
 
   for (;;) {

@@ -22,6 +22,9 @@
 
 static void* engine_loop(void* arg) {
     dvs_engine* e = arg;
+#if defined(__linux__) && defined(_GNU_SOURCE)
+    pthread_setname_np(pthread_self(), "dvs_loop");
+#endif
     int report_iv = e->cfg.stats_report_interval_s > 0 ? e->cfg.stats_report_interval_s
                      : e->cfg.e2e_report_interval_s > 0 ? e->cfg.e2e_report_interval_s
                                                         : 10;
@@ -422,6 +425,14 @@ int dvs_engine_tx_start(dvs_engine* e, const dvs_tx_params_t* params,
         if (err && errlen > 0) snprintf(err, errlen, "missing tx params");
         return -1;
     }
+    /* Role and parameter gate before touching the running compositor: a
+     * rejected TX start must not clear the current picture. The session
+     * start below remains the authoritative gate under the engine lock. */
+    if (strcmp(e->role, "input") != 0) {
+        if (err && errlen > 0) snprintf(err, errlen, "tx needs input role");
+        return -1;
+    }
+    if (dvs_tx_validate(params, err, errlen) != 0) return -1;
     pthread_mutex_lock(&e->mu);
     /* Role mutual exclusion: an input box never runs the RX compositor. */
     if (e->comp) {

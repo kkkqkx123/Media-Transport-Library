@@ -90,6 +90,9 @@ static void bridge_dump_close(mtl_rx_bridge* b) {
 
 static void* bridge_thread(void* arg) {
     mtl_rx_bridge* b = (mtl_rx_bridge*)arg;
+#if defined(__linux__) && defined(_GNU_SOURCE)
+    pthread_setname_np(pthread_self(), "rx_bridge");
+#endif
     bridge_dump_open(b);
 
     while (atomic_load(&b->running)) {

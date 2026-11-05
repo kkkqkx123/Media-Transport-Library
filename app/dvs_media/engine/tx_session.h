@@ -3,8 +3,9 @@
  * Responsibility split: this module owns TX parameter validation and the TX
  * lifecycle state machine only. It has no MTL/MPP dependency so it builds
  * and unit-tests on x86. The compositor engine (engine_ctx.c) owns role
- * mutual exclusion (stopping RX before TX starts); the data-plane backend
- * (MPP encode + MTL TX) is a hook filled in on the RK3588 bring-up.
+ * mutual exclusion (stopping RX before TX starts) and owns data-plane
+ * teardown; the data-plane backend (live_ingest capture/encode/MTL TX)
+ * is installed by the engine when linked with it.
  *
  * Honesty rule: without a backend the session reports configured (params
  * stored and validated) with backend_pending set — it never claims packets
@@ -50,8 +51,8 @@ typedef struct {
 
 /* Data-plane backend. Returns 0 when packets flow, 1 when the backend is
  * absent (session stays configured with backend_pending set), <0 on failure.
- * NULL backend means absent. Installed by the single-board bring-up; the
- * donor chain is rk3588_live_ingest capture/encode/TX taken per duty. */
+ * NULL backend means absent. The engine installs the live_ingest backend
+ * entry when built with it; builds without it stay backend-less. */
 typedef int (*dvs_tx_backend_fn)(const dvs_tx_params_t* p,
                                  char* err, size_t errlen);
 

@@ -110,12 +110,12 @@ int dvs_tx_start(dvs_tx_session_t* s, const dvs_tx_params_t* p,
     s->backend_pending = 0;
 
     if (!s->backend) {
-        /* No data-plane backend on this build: params are stored and
-         * validated, but nothing flows. Report configured, not running. */
+        /* Backend-less build: params are stored and validated, but nothing
+         * flows. Report configured, not running. */
         s->state = DVS_TX_CONFIGURED;
         s->backend_pending = 1;
         snprintf(s->error, sizeof(s->error),
-                 "TX_BACKEND_PENDING: awaiting single-board bring-up");
+                 "TX_BACKEND_PENDING: tx data plane not linked on this build");
         return 0;
     }
     int rc = s->backend(p, s->error, sizeof(s->error));
@@ -129,7 +129,7 @@ int dvs_tx_start(dvs_tx_session_t* s, const dvs_tx_params_t* p,
         s->backend_pending = 1;
         if (!s->error[0])
             snprintf(s->error, sizeof(s->error),
-                     "TX_BACKEND_PENDING: awaiting single-board bring-up");
+                     "TX_BACKEND_PENDING: tx data plane not linked on this build");
         return 0;
     }
     s->state = DVS_TX_FAILED;
@@ -140,12 +140,8 @@ int dvs_tx_start(dvs_tx_session_t* s, const dvs_tx_params_t* p,
 
 void dvs_tx_stop(dvs_tx_session_t* s) {
     if (!s) return;
-    /* Real backend teardown lands with the bring-up; until then stopping is
-     * state-only, which is sufficient because nothing flows without one. */
-    if (s->backend) {
-        /* Best-effort: a running backend is asked to stop by starting
-         * nothing; teardown hook arrives with the data plane. */
-    }
+    /* State only: data-plane teardown is owned by the engine, which stops
+     * the backend before calling here on every teardown path. */
     memset(&s->params, 0, sizeof(s->params));
     s->error[0] = '\0';
     s->backend_pending = 0;

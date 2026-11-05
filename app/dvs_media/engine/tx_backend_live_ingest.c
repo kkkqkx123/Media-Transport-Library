@@ -104,20 +104,6 @@ int dvs_tx_backend_entry(const dvs_tx_params_t* p, char* err, size_t errlen) {
      * only, so there is nothing to reject here yet. When an audio sub-object
      * lands, this entry must fail it explicitly without breaking video. */
 
-    if (!g_table_valid) {
-        char devs[DVS_TX_PORT_MAX][DVS_TX_DEV_LEN];
-        char stables[DVS_TX_PORT_MAX][DVS_TX_STABLE_LEN];
-        int sig[DVS_TX_PORT_MAX];
-        memset(devs, 0, sizeof(devs));
-        memset(stables, 0, sizeof(stables));
-        memset(sig, 0, sizeof(sig));
-        int n = dvs_tx_scan_devices(devs, stables, sig, DVS_TX_PORT_MAX);
-        g_table_n = dvs_tx_table_build(g_table, DVS_TX_PORT_MAX,
-                                       n > 0 ? devs : NULL,
-                                       n > 0 ? stables : NULL,
-                                       n > 0 ? sig : NULL, n);
-        g_table_valid = 1;
-    }
     char cur_devs[DVS_TX_PORT_MAX][DVS_TX_DEV_LEN];
     char cur_stables[DVS_TX_PORT_MAX][DVS_TX_STABLE_LEN];
     int cur_sig[DVS_TX_PORT_MAX];
@@ -126,6 +112,39 @@ int dvs_tx_backend_entry(const dvs_tx_params_t* p, char* err, size_t errlen) {
     memset(cur_sig, 0, sizeof(cur_sig));
     int cur_n = dvs_tx_scan_devices(cur_devs, cur_stables, cur_sig,
                                     DVS_TX_PORT_MAX);
+
+    if (!g_table_valid || g_table_n <= 0) {
+        g_table_n = dvs_tx_table_build(g_table, DVS_TX_PORT_MAX,
+                                       cur_n > 0 ? cur_devs : NULL,
+                                       cur_n > 0 ? cur_stables : NULL,
+                                       cur_n > 0 ? cur_sig : NULL, cur_n);
+        g_table_valid = 1;
+    } else {
+        /* Keep startup bindings stable, but admit newcomers so devices
+         * appearing after the first start stay reachable. */
+        for (int i = 0; i < cur_n && g_table_n < DVS_TX_PORT_MAX; i++) {
+            int known = 0;
+            for (int j = 0; j < g_table_n; j++) {
+                if (cur_stables[i][0] && g_table[j].stable_id[0] &&
+                    strcmp(cur_stables[i], g_table[j].stable_id) == 0) {
+                    known = 1;
+                    break;
+                }
+            }
+            if (known) continue;
+            dvs_tx_port_entry* e = &g_table[g_table_n];
+            snprintf(e->port, sizeof(e->port), "HDMI%d", g_table_n + 1);
+            snprintf(e->device, sizeof(e->device), "%s", cur_devs[i]);
+            if (cur_stables[i][0])
+                snprintf(e->stable_id, sizeof(e->stable_id), "%s",
+                         cur_stables[i]);
+            else
+                snprintf(e->stable_id, sizeof(e->stable_id), "%s",
+                         cur_devs[i]);
+            e->has_signal = cur_sig[i] != 0;
+            g_table_n++;
+        }
+    }
 
     char vdev[DVS_TX_DEV_LEN];
     char resolve_err[384];

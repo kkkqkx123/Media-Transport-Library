@@ -216,6 +216,12 @@ int dvs_engine_apply_layout_at(dvs_engine* e,
 
     pthread_mutex_lock(&e->mu);
 
+    if (count > 0 && strcmp(e->role, "input") == 0) {
+        pthread_mutex_unlock(&e->mu);
+        fprintf(stderr, "dvs_engine: layout rejected in input role\n");
+        return -1;
+    }
+
     if (e->st == NULL) {
         e->st = file_playout_mtl_init_dual(&e->cfg, 1, 1,
                                            e->cfg.mtl_log_level, NULL);
@@ -375,8 +381,27 @@ int dvs_engine_set_output(dvs_engine* e, const char* connector, int width,
 int dvs_engine_set_role(dvs_engine* e, const char* role) {
     if (!e || !role) return -1;
     if (strcmp(role, "input") == 0) {
+        pthread_mutex_lock(&e->mu);
         snprintf(e->role, sizeof(e->role), "input");
-        return dvs_engine_apply_layout(e, NULL, 0);
+        /* RX-only teardown: keep any TX session untouched so a repeated
+         * switch does not drop a running input chain. */
+        file_playout_pip_stream old[MP4_PIP_MAX_LANES];
+        int old_n = e->cfg.pip_stream_count;
+        if (old_n > MP4_PIP_MAX_LANES) old_n = MP4_PIP_MAX_LANES;
+        memcpy(old, e->cfg.pip_streams, (size_t)old_n * sizeof(*old));
+        if (e->comp) {
+            rx_compositor_stop(e->comp);
+            rx_compositor_free(e->comp);
+            e->comp = NULL;
+        }
+        e->cfg.pip_stream_count = 0;
+        for (int i = 0; i < old_n; i++)
+            dvs_session_release(old[i].sip, old[i].udp_port);
+        atomic_store(&e->rx_sessions, 0);
+        atomic_store(&e->decoding, 0);
+        atomic_store(&e->layers, 0);
+        pthread_mutex_unlock(&e->mu);
+        return 0;
     }
     if (strcmp(role, "output") == 0) {
         snprintf(e->role, sizeof(e->role), "output");
@@ -404,7 +429,18 @@ int dvs_engine_tx_start(dvs_engine* e, const dvs_tx_params_t* params,
         rx_compositor_free(e->comp);
         e->comp = NULL;
     }
-    e->cfg.pip_stream_count = 0;
+    {
+        file_playout_pip_stream old[MP4_PIP_MAX_LANES];
+        int old_n = e->cfg.pip_stream_count;
+        if (old_n > MP4_PIP_MAX_LANES) old_n = MP4_PIP_MAX_LANES;
+        memcpy(old, e->cfg.pip_streams, (size_t)old_n * sizeof(*old));
+        e->cfg.pip_stream_count = 0;
+        for (int i = 0; i < old_n; i++)
+            dvs_session_release(old[i].sip, old[i].udp_port);
+        atomic_store(&e->rx_sessions, 0);
+        atomic_store(&e->decoding, 0);
+        atomic_store(&e->layers, 0);
+    }
     if (e->st == NULL) {
         e->st = file_playout_mtl_init_dual(&e->cfg, 1, 1,
                                            e->cfg.mtl_log_level, NULL);

@@ -37,8 +37,8 @@ typedef struct dvs_engine {
     /* node role driving mutual exclusion ("input" | "output"); TX may
      * only start in the input role, RX only composes in the output role. */
     char            role[16];
-    /* input-box capture/send session (params + state only on this build;
-     * the data-plane backend arrives with the single-board bring-up). */
+    /* input-box capture/send session (params + state machine; the engine
+     * installs the live_ingest data-plane backend when linked with it). */
     dvs_tx_session_t tx;
 } dvs_engine;
 
@@ -79,8 +79,9 @@ int dvs_engine_set_output(dvs_engine* e, const char* connector, int width,
  * session; switching to input stops the RX compositor. */
 int dvs_engine_set_role(dvs_engine* e, const char* role);
 
-/* TX orchestration (input role only). Params must be complete; without a
- * data-plane backend the session reports configured, never running. */
+/* TX orchestration (input role only). Params must be complete; on builds
+ * without the data-plane backend the session reports configured,
+ * never running. */
 int dvs_engine_tx_start(dvs_engine* e, const dvs_tx_params_t* params,
                         char* err, size_t errlen);
 void dvs_engine_tx_stop(dvs_engine* e);

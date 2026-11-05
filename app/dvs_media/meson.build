@@ -110,9 +110,6 @@ engine_tx_backend_args = []
 if has_tx_backend
   dvs_tx = static_library('dvs_tx',
     files(
-      '../rk3588_common/src/ring_buffer.c',
-      '../rk3588_common/src/slab_pool.c',
-      '../rk3588_common/src/timer.c',
       '../rk3588_common/src/sei_timestamp.c',
       '../rk3588_common/src/sps_vui.c',
       live_ingest_root + '/hal/dma_allocator.c',
@@ -126,6 +123,7 @@ if has_tx_backend
     c_args: common_c_args + ['-DHAVE_MTL=1'],
     dependencies: [threads_dep, mtl_dep, libdrm_dep, librga_dep,
                    rockchip_mpp_dep],
+    link_with: dvs_shared,
     include_directories: [live_ingest_inc,
                           include_directories(live_ingest_root + '/pipeline'),
                           include_directories(live_ingest_root + '/hal'),

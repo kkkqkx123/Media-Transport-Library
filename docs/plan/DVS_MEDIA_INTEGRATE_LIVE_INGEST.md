@@ -40,7 +40,7 @@
 | Codec | `codec/mpp_decoder.c` | MPP 解码 | **不引入**（dvs_media 已用 file_playout/shared/mpp_decoder.c） |
 | Pipeline | `pipeline/tx_pipeline.c` | 捕获→编码线程编排 + MTL sink 钩子 | 引入（重组器是 RX 路径的，不需要） |
 | MTL 包装 | `mtl_tx.c` / `mtl_tx.h` | ST22 TX session（acquire/publish framebuff） | 引入 |
-| 应用编排 | `live_ingest_app.c` | 把上面串起来的示例 | **不引入**（改为 dvs_media 自己的 backend 编排） |
+| 应用编排 | `live_tx_app.c` | 把上面串起来的示例 | **不引入**（改为 dvs_media 自己的 backend 编排） |
 
 关键接口（已确认）：
 - `struct tx_pipeline_params`（`pipeline/tx_pipeline.h`）：`v4l2_device`、`width/height/fps`、`drm_device`、`bitrate_bps`、`gop_size`、`num_slices`、`tx_mtl_sink_ops`、`time_now/time_priv`、`cpu_capture/cpu_encode`。

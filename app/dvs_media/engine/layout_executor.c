@@ -118,7 +118,15 @@ int dvs_layout_prepare_from_json(struct json_object* req) {
     pthread_mutex_lock(&g_pending_mu);
     memcpy(g_pending, buf, (size_t)n * sizeof(*buf));
     g_pending_count = n;
-    g_pending_apply_at_ns = json_u64(req, "applyAt", "apply_at");
+    /* Platform and agent carry the switch time as applyAtNs; older callers
+     * use applyAt/apply_at. Prefer the namespaced key when present. */
+    uint64_t apply_at = 0;
+    struct json_object* atv = NULL;
+    if (req && json_object_object_get_ex(req, "applyAtNs", &atv) && atv)
+      apply_at = (uint64_t)json_object_get_int64(atv);
+    else
+      apply_at = json_u64(req, "applyAt", "apply_at");
+    g_pending_apply_at_ns = apply_at;
     g_pending_valid = 1;
     strncpy(g_pending_audio_owner, owner, sizeof(g_pending_audio_owner) - 1);
     g_pending_audio_owner[sizeof(g_pending_audio_owner) - 1] = '\0';

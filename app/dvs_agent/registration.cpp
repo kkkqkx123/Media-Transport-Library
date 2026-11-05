@@ -518,11 +518,15 @@ json_object* Registration::build_heartbeat() {
     }
     json_object_object_add(o, "appliedRevision", json_object_new_int(applied));
 
-    /* media stats + ptp + lane digest from engine query_state (best effort) */
+    /* media stats + ptp + lane digest from engine query_state (best effort).
+     * Single query per heartbeat: the TX snapshot below reuses this copy. */
     json_object* media = json_object_new_object();
     json_object* ptp = json_object_new_object();
     int lane_ready = 0, lane_total = 0;
     long long lane_lost = 0;
+    std::string tx_state = "unknown", tx_port = "", tx_sip = "";
+    int tx_udp = 0;
+    bool have_tx = false;
     std::string qs = media_->query_state();
     json_object* st = json_tokener_parse(qs.c_str());
     if (st) {
@@ -552,6 +556,17 @@ json_object* Registration::build_heartbeat() {
                         lane_lost += json_object_get_int64(lv);
                 }
             }
+            json_object* tx = nullptr;
+            if (json_object_object_get_ex(d, "tx", &tx) && tx) {
+                have_tx = true;
+                tx_state = str_of(tx, "state", "unknown");
+                tx_port = str_of(tx, "port", "");
+                json_object* tgt = nullptr;
+                if (json_object_object_get_ex(tx, "target", &tgt) && tgt) {
+                    tx_sip = str_of(tgt, "sip", "");
+                    tx_udp = int_of(tgt, "udpPort");
+                }
+            }
         }
         json_object_put(st);
     } else {
@@ -569,31 +584,18 @@ json_object* Registration::build_heartbeat() {
     json_object_object_add(digest, "lostFrames", json_object_new_int64(lane_lost));
     json_object_object_add(o, "lanesDigest", digest);
 
-    /* TX session digest (input role). Unknown when the engine is silent. */
+    /* TX session digest (input role) reuses the snapshot above. Unknown when
+     * the engine is silent; no second query so one heartbeat costs one IPC. */
     json_object* txd = json_object_new_object();
-    {
-        std::string qs2 = media_->query_state();
-        json_object* st2 = json_tokener_parse(qs2.c_str());
-        json_object* dd = nullptr;
-        json_object* tx = nullptr;
-        if (st2 && json_object_object_get_ex(st2, "data", &dd) && dd)
-            json_object_object_get_ex(dd, "tx", &tx);
-        if (tx) {
-            json_object_object_add(txd, "state",
-                                   json_object_new_string(str_of(tx, "state", "unknown").c_str()));
-            json_object_object_add(txd, "port",
-                                   json_object_new_string(str_of(tx, "port", "").c_str()));
-            json_object* tgt = nullptr;
-            if (json_object_object_get_ex(tx, "target", &tgt) && tgt) {
-                json_object_object_add(txd, "targetSip",
-                                       json_object_new_string(str_of(tgt, "sip", "").c_str()));
-                json_object_object_add(txd, "targetPort",
-                                       json_object_new_int(int_of(tgt, "udpPort")));
-            }
-        } else {
-            json_object_object_add(txd, "state", json_object_new_string("unknown"));
+    if (have_tx) {
+        json_object_object_add(txd, "state", json_object_new_string(tx_state.c_str()));
+        json_object_object_add(txd, "port", json_object_new_string(tx_port.c_str()));
+        if (!tx_sip.empty()) {
+            json_object_object_add(txd, "targetSip", json_object_new_string(tx_sip.c_str()));
+            json_object_object_add(txd, "targetPort", json_object_new_int(tx_udp));
         }
-        if (st2) json_object_put(st2);
+    } else {
+        json_object_object_add(txd, "state", json_object_new_string("unknown"));
     }
     json_object_object_add(o, "txDigest", txd);
 

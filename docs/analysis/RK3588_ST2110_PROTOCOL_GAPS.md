@@ -169,7 +169,7 @@ ST 2110-21 流量整形 profile、ST 2022-7 冗余、ST 2110-40 辅助数据或 
 ## 10. 建议的"补实现"清单（按性价比）
 
 1. **【立即，app 层】显式 pacing profile**
-   - `file_playout_config.c` `file_playout_mtl_init()` 与 `live_ingest_app.c`
+   - `file_playout_config.c` `file_playout_mtl_init()` 与 `live_tx_app.c`
      `mtl_setup_single()` 中设置 `mtp.pacing = ST21_TX_PACING_WAY_TSC_NARROW`（或配置项），
      使 ST 2110-21 Narrow/Medium 合规可预期。
    - 新增 JSON 字段（如 `st21_pacing`）并在 README 说明 Narrow/Medium 取舍。

@@ -21,7 +21,7 @@ meson setup build && ninja -C build
 | `file/` | 文件帧源插件（阶段2）：`file_source`（解复用 + 播放列表 + 发送调度），喂给已有发送宿接口 |
 | `mtl_tx.c` | MTL 视频发送会话层封装（支持 TAI/USER_PACING） |
 | `mtl_tx_audio.c` | MTL 音频发送会话层封装（文件源 ST30，视频无音频） |
-| `live_ingest_app.c` / `live_ingest_config.c` | 发送主程序与 JSON 配置 |
+| `live_tx_app.c` / `live_tx_config.c` | 发送主程序与 JSON 配置 |
 | `tests/` | 按层划分的单元测试（`test_hal` / `test_codec` / `test_pipeline` / capture 自测 `test_io`） |
 
 ## 回环验证（跨包）

@@ -50,7 +50,7 @@
 - `pipeline/tx_pipeline.c`（捕获→编码编排 + MTL sink 钩子；重组器是 RX 路径的，不需要）
 - `mtl_tx.c`（ST22 发送会话）
 - `rk3588_common/src/sei_timestamp.c` `sps_vui.c`（时间戳与 SPS 注入，随 TX 链路编入）
-- 应用编排 `live_ingest_app.c` 不引入，由 dvs_media 自身后端编排代替
+- 应用编排 `live_tx_app.c` 不引入，由 dvs_media 自身后端编排代替
 
 **根级配置**
 - `rk3588_playout_rx/file_playout_config.c`（编入 `dvs_media` 主目标，提供双口 MTL 初始化与 DRM 模式辅助）

@@ -1,4 +1,4 @@
-#include "live_ingest_config.h"
+#include "live_tx_config.h"
 #include "slab_pool.h"
 #include "mtl_tx.h"
 #include "mtl_tx_audio.h"

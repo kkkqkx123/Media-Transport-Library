@@ -32,7 +32,7 @@ framebuffer、接入 PTP 时间与 pacing**，以及各组件之间的差异。
 
 ### 1.1 live_ingest
 
-文件：`app/rk3588_live_tx/live_ingest_app.c`
+文件：`app/rk3588_live_tx/live_tx_app.c`
 
 - `mtl_setup_single()` 构造 `mtl_init_params`：
   - `num_ports = 1`，端口名写入 `port[MTL_PORT_P]`

@@ -103,8 +103,8 @@ executable('test_pipeline', 'tests/test_pipeline.c',
 
 # ---- Phase 5: live_ingest TX app (hdmi + file sources) ----
 executable('live_ingest', files(
-    'live_ingest_app.c',
-    'live_ingest_config.c',
+    'live_tx_app.c',
+    'live_tx_config.c',
     'mtl_tx.c',
   ),
   link_with: [live_ingest_hal, live_ingest_codec, live_ingest_io,

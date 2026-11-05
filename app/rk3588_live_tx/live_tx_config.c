@@ -1,4 +1,4 @@
-#include "live_ingest_config.h"
+#include "live_tx_config.h"
 #include <json-c/json.h>
 #include <stdio.h>
 #include <stdlib.h>

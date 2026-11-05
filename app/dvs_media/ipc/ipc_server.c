@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -146,12 +147,20 @@ static void broadcast_event(const char* type, const char* data_json) {
   char buf[8192];
   snprintf(buf, sizeof(buf), "{\"type\":\"%s\",\"data\":%s}", type,
            data_json ? data_json : "{}");
+  /* Snapshot the active clients so a slow reader cannot hold the global
+   * table lock across blocking writes; each write still takes its own
+   * per-connection lock. A client that disconnects mid-broadcast simply
+   * gets a failed write that is ignored. */
+  dvs_client_t* targets[DVS_IPC_MAX_CLIENTS];
+  int n = 0;
   pthread_mutex_lock(&g_clients_mu);
   for (int i = 0; i < DVS_IPC_MAX_CLIENTS; i++) {
     if (g_clients[i].active)
-      write_line_locked(&g_clients[i], buf);
+      targets[n++] = &g_clients[i];
   }
   pthread_mutex_unlock(&g_clients_mu);
+  for (int i = 0; i < n; i++)
+    write_line_locked(targets[i], buf);
 }
 
 static void broadcast_state_changed(void) {
@@ -402,6 +411,28 @@ static int handle_line(dvs_client_t* c, char* line) {
                                                     : snap.revision + 1;
     }
     int applied = 0;
+    /* Replay of an already-committed operation answers without touching
+     * the engine again; the first commit already applied the layout. */
+    {
+      dvs_state_t snap;
+      dvs_state_snapshot(&snap);
+      if (snap.op_state == DVS_OP_IDLE && strcmp(snap.operation_id, opid) == 0 &&
+          revision == snap.revision) {
+        snprintf(data, sizeof(data), "{\"revision\":%d}", snap.revision);
+        respond_cached(c, rid, cacheable, 200, "OK", "committed", data);
+        goto done;
+      }
+    }
+    /* Apply the pending layout before advancing the state machine so an
+     * engine failure leaves the operation prepared (retry/abort) instead
+     * of a falsely committed revision. The executor commit is idempotent. */
+    if (g_hooks.commit) {
+      if (g_hooks.commit() != 0) {
+        respond_cached(c, rid, cacheable, 500, "INTERNAL", "layout apply failed",
+                       NULL);
+        goto done;
+      }
+    }
     int rc = dvs_state_commit(opid, revision, &applied, err, sizeof(err));
     if (rc != 0) {
       int status = 409;
@@ -413,14 +444,6 @@ static int handle_line(dvs_client_t* c, char* line) {
       goto done;
     }
     snprintf(data, sizeof(data), "{\"revision\":%d}", applied);
-    /* apply the pending layout to the real engine, if hooks installed */
-    if (g_hooks.commit) {
-      if (g_hooks.commit() != 0) {
-        respond_cached(c, rid, cacheable, 500, "INTERNAL", "layout apply failed",
-                       NULL);
-        goto done;
-      }
-    }
     respond_cached(c, rid, cacheable, 200, "OK", "committed", data);
     char ev[256];
     snprintf(ev, sizeof(ev),
@@ -631,6 +654,8 @@ int dvs_ipc_server_run(const char* sock_path) {
     close(listen_fd);
     return -1;
   }
+  /* Owner-only IPC socket: only the node user may drive media verbs. */
+  chmod(sock_path, S_IRWXU);
 
   dvs_state_init();
   dvs_capability_probe(&g_cap);

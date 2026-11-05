@@ -163,7 +163,7 @@ file_playout 是第二代实现,`shared/` 已是事实上的公共库;以它为�
 
 ### A.1 rk3588_live_tx
 
-- 入口 `live_ingest_app.c` `main()`，仅 TX 路径（HDMI 采集或文件帧源），无 RX/both 模式。
+- 入口 `live_tx_app.c` `main()`，仅 TX 路径（HDMI 采集或文件帧源），无 RX/both 模式。
 - argv 解析 `parse_args(:49-93)`;JSON 配置 `e2e_config.c:82` 仅取 `streams[0]/interfaces[0]`(:98、:115),单流设计。
 - TX 线程链:V4L2 采集(`io/v4l2_capturer.c:449`)→ RGA → MPP 编码(`codec/mpp_encoder.c:330` collector 线程)→ tx_pipeline 编码线程 + supervisor 看门狗(`pipeline/tx_pipeline.c:534、552`)→ MTL TX。
 - RX 线程链:MTL RX → bridge(`mtl_rx_bridge.c:121`)→ 解码(`pipeline/rx_pipeline.c:205`)→ DRM。

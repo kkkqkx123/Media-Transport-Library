@@ -446,8 +446,7 @@ static std::string get_str(json_object* o, const char* key) {
 static void agent_report_commit(const std::string& opid, int rev,
                                 int64_t applyAtNs, const std::string& nodeId,
                                 const std::string& platform_url) {
-    (void)rev; (void)applyAtNs;  // reserved for barrier diagnostics
-    if (platform_url.empty()) return;  // local-autonomous: nothing to report
+    (void)applyAtNs;  // reserved for barrier diagnostics
     std::string status = "ready";
     std::string lanes_json = "[]";
     bool done = false;
@@ -500,6 +499,34 @@ static void agent_report_commit(const std::string& opid, int rev,
     }
     json_object* lanes = nullptr;
     if (lanes_json != "[]") lanes = json_tokener_parse(lanes_json.c_str());
+    /* Close the local two-phase operation so the media engine returns to
+     * idle; otherwise the next prepare is rejected as "another operation
+     * in progress". Commit on ready, abort otherwise, before uplinking. */
+    {
+        json_object* term = json_object_new_object();
+        json_object_object_add(term, "operationId", json_object_new_string(opid.c_str()));
+        json_object_object_add(term, "revision", json_object_new_int(rev));
+        std::string tr = (status == "ready") ? g_media->request("commit", term)
+                                               : g_media->request("abort", term);
+        json_object_put(term);
+        json_object* to = json_tokener_parse(tr.c_str());
+        bool ok = false;
+        if (to) {
+            json_object* okv = nullptr;
+            if (json_object_object_get_ex(to, "ok", &okv) && okv)
+                ok = json_object_get_boolean(okv) != 0;
+            json_object_put(to);
+        }
+        if (!ok && status == "ready") {
+            fprintf(stderr, "dvs-agent: media commit (%s) refused, downgrade to blocked\n",
+                    opid.c_str());
+            status = "blocked";
+        }
+    }
+    if (platform_url.empty()) {  // local-autonomous: local 2PC done, nothing to uplink
+        if (lanes) json_object_put(lanes);
+        return;
+    }
     // 单次投递语义：上行 helper 内已含 WS 优先加短连接回退，此处不再二次补发。
     if (g_reg) g_reg->uplink_barrier_ack(opid, nodeId, status, lanes);
     if (lanes) json_object_put(lanes);
@@ -1447,6 +1474,26 @@ int main(int argc, char** argv) {
         if (req.method == "POST" && req.path == "/api/v1/node/media/prepare") {
             json_object* body = json_tokener_parse(req.body.c_str());
             std::string r = g_media->request("prepare", body);
+            if (body) json_object_put(body);
+            json_object* o = json_tokener_parse(r.c_str());
+            if (!o) o = json_object_new_object();
+            send_json(res, o);
+            return;
+        }
+        // Manual two-phase close: passthrough commit/abort so a prepared
+        // operation can be finished by hand when the barrier path is down.
+        if (req.method == "POST" && req.path == "/api/v1/node/media/commit") {
+            json_object* body = json_tokener_parse(req.body.c_str());
+            std::string r = g_media->request("commit", body);
+            if (body) json_object_put(body);
+            json_object* o = json_tokener_parse(r.c_str());
+            if (!o) o = json_object_new_object();
+            send_json(res, o);
+            return;
+        }
+        if (req.method == "POST" && req.path == "/api/v1/node/media/abort") {
+            json_object* body = json_tokener_parse(req.body.c_str());
+            std::string r = g_media->request("abort", body);
             if (body) json_object_put(body);
             json_object* o = json_tokener_parse(r.c_str());
             if (!o) o = json_object_new_object();

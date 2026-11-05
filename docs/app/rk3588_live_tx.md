@@ -30,8 +30,8 @@ V4L2 采集 (io/v4l2_capturer)            FFmpeg 解复用 (file/file_source)
 | `file/` | 文件帧源插件（阶段 2）：`file_source`（解复用 + 播放列表 + 发送调度），喂给已有发送宿接口 |
 | `mtl_tx.c` / `mtl_tx.h` | MTL 视频发送会话层封装（支持 TAI / 用户 pacing） |
 | `mtl_tx_audio.c` / `mtl_tx_audio.h` | MTL 音频发送会话层封装（文件帧源 ST30；HDMI 帧源无音频） |
-| `live_ingest_app.c` | 入口：模式/帧源解析、MTL 与 TX 栈生命周期 |
-| `live_ingest_config.c` / `live_ingest_config.h` | JSON 配置加载（分辨率、帧率、UDP 端口、slice 数、码率、GOP、intra refresh、CPU 绑核、DRM 模式、日志级别等） |
+| `live_tx_app.c` | 入口：模式/帧源解析、MTL 与 TX 栈生命周期 |
+| `live_tx_config.c` / `live_tx_config.h` | JSON 配置加载（分辨率、帧率、UDP 端口、slice 数、码率、GOP、intra refresh、CPU 绑核、DRM 模式、日志级别等） |
 | `tests/` | 按层单测：`test_hal` / `test_codec` / `test_io` / `test_pipeline` |
 
 ## 构建
@@ -56,4 +56,4 @@ RK3588 交叉编译专用，无桌面/x86 回退。所有依赖均为必需：`l
 
 本包只负责发送；接收、解码与显示由 `rk3588_playout_rx` 进程完成。两侧帧率与分辨率必须显式对齐方可互通。文件帧源在创建会话前先对首文件做探针（宽高/帧率）对齐会话参数，播放列表切文件时重建 TAI 锚点。
 
-`dvs_media` 的 input 角色通过 in-tree 编译复用本包的捕获/编码/发送数据面（`hal/`、`io/v4l2_capturer`、`codec/`、`pipeline/tx_pipeline`、`mtl_tx`），应用编排 `live_ingest_app.c` 不引入。
+`dvs_media` 的 input 角色通过 in-tree 编译复用本包的捕获/编码/发送数据面（`hal/`、`io/v4l2_capturer`、`codec/`、`pipeline/tx_pipeline`、`mtl_tx`），应用编排 `live_tx_app.c` 不引入。

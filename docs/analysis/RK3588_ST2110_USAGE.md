@@ -145,12 +145,12 @@ RK3588 没有 DPDK poll-mode NIC（无 ICE/E810），因此统一走 **AF_XDP**�
 `kernel:` / `native_af_xdp:` / `dpdk_af_xdp:` / `dpdk_af_packet:` / 裸接口名（DPDK user）。
 默认且推荐 **`native_af_xdp:eth0`**，需 `MtlManager` + hugepages 就绪。
 
-`live_ingest` 用 `mtl_pmd_from_port(port_name)`（`live_ingest_app.c:115`）按接口名推断。
+`live_ingest` 用 `mtl_pmd_from_port(port_name)`（`live_tx_app.c:115`）按接口名推断。
 
 ### 5.2 pacing：纯软件
 
 RK3588 无法做 NIC 硬件限速，pacing 由 MTL 软件任务负责。相关 `MTL_FLAG`
-（`live_ingest_app.c:77-82`、`file_playout_config.c:803-835`）：
+（`live_tx_app.c:77-82`、`file_playout_config.c:803-835`）：
 
 | Flag | 作用 |
 |---|---|
@@ -252,7 +252,7 @@ ST22 RX(lcore) → notify_frame_ready
 | 音频 TX 会话（ST30） | `app/rk3588_playout_rx/tx/mtl_tx_audio.c` |
 | 音频 RX 会话（ST30） | `app/rk3588_playout_rx/rx/mtl_rx_audio.c` |
 | RX→解码桥接 / 背压 | `app/rk3588_live_tx/mtl_rx_bridge.c`、`app/rk3588_playout_rx/rx/rx_compositor.c` |
-| MTL 初始化与 PTP/PMD/Flag | `app/rk3588_live_tx/live_ingest_app.c:77-128`、`app/rk3588_playout_rx/file_playout_config.c:705-868` |
+| MTL 初始化与 PTP/PMD/Flag | `app/rk3588_live_tx/live_tx_app.c:77-128`、`app/rk3588_playout_rx/file_playout_config.c:705-868` |
 | TAI 锚定 / 时间戳换算 | `app/rk3588_playout_rx/shared/tx_tai_ts.c`、`shared/ptp_time.c`、`rx/media_clk.c` |
 | SEI 时间戳（live） | `app/rk3588_live_tx/hal/sei_timestamp.*`、`pipeline/rx_pipeline.c:283-294` |
 | dvs TX 桩 | `app/dvs_media/engine/tx_session.c` |

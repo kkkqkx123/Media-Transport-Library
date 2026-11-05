@@ -93,59 +93,15 @@ framebuffer、接入 PTP 时间与 pacing**，以及各组件之间的差异。
   - `tx_notify_frame_done()` 把 fb 标记回 `FREE` 并唤醒等待线程。
 - `mtl_tx_start/stop` 只切换 `running` 原子标志，不直接操作 MTL。
 
-### 2.2 RX (`app/rk3588_live_tx/mtl_rx.c`)
+### 2.2 RX / both 模式
 
-- `mtl_rx_create()` 调用 `st22_rx_create(p->st, &ops)`。
-- 会话参数：
-  - `type = ST22_TYPE_FRAME_LEVEL`
-  - `notify_frame_ready = rx_notify_frame_ready`
-  - `framebuff_cnt` 由配置决定（常见 8），`framebuff_max_size` 固定 512KiB
-  - `ST22_RX_FLAG_DISABLE_BOXES`
-  - 组播/单播目标 IP、UDP 端口、端口名写入 `ops`
-- 回调 `rx_notify_frame_ready()`：
-  - stopping 时归还 framebuffer；
-  - 从 16 槽 `rx_pkt` 池 acquire 描述符；
-  - 池空时计数并归还 framebuffer；
-  - `ring_push()` 到 `output_ring`；ring 满时释放描述符并归还 framebuffer；
-  - 记录 `stat_received`、字节数、帧大小峰值。
-- `mtl_rx_stop()` 清理所有 inflight 描述符与 ring 中残留帧，全部
-  `st22_rx_put_framebuff()` 归还。
-- `mtl_rx_stats()` 提供接收计数、drop、pool-full、inflight、FPS 等。
-
-### 2.3 RX bridge 与流水线
-
-- `mtl_rx_bridge` 把 `mtl_ring` 中的帧转交给解码 ring；`rx_pipeline` 使用
-  `st22_rx_handle` 归还 framebuffer。
-- `rx_pipeline` 的 `time_now/time_priv` 使用 `mtl_ptp_read_time`，把 MTL 时间
-  作为媒体时钟。
-
-### 2.4 both 模式
-
-- `run_both_mode()` fork 两个进程：RX 进程先启动，TX 进程延时 2s 启动。
-- 原因：DPDK EAL 不能在同一进程重复初始化；r8168 单队列也无法在一个 handle
-  上同时跑 TX/RX。因此 **每个进程各自调用一次 `mtl_init`**。
+当前 `rk3588_live_tx` 为 TX-only：已移除 `mtl_rx.c`、`mtl_rx_bridge.c`、`rx_pipeline` 与 `both` 自环模式，不再在同一应用内接收或解码。回环验证由单独的 `rk3588_playout_rx` 进程经网络完成；TX 与 RX 各自调用一次 `mtl_init`。
 
 ## 3. rk3588_playout_rx 的 MTL 使用
 
-### 3.1 TX 视频 (`tx/mtl_tx_video.c`)
+### 3.1/3.2 TX 视频 / TX 音频
 
-- `st22_tx_create()`，参数与 live_ingest 类似，但：
-  - `ST22_TX_FLAG_DISABLE_BOXES`
-  - 若 `use_tai_timestamp`：追加 `ST22_TX_FLAG_USER_TIMESTAMP | ST22_TX_FLAG_USER_PACING`
-- `tx_get_next_frame()` 中调用 `tx_tai_ts_fill()`，把 MTL 提供的 timestamp 转换为
-  TAI 时间戳并写入 `meta->tfmt/timestamp/epoch`。
-- `au_trace_record()` 记录发送帧。
-- framebuffer 通过 `st22_tx_get_fb_addr()` 获取；状态机同 live_ingest。
-
-### 3.2 TX 音频 (`tx/mtl_tx_audio.c`)
-
-- `st30_tx_create()`：
-  - `type = ST30_TYPE_FRAME_LEVEL`
-  - `fmt/channel/sampling/ptime` 由配置决定（默认 PCM16, 48k, 1ms）
-  - `framebuff_size = st30_calculate_framebuff_size(...)`
-  - 若 `use_tai_timestamp`：追加 `ST30_TX_FLAG_USER_TIMESTAMP | ST30_TX_FLAG_USER_PACING`
-- `tx_get_next_frame()` 调用 `tx_tai_ts_fill()` 填充 TAI 时间戳。
-- framebuffer 通过 `st30_tx_get_framebuffer()` 获取。
+当前 `rk3588_playout_rx` 为 RX-only：已移除 `tx/mtl_tx_video.c` 与 `tx/mtl_tx_audio.c`，不再在本应用内发送。发送由 `rk3588_live_tx` 提供；MTL TX API 的使用参见第 2 节。
 
 ### 3.3 RX 视频 (`rx/mtl_rx_mp4.c`)
 

@@ -66,7 +66,7 @@
 
 | 维度 | rk3588_live_tx | rk3588_playout_rx |
 | --- | --- | --- |
-| 进程 | `live_ingest` 单进程 tx/rx/both | `file_playout_tx` / `file_playout_rx` 双可执行 |
+| 进程 | `live_ingest` 单进程 TX-only | `file_playout_rx` 单可执行（RX-only） |
 | 配置 | argv + JSON(仅单流) | argv + 完整 JSON(pip_streams[]/tx_streams[]、DRM/ALSA/PTP/CPU 亲和) |
 | 控制通道 | 无(SIGINT 之外零接口) | 无 |
 | 布局 | 单流 DRM 单层 | 多 lane:8 lane 上限、NV12 直通实测 4 路,`display_layout` → DRM 多 plane |
@@ -163,7 +163,7 @@ file_playout 是第二代实现,`shared/` 已是事实上的公共库;以它为�
 
 ### A.1 rk3588_live_tx
 
-- 入口 `live_ingest.c:459 main()`,模式 `tx/rx/both`(`run_tx_mode:349`、`run_rx_mode:373`、`run_both_mode:410`)。
+- 入口 `live_ingest_app.c` `main()`，仅 TX 路径（HDMI 采集或文件帧源），无 RX/both 模式。
 - argv 解析 `parse_args(:49-93)`;JSON 配置 `e2e_config.c:82` 仅取 `streams[0]/interfaces[0]`(:98、:115),单流设计。
 - TX 线程链:V4L2 采集(`io/v4l2_capturer.c:449`)→ RGA → MPP 编码(`codec/mpp_encoder.c:330` collector 线程)→ tx_pipeline 编码线程 + supervisor 看门狗(`pipeline/tx_pipeline.c:534、552`)→ MTL TX。
 - RX 线程链:MTL RX → bridge(`mtl_rx_bridge.c:121`)→ 解码(`pipeline/rx_pipeline.c:205`)→ DRM。

@@ -20,7 +20,7 @@
 
 ## 2. 现状（开发与过渡形态）
 
-当前仓库存在三个 RK3588 相关应用：`rk3588_live_tx`、`rk3588_playout_rx`、`dvs_media`。其中 `dvs_media` 通过 in-tree 编译复用另外两个应用的源码，output 角色基本可用，input 角色已接入 rk3588 app 的 TX 数据面，但 teardown、能力门控与切换验证仍不完整。`both` 模式仅用于开发/回环，不交付生产镜像。
+当前仓库存在三个 RK3588 相关应用：`rk3588_live_tx`、`rk3588_playout_rx`、`dvs_media`。其中 `dvs_media` 通过 in-tree 编译复用 `rk3588_playout_rx` 的 RX 数据面与 `rk3588_live_tx` 的 TX 数据面，output 角色基本可用，input 角色已接入 TX 数据面，但 teardown、能力门控与切换验证仍不完整。单板回环通过分别启动发送/接收进程完成，不作为生产交付；生产节点同一时刻只运行 input 或 output 一种角色。
 
 平台与代理当前通过 HTTP REST over TCP 交互；WS/gRPC 属于目标架构，不是当前实现。
 

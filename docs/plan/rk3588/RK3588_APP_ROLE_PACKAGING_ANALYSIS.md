@@ -17,17 +17,14 @@
 
 ### 3.1 rk3588_live_tx
 
-- 单二进制支持 `tx`、`rx`、`both`。
-- `both` 模式实际 fork 出 TX/RX 两个进程，因为 DPDK EAL 不能在同一进程重复初始化。
-- 能力链路：V4L2 采集 → RGA → MPP 编码 → MTL TX；MTL RX → MPP 解码 → DRM。
-- 没有音频 ST2110-30 链路，也没有 MP4 文件源。
+- 单二进制 `live_ingest`，TX-only：V4L2 采集 → RGA → MPP 编码 → MTL TX (ST2110-22)；亦支持文件帧源插件（MP4 解复用 → extradata → SEI → 同一发送宿接口 + ST30 音频）。
+- 不再包含 RX 解码/DRM 显示，也不提供 `rx`/`both` 模式；回环验证由 `rk3588_playout_rx` 进程经网络完成。
 
 ### 3.2 rk3588_playout_rx
 
-- TX/RX 是两个独立可执行文件：`file_playout_tx`、`file_playout_rx`。
-- `both` 仅由脚本先起 RX，再起 TX。
-- TX 可在 x86 编译；RX 需 RK3588 + MPP + DRM + ALSA。
-- 能力链路：MP4 解复用 → ST2110-22 视频 + ST2110-30 音频 TX/RX；RX 含 MPP 解码、DRM 显示、ALSA 播放、多 lane 合成。
+- 单可执行文件 `file_playout_rx`，RX-only：MTL RX → MPP 解码 → playout → AV sync → DRM 显示/ALSA 播放。
+- 不再包含 `file_playout_tx`；发送由 `rk3588_live_tx` 提供。
+- RX 需 RK3588 + MPP + DRM + ALSA。
 - `dvs_media` 由其 RX 侧演进而来的生产媒体引擎。
 
 ## 4. “同时收发”的问题
@@ -42,7 +39,7 @@
 
 是。建议：
 
-- 保留 `rk3588_live_tx` 与 `rk3588_playout_rx` 作为参考实现和实验室回环工具，继续支持 `tx/rx/both`，但明确仅用于开发/验证。
+- 保留 `rk3588_live_tx` 与 `rk3588_playout_rx` 作为参考实现和实验室回环工具（分别 TX-only / RX-only），回环通过分别启动两进程完成，但明确仅用于开发/验证。
 - 生产输出盒继续使用 `deploy/dvs-node`（`dvs_agent` + `dvs_media`，RX-only）。
 - 为输入盒新增独立的 TX-only 媒体引擎，从 live_ingest 的采集/编码/MTL TX 链路或 file_playout TX 演进，并与 agent 同包发布。
 - 生产镜像只包含对应角色的二进制，不交付 `both` 模式。
@@ -55,8 +52,8 @@
 
 两者是并行的参考实现，共享 `rk3588_common` 与部分 RX 代码，但能力集合不互相包含：
 
-- `rk3588_live_tx` 独有：V4L2/HDMI 采集、RGA 色彩转换、MPP 编码、TX 侧帧级码流写入。
-- `rk3588_playout_rx` 独有：MP4 解复用、ST2110-30 音频、多 lane 合成、输出盒显示/音频播放、外部 PTP 时间轴、可 x86 编译的 TX。
-- `dvs_media` 只复用 `rk3588_playout_rx` 的 RX 侧，不复用 live_ingest。
+- `rk3588_live_tx` 独有：V4L2/HDMI 采集、RGA 色彩转换、MPP 编码、文件帧源插件、TX 侧帧级码流写入。
+- `rk3588_playout_rx` 独有：MTL 接收、MPP 解码、playout 缓冲、AV 同步、多 lane 合成、输出盒显示/音频播放、外部 PTP 时间轴。
+- `dvs_media` 复用 `rk3588_playout_rx` 的 RX 侧与 `rk3588_live_tx` 的 TX 数据面。
 
 因此两者不是子集关系，而是不同场景的端到端参考实现。

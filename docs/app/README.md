@@ -5,8 +5,8 @@
 
 | 文档 | 内容 |
 |------|------|
-| [`rk3588_live_tx.md`](./rk3588_live_tx.md) | 低延迟直播链路：V4L2 采集 → MPP 编码 → MTL 发送/接收 → MPP 解码 → DRM 渲染 |
-| [`rk3588_playout_rx.md`](./rk3588_playout_rx.md) | MP4 文件分发：FFmpeg 解复用 → ST2110-22/30 发送 → MPP 解码 + DRM 显示 + ALSA 播放 |
+| [`rk3588_live_tx.md`](./rk3588_live_tx.md) | RK3588 编码发送端（TX-only）：V4L2 采集 → MPP 编码 → MTL 发送；含文件帧源插件 |
+| [`rk3588_playout_rx.md`](./rk3588_playout_rx.md) | RK3588 解码接收端（RX-only）：MTL 接收 → MPP 解码 + DRM 显示 + ALSA 播放 |
 | [`hardware_usage.md`](./hardware_usage.md) | 两个应用对 RK3588 各硬件（V4L2/MPP/RGA/DRM/ALSA/DMA-BUF/MTL/PTP）的使用情况、零拷贝路径与软件回退分析 |
 | [`mtl_usage.md`](./mtl_usage.md) | rk3588 两个应用与 dvs（dvs_media/dvs_agent/dvs_platform）如何使用 MTL：初始化、ST22/ST30 会话、framebuffer、PTP/pacing、API 清单与缺口 |
 | [`frontend_prototype_integration.md`](./frontend_prototype_integration.md) | `ref/` 两个前端原型（平台后台 / 节点本机后台）与 `docs/req` 需求的对应关系，及其与现有 rk3588 app 层的集成设计方案 |
@@ -18,9 +18,8 @@
 
 - **独立 meson 工程**：各自带有自己的 `meson.build`，**未接入** `app/meson.build`，
   需在各自目录内单独构建（`meson setup build && ninja -C build`）。
-- **平台依赖**：Rockchip MPP（硬编解码）、librga、libdrm、V4L2、ALSA、json-c；
-  库端依赖已安装的 MTL（`mtl` pkg-config）。TX 侧（`file_playout_tx`）可在 x86 上编译，
-  RX 侧需要 RK3588 + MPP。
+- **平台依赖**：Rockchip MPP（硬编解码）、librga、libdrm、V4L2、ALSA、json-c、FFmpeg；
+  库端依赖已安装的 MTL（`mtl` pkg-config）。两个应用均为 RK3588 交叉编译专用，无 x86 回退。
 - **Pacing**：ARM 平台无 E810 硬件限速，使用软件 pacing（TSC）。
 - **共享代码**：`app/rk3588_common/` 已抽取 A/B 档基础模块（ring buffer、slab pool、
   timer、codec_plugin.h、pipeline_common.h），`end2end` 与 `file_playout` 已引用。C/D 档

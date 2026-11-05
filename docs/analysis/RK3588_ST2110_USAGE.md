@@ -40,10 +40,10 @@ RK3588 三个承载实时媒体流的 app（`rk3588_live_tx`、`rk3588_playout_r
 
 | 操作 | 调用 | 出现位置 |
 |---|---|---|
-| 创建视频 TX 会话 | `st22_tx_create(st, &ops)` | `live_ingest/mtl_tx.c:119`、`file_playout/tx/mtl_tx_video.c:135`、`file_playout/tests/rx_minimal.c:56` |
-| 创建视频 RX 会话 | `st22_rx_create(st, &ops)` | `live_ingest/mtl_rx.c:160`、`file_playout/rx/mtl_rx_mp4.c:142` |
-| 创建音频 TX 会话 | `st30_tx_create(st, &ops)` | `file_playout/tx/mtl_tx_audio.c:134` |
-| 创建音频 RX 会话 | `st30_rx_create(st, &ops)` | `file_playout/rx/mtl_rx_audio.c:161` |
+| 创建视频 TX 会话 | `st22_tx_create(st, &ops)` | `rk3588_live_tx/mtl_tx.c`、`rk3588_playout_rx/tests/rx_minimal.c` |
+| 创建视频 RX 会话 | `st22_rx_create(st, &ops)` | `rk3588_playout_rx/rx/mtl_rx_mp4.c` |
+| 创建音频 TX 会话 | `st30_tx_create(st, &ops)` | `rk3588_live_tx/mtl_tx_audio.c` |
+| 创建音频 RX 会话 | `st30_rx_create(st, &ops)` | `rk3588_playout_rx/rx/mtl_rx_audio.c` |
 | 取/还 TX 帧缓冲 | `st22_tx_get_fb_addr` / `st30_tx_get_framebuffer` | 各 `mtl_tx_*` |
 | 还 RX 帧缓冲 | `st22_rx_put_framebuff` / `st30_rx_put_framebuff` | 各 `mtl_rx_*`、bridge、解码线程 |
 
@@ -55,8 +55,7 @@ RK3588 三个承载实时媒体流的 app（`rk3588_live_tx`、`rk3588_playout_r
 
 ### 3.1 会话参数（TX 与 RX 对称）
 
-代码位置：`live_ingest/mtl_tx.c:87-117`、`live_ingest/mtl_rx.c:129-158`、
-`file_playout/tx/mtl_tx_video.c:100-133`、`file_playout/rx/mtl_rx_mp4.c:109-141`。
+代码位置：`rk3588_live_tx/mtl_tx.c`、`rk3588_playout_rx/rx/mtl_rx_mp4.c`。
 
 | `ops` 字段 | 取值 | 含义 |
 |---|---|---|
@@ -188,7 +187,7 @@ ST2110-22/30 的线速 pacing 与跨机 E2E 时延都依赖 TAI 时间轴，三�
   “stale meta”相对预填则对齐 PTP 网格（`tx_tai_compute_anchor`）。
 - **视频 RX 首帧锚定**：`file_playout/rx/mtl_rx_mp4.c:79-80` 用 `meta->timestamp` +
   `media_clk_frame_pts(&clk, tfmt, timestamp)` 把首帧锚定到 `mtl_ptp_read_time()`。
-- **视频 SEI 时间戳（live_ingest）**：采集端把 PTP 时间戳写进 SEI NAL；RX `rx_pipeline.c:286`
+- **视频 SEI 时间戳（live_ingest）**：采集端把 PTP 时间戳写进 SEI NAL；接收端 `rk3588_playout_rx/rx/mtl_rx_mp4.c` / `rx/h264_prep.c` 读取 SEI 并转为 TAI/ns，再作为帧 PTS。
   用 `sei_timestamp_peek` 取出 `cap_ts` 计算端到端时延，并做零值/回退/越界分类
   （`rx_lat_classify`）。
 - **音频 RX TAI**：见 §4 `timestamp_first_pkt` / `st10_get_tai`。

@@ -24,13 +24,13 @@
 
 当前仓库存在三个 RK3588 相关应用：
 
-- `rk3588_live_tx`：HDMI 实时采集、RGA 转换、MPP 编码、MTL TX，以及反向 RX/解码/显示回环验证。
-- `rk3588_playout_rx`：MP4 文件分发、多路接收、播放缓冲、AV 同步、DRM 多平面合成、ALSA 播放。
-- `dvs_media`：由 file_playout RX 侧演进的节点媒体引擎，受 IPC 控制；output 角色基本可用，input 角色已接入 rk3588 app 的 TX 数据面，但 teardown、能力门控与切换验证仍不完整。
+- `rk3588_live_tx`：HDMI 实时采集、RGA 转换、MPP 编码、MTL TX 的编码发送端（TX-only）；亦支持文件帧源插件（MP4 解复用 → extradata → SEI → 同一发送宿接口 + ST30 音频）。不收流，回环验证由 `rk3588_playout_rx` 进程经网络完成。
+- `rk3588_playout_rx`：MTL 接收、MPP 硬解码、播放缓冲、AV 同步、DRM 多平面合成、ALSA 播放的解码接收端（RX-only）；发送端由 `rk3588_live_tx` 经网络供给。
+- `dvs_media`：由 `rk3588_playout_rx` RX 侧演进的节点媒体引擎，受 IPC 控制；output 角色基本可用，input 角色已接入 `rk3588_live_tx` 的 TX 数据面，但 teardown、能力门控与切换验证仍不完整。
 
-当前 `dvs_media` 通过 in-tree 编译复用另外两个应用的源码，output 角色复用 file_playout RX 数据面，input 角色通过 rk3588 app 提供 capture/encode/TX 能力。这种复用方式属于开发与过渡形态，用于加速 bring-up 与验证。
+当前 `dvs_media` 通过 in-tree 编译复用 `rk3588_playout_rx` 的 RX 数据面与 `rk3588_live_tx` 的 TX 数据面，output 角色复用 file_playout RX 数据面，input 角色通过 `rk3588_live_tx` 提供 capture/encode/TX 能力。这种复用方式属于开发与过渡形态，用于加速 bring-up 与验证。
 
-平台与节点代理当前通过 HTTP REST over TCP 交互；WS/gRPC 是目标架构，不是当前实现。`both` 模式仅用于开发/回环，不交付生产镜像。
+平台与节点代理当前通过 HTTP REST over TCP 交互；WS/gRPC 是目标架构，不是当前实现。单板回环通过分别启动发送/接收进程完成，不作为生产交付；`both` 自环模式已移除。
 
 ---
 

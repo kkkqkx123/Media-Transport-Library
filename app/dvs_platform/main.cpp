@@ -43,16 +43,19 @@ struct ChannelRegistry {
     std::map<std::string, std::string> upgrade_progress;
     std::mutex send_mu;
     void register_conn(const std::string& node, int fd) {
-        std::lock_guard<std::mutex> lk(mu);
-        auto it = node_fd.find(node);
-        if (it != node_fd.end() && it->second != fd) {
-            int old = it->second;
-            fd_node.erase(old);
-            ::shutdown(old, SHUT_RDWR);
+        int old = -1;
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            auto it = node_fd.find(node);
+            if (it != node_fd.end() && it->second != fd) {
+                old = it->second;
+                fd_node.erase(old);
+            }
+            node_fd[node] = fd;
+            fd_node[fd] = node;
+            transport[node] = "ws";
         }
-        node_fd[node] = fd;
-        fd_node[fd] = node;
-        transport[node] = "ws";
+        if (old >= 0) ::shutdown(old, SHUT_RDWR);
     }
     void unregister_fd(int fd) {
         std::lock_guard<std::mutex> lk(mu);
@@ -88,6 +91,15 @@ struct ChannelRegistry {
         std::lock_guard<std::mutex> lk(mu);
         if (idem.size() > 4096) idem.clear();
         idem[k] = v;
+    }
+    // 查表与发送原子化：同时持有两把锁，避免查到旧句柄后连接被替换。
+    bool send_to(const std::string& node, const std::string& frame) {
+        std::unique_lock<std::mutex> l1(mu, std::defer_lock);
+        std::unique_lock<std::mutex> l2(send_mu, std::defer_lock);
+        std::lock(l1, l2);
+        auto it = node_fd.find(node);
+        if (it == node_fd.end()) return false;
+        return HttpServer::ws_send_text(it->second, frame, false);
     }
 };
 static ChannelRegistry g_chan;
@@ -342,15 +354,12 @@ std::string handle_barrier_ack(const std::string& opid, const std::string& node,
 }
 
 bool ws_push(const std::string& node, const std::string& type, json_object* data) {
-    int fd = g_chan.fd_of(node);
-    if (fd < 0) return false;
     json_object* msg = ct::wrap(ct::next_msg_id("p"), type, data,
                                ct::next_request_id("p"));
     const char* s = json_object_to_json_string(msg);
     std::string frame = s ? s : "{}";
     json_object_put(msg);
-    std::lock_guard<std::mutex> lk(g_chan.send_mu);
-    return HttpServer::ws_send_text(fd, frame, false);
+    return g_chan.send_to(node, frame);
 }
 
 static std::string ws_idem_key(const std::string& msg_id, const std::string& tp, json_object* data) {
@@ -572,6 +581,12 @@ int main(int argc, char** argv) {
         if (req.method == "POST" && req.path == "/api/v1/nodes/register") {
             if (!require_bearer(req, res)) return;
             json_object* b = json_tokener_parse(req.body.c_str());
+            std::string verr = b ? ct::validate_hello(b) : "INVALID_ARGUMENT:empty body";
+            if (!verr.empty()) {
+                if (b) json_object_put(b);
+                send_json(res, fail_envelope("INVALID_ARGUMENT", 400, verr.c_str()));
+                return;
+            }
             std::string id = body_str(b, "id");
             if (id.empty()) id = body_str(b, "sn");
             if (id.empty()) {
@@ -606,6 +621,12 @@ int main(int argc, char** argv) {
         if (req.method == "POST" && req.path == "/api/v1/nodes/heartbeat") {
             if (!require_bearer(req, res)) return;
             json_object* b = json_tokener_parse(req.body.c_str());
+            std::string verr = b ? ct::validate_heartbeat(b) : "INVALID_ARGUMENT:empty body";
+            if (!verr.empty()) {
+                if (b) json_object_put(b);
+                send_json(res, fail_envelope("INVALID_ARGUMENT", 400, verr.c_str()));
+                return;
+            }
             std::string id = body_str(b, "id");
             if (id.empty()) id = body_str(b, "nodeId");
             json_object* cur = id.empty() ? nullptr : g_store->get_doc("node", id);
@@ -933,6 +954,12 @@ int main(int argc, char** argv) {
         if (req.method == "POST" && req.path == "/api/v1/ops/commit") {
             if (!require_bearer(req, res)) return;
             json_object* b = json_tokener_parse(req.body.c_str());
+            std::string verr = b ? ct::validate_barrier_ack(b) : "INVALID_ARGUMENT:empty body";
+            if (!verr.empty()) {
+                if (b) json_object_put(b);
+                send_json(res, fail_envelope("INVALID_ARGUMENT", 400, verr.c_str()));
+                return;
+            }
             std::string opid = body_str(b, "operationId");
             std::string node = body_str(b, "node");
             std::string st = body_str(b, "status");
@@ -968,6 +995,43 @@ int main(int argc, char** argv) {
                 json_object_array_add(miss, json_object_new_string(m.c_str()));
             json_object_object_add(d, "missing", miss);
             send_json(res, ok_envelope(d, state));
+            return;
+        }
+        // 短连接回退：配置确认与升级进度在无 WS 时走短连接，与 WS 同校验同审计。
+        if (req.method == "POST" && req.path == "/api/v1/ops/config-ack") {
+            if (!require_bearer(req, res)) return;
+            json_object* b = json_tokener_parse(req.body.c_str());
+            std::string verr = b ? ct::validate_config_ack(b) : "INVALID_ARGUMENT:empty body";
+            if (!verr.empty()) {
+                if (b) json_object_put(b);
+                send_json(res, fail_envelope("INVALID_ARGUMENT", 400, verr.c_str()));
+                return;
+            }
+            g_store->audit("{\"config-ack\":\"" + body_str(b, "node") + "\"}");
+            if (b) json_object_put(b);
+            json_object* d = json_object_new_object();
+            json_object_object_add(d, "received", json_object_new_boolean(1));
+            send_json(res, ok_envelope(d, ""));
+            return;
+        }
+        if (req.method == "POST" && req.path == "/api/v1/ops/upgrade-progress") {
+            if (!require_bearer(req, res)) return;
+            json_object* b = json_tokener_parse(req.body.c_str());
+            std::string verr = b ? ct::validate_upgrade_progress(b) : "INVALID_ARGUMENT:empty body";
+            if (!verr.empty()) {
+                if (b) json_object_put(b);
+                send_json(res, fail_envelope("INVALID_ARGUMENT", 400, verr.c_str()));
+                return;
+            }
+            std::string tid = body_str(b, "taskId");
+            std::string node = body_str(b, "node");
+            std::string st = body_str(b, "status");
+            { std::lock_guard<std::mutex> lk(g_chan.mu); g_chan.upgrade_progress[tid + "/" + node] = st; }
+            g_store->audit("{\"upgrade-progress\":\"" + node + "\",\"task\":\"" + tid + "\",\"status\":\"" + st + "\"}");
+            if (b) json_object_put(b);
+            json_object* d = json_object_new_object();
+            json_object_object_add(d, "received", json_object_new_boolean(1));
+            send_json(res, ok_envelope(d, ""));
             return;
         }
         // 升级改为任务队列驱动：handler 只入队，worker 串行经 WS/短连接投递。

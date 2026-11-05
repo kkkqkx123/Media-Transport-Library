@@ -66,6 +66,16 @@ void Registration::set_downlink_handler(DownlinkHandler h) {
     downlink_ = h;
 }
 
+std::string Registration::register_state() const {
+    std::lock_guard<std::mutex> lk(state_mu_);
+    return register_state_;
+}
+
+std::string Registration::transport() const {
+    std::lock_guard<std::mutex> lk(state_mu_);
+    return transport_;
+}
+
 std::string Registration::ws_channel_url() const {
     std::string base = platform_url_;
     while (!base.empty() && base.back() == '/') base.pop_back();
@@ -85,7 +95,10 @@ void Registration::loop() {
         }
         return;
     }
-    register_state_ = "registering";
+    {
+        std::lock_guard<std::mutex> lk(state_mu_);
+        register_state_ = "registering";
+    }
     int backoff = 2;
     std::random_device rd;
     std::mt19937 rng(rd());
@@ -98,12 +111,20 @@ void Registration::loop() {
             if (ok) { backoff = 2; continue; }
             // WS 断开：auto 模式回退一次短连接心跳，ws 模式直接退避重拨。
             if (!ws_only) {
-                if (register_state_ != "registered") register_once();
+                std::string rs;
+                { std::lock_guard<std::mutex> lk(state_mu_); rs = register_state_; }
+                if (rs != "registered") register_once();
                 else heartbeat_once();
             }
         } else {
-            if (register_state_ != "registered") {
-                if (register_once()) { register_state_ = "registered"; backoff = 2; }
+            std::string rs;
+            { std::lock_guard<std::mutex> lk(state_mu_); rs = register_state_; }
+            if (rs != "registered") {
+                if (register_once()) {
+                    std::lock_guard<std::mutex> lk(state_mu_);
+                    register_state_ = "registered";
+                    backoff = 2;
+                }
                 else {
                     std::this_thread::sleep_for(std::chrono::seconds(backoff));
                     if (backoff < 30) backoff *= 2;
@@ -181,11 +202,7 @@ bool Registration::ws_loop_once() {
         if (!ws_.send_text(hframe)) return false;
     }
     std::string wframe;
-    {
-        std::lock_guard<std::mutex> lk(ws_mu_);
-        // 握手等待 welcome：借 ws_mu 短暂独占，避免与回执发送交错。
-        // recv 本身不持锁，此处为简化串行，欢迎后即释放。
-    }
+    // 握手等待 welcome：接收不持锁，避免阻塞回执发送。
     // 用临时锁外接收，避免长时间持锁阻塞 uplink。
     if (!ws_.recv_text(wframe, 5000)) { ws_.close(); return false; }
     json_object* wm = json_tokener_parse(wframe.c_str());
@@ -202,8 +219,11 @@ bool Registration::ws_loop_once() {
     if (dd) json_object_put(dd);
     if (wm) json_object_put(wm);
     if (!ok) { ws_.close(); return false; }
-    register_state_ = "registered";
-    transport_ = "ws";
+    {
+        std::lock_guard<std::mutex> lk(state_mu_);
+        register_state_ = "registered";
+        transport_ = "ws";
+    }
     online_ = true;
     fail_streak_ = 0;
     {
@@ -213,20 +233,22 @@ bool Registration::ws_loop_once() {
         store_->update_node(patch);
         json_object_put(patch);
     }
-    int64_t last_hb = (int64_t)time(nullptr) * 1000;
+    auto last_hb = std::chrono::steady_clock::now();
     while (running_ && ws_.is_open()) {
         std::string frame;
-        int64_t t0 = (int64_t)time(nullptr) * 1000;
+        auto t0 = std::chrono::steady_clock::now();
         // 以心跳周期为接收超时：超时即补一次 WS 心跳。
         bool got = ws_.recv_text(frame, interval_ms_ + 1000);
-        int64_t now_ms = (int64_t)time(nullptr) * 1000;
+        auto now = std::chrono::steady_clock::now();
+        auto since_t0 =
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - t0).count();
         if (!got) {
             // 耗时不足半个周期即返回的失败视为传输错误，直接断开；
             // 达到超时的失败则补心跳，成功继续，失败断开。
-            if (now_ms - t0 < (interval_ms_ / 2)) break;
+            if (since_t0 < (interval_ms_ / 2)) break;
             json_object* hb = build_heartbeat();
             if (!ws_send_wrapped(ct::kHeartbeat, hb)) break;
-            last_hb = now_ms;
+            last_hb = now;
             continue;
         }
         json_object* m = json_tokener_parse(frame.c_str());
@@ -247,17 +269,22 @@ bool Registration::ws_loop_once() {
         }
         if (in_dd) json_object_put(in_dd);
         if (m) json_object_put(m);
-        if (now_ms - last_hb >= interval_ms_) {
+        auto since_hb =
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - last_hb).count();
+        if (since_hb >= interval_ms_) {
             json_object* hb = build_heartbeat();
             // 心跳 data 复用短连接载荷，WS 侧由平台按契约校验。
             ws_send_wrapped(ct::kHeartbeat, hb);
-            last_hb = now_ms;
+            last_hb = now;
         }
     }
     ws_.close();
-    if (transport_ == "ws") transport_ = "short";
+    {
+        std::lock_guard<std::mutex> lk(state_mu_);
+        if (transport_ == "ws") transport_ = "short";
+    }
     online_ = false;
-    return register_state_ == "registered";
+    return register_state() == "registered";
 }
 
 bool Registration::uplink_barrier_ack(const std::string& opid, const std::string& node,
@@ -291,9 +318,20 @@ bool Registration::uplink_config_ack(const std::string& node, int applied_revisi
     json_object* d = json_object_new_object();
     json_object_object_add(d, "node", json_object_new_string(node.c_str()));
     json_object_object_add(d, "appliedRevision", json_object_new_int(applied_revision));
+    if (!ct::validate_config_ack(d).empty()) { json_object_put(d); return false; }
     if (ws_.is_open() && ws_send_wrapped(ct::kConfigAck, d)) return true;
     json_object_put(d);
-    return false;
+    if (platform_url_.empty()) return false;
+    HttpClient cli;
+    json_object* c = json_object_new_object();
+    json_object_object_add(c, "node", json_object_new_string(node.c_str()));
+    json_object_object_add(c, "appliedRevision", json_object_new_int(applied_revision));
+    const char* cb = json_object_to_json_string(c);
+    std::string resp;
+    int sc = cli.post_json(platform_url_ + "/api/v1/ops/config-ack", std::string(cb ? cb : "{}"),
+                           resp, 5000, 2, control_token());
+    json_object_put(c);
+    return sc >= 200 && sc < 400;
 }
 
 bool Registration::uplink_upgrade_progress(const std::string& task_id, const std::string& node,
@@ -308,7 +346,20 @@ bool Registration::uplink_upgrade_progress(const std::string& task_id, const std
     if (!ct::validate_upgrade_progress(d).empty()) { json_object_put(d); return false; }
     if (ws_.is_open() && ws_send_wrapped(ct::kUpgradeProgress, d)) return true;
     json_object_put(d);
-    return false;
+    if (platform_url_.empty()) return false;
+    HttpClient cli;
+    json_object* c = json_object_new_object();
+    json_object_object_add(c, "taskId", json_object_new_string(task_id.c_str()));
+    json_object_object_add(c, "node", json_object_new_string(node.c_str()));
+    json_object_object_add(c, "status", json_object_new_string(status.c_str()));
+    if (!detail.empty())
+        json_object_object_add(c, "detail", json_object_new_string(detail.c_str()));
+    const char* cb = json_object_to_json_string(c);
+    std::string resp;
+    int sc = cli.post_json(platform_url_ + "/api/v1/ops/upgrade-progress",
+                           std::string(cb ? cb : "{}"), resp, 5000, 2, control_token());
+    json_object_put(c);
+    return sc >= 200 && sc < 400;
 }
 
 static std::string control_token() {
@@ -352,15 +403,22 @@ bool Registration::register_once() {
 
 bool Registration::trigger_once() {
     if (platform_url_.empty()) return false;
-    register_state_ = "registering";
+    {
+        std::lock_guard<std::mutex> lk(state_mu_);
+        register_state_ = "registering";
+    }
     json_object* patch = json_object_new_object();
     json_object_object_add(patch, "registerState", json_object_new_string("registering"));
     store_->update_node(patch);
     json_object_put(patch);
     bool ok = register_once();
-    register_state_ = ok ? "registered" : "failed";
+    std::string rs = ok ? "registered" : "failed";
+    {
+        std::lock_guard<std::mutex> lk(state_mu_);
+        register_state_ = rs;
+    }
     json_object* p2 = json_object_new_object();
-    json_object_object_add(p2, "registerState", json_object_new_string(register_state_.c_str()));
+    json_object_object_add(p2, "registerState", json_object_new_string(rs.c_str()));
     store_->update_node(p2);
     json_object_put(p2);
     return ok;

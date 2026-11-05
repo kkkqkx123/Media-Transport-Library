@@ -307,6 +307,7 @@ static void test_contract() {
     json_object* lp = json_object_new_object();
     json_object_object_add(lp, "operationId", json_object_new_string("op-1"));
     json_object_object_add(lp, "revision", json_object_new_int(3));
+    json_object_object_add(lp, "applyAtNs", json_object_new_int64(1000));
     json_object_object_add(lp, "geometry", json_object_get(g));
     json_object_object_add(lp, "windows", json_object_new_array());
     assert(ct::validate_layout_prepare(lp).empty());

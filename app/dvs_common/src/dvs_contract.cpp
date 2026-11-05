@@ -174,6 +174,9 @@ std::string validate_layout_prepare(json_object* data) {
     json_object* rv = field(data, "revision");
     if (!rv || !json_object_is_type(rv, json_type_int))
         return "INVALID_ARGUMENT:layout.prepare revision must be int";
+    json_object* at = field(data, "applyAtNs");
+    if (!at || !json_object_is_type(at, json_type_int))
+        return "INVALID_ARGUMENT:layout.prepare applyAtNs must be int";
     json_object* wins = field(data, "windows");
     if (!is_arr(wins)) return "INVALID_ARGUMENT:layout.prepare windows must be array";
     json_object* geo = field(data, "geometry");

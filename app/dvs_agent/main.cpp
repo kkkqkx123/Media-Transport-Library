@@ -500,25 +500,9 @@ static void agent_report_commit(const std::string& opid, int rev,
     }
     json_object* lanes = nullptr;
     if (lanes_json != "[]") lanes = json_tokener_parse(lanes_json.c_str());
-    // 优先 WS 上行屏障回执，无 WS 时回退短连接，保证弱网不断回执。
-    bool via_ws = false;
-    if (g_reg) via_ws = g_reg->uplink_barrier_ack(opid, nodeId, status, lanes);
+    // 单次投递语义：上行 helper 内已含 WS 优先加短连接回退，此处不再二次补发。
+    if (g_reg) g_reg->uplink_barrier_ack(opid, nodeId, status, lanes);
     if (lanes) json_object_put(lanes);
-    if (via_ws) return;
-    HttpClient cli;
-    json_object* c = json_object_new_object();
-    json_object_object_add(c, "operationId", json_object_new_string(opid.c_str()));
-    json_object_object_add(c, "node", json_object_new_string(nodeId.c_str()));
-    json_object_object_add(c, "status", json_object_new_string(status.c_str()));
-    if (lanes_json != "[]") {
-        json_object* lj = json_tokener_parse(lanes_json.c_str());
-        if (lj) json_object_object_add(c, "lanes", lj);
-    }
-    const char* cb = json_object_to_json_string(c);
-    std::string resp;
-    cli.post_json(platform_url + "/api/v1/ops/commit",
-                  std::string(cb ? cb : "{}"), resp, 5000, 2, g_api_token);
-    json_object_put(c);
 }
 
 int main(int argc, char** argv) {
@@ -1478,6 +1462,12 @@ int main(int argc, char** argv) {
                 return;
             }
             json_object* body = json_tokener_parse(req.body.c_str());
+            if (!body || dvs::contract::validate_layout_prepare(body).empty() == false) {
+                std::string reason = body ? dvs::contract::validate_layout_prepare(body) : "INVALID_ARGUMENT:empty body";
+                if (body) json_object_put(body);
+                send_json(res, envelope_fail("INVALID_ARGUMENT", 400, reason.c_str()));
+                return;
+            }
             std::string opid = get_str(body, "operationId");
             int rev = 1;
             json_object* rv = nullptr;
@@ -1575,6 +1565,12 @@ int main(int argc, char** argv) {
                 return;
             }
             json_object* body = json_tokener_parse(req.body.c_str());
+            std::string verr = body ? dvs::contract::validate_config_update(body) : "INVALID_ARGUMENT:empty body";
+            if (!verr.empty()) {
+                if (body) json_object_put(body);
+                send_json(res, envelope_fail("INVALID_ARGUMENT", 400, verr.c_str()));
+                return;
+            }
             json_object* cfg = nullptr;
             if (body) json_object_object_get_ex(body, "config", &cfg);
             json_object* patch = json_object_new_object();

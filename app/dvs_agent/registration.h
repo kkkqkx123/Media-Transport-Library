@@ -33,8 +33,8 @@ public:
     void stop();
 
     bool online() const { return online_; }
-    std::string register_state() const { return register_state_; }
-    std::string transport() const { return transport_; }
+    std::string register_state() const;
+    std::string transport() const;
     bool trigger_once();
     void trigger_async();
 
@@ -69,6 +69,7 @@ private:
 
     std::atomic<bool> running_{false};
     std::atomic<bool> online_{true};
+    mutable std::mutex state_mu_;
     std::string register_state_;
     std::string transport_ = "short";  // ws | short
     std::thread thread_;

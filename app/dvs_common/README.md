@@ -6,10 +6,11 @@
 
 ```
 include/
-  http_server.h   # 轻量 HTTP 服务（agent 与 platform 的本地 API/静态页面服务）
-  http_client.h   # HTTP 客户端（注册、心跳、跨节点调用）
+  http_server.h   # 轻量 HTTP 服务（含 WS 帧编解码与同端口 Upgrade 接管）
+  http_client.h   # HTTP 客户端（含持久化 WsClient 拨号）
   sha256.h        # SHA-256（登录口令摘要等）
-src/              # 对应实现
+  dvs_contract.h  # 平台—代理共享契约：信封、消息标识、鉴权入口、六类消息校验、传输模式缺省
+src/              # 对应实现（含 dvs_contract.cpp 校验表）
 third_party/sqlite/
   sqlite3.c/.h    # SQLite amalgamation（单文件内置，无外部运行时依赖）
 web/

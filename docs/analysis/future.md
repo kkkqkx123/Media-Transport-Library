@@ -4,7 +4,7 @@
 
 **切换windows服务后**
 
-- PMD
+- PMD（windows未必支持）
 - native AF_XDP
 - 增加裸流支持
 - 增加

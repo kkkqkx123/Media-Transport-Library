@@ -20,6 +20,14 @@ libavformat_dep = dependency('libavformat', required: true)
 libavcodec_dep = dependency('libavcodec', required: true)
 libavutil_dep = dependency('libavutil', required: true)
 
+# real-time audio capture (io/alsa_capturer); optional so sysroots without
+# libasound can still build video-only
+enable_alsa = get_option('enable_alsa')
+if enable_alsa
+  libalsa_dep = dependency('alsa', required: true)
+  common_c_args += ['-DHAVE_ALSA=1']
+endif
+
 common_c_args = ['-DHAVE_MTL=1']
 common_inc = include_directories('../rk3588_common/include',
                                 '../rk3588_common/include/rk3588_common')
@@ -49,11 +57,24 @@ executable('test_hal', 'tests/test_hal.c',
   include_directories: live_ingest_inc,
 )
 
-# ---- Phase 2: IO (V4L2 capture only) ----
+# ---- Phase 2: IO (V4L2 capture + optional ALSA audio capture) ----
+io_sources = files('io/v4l2_capturer.c')
+io_deps = [libdrm_dep, libpthread_dep]
+if enable_alsa
+  io_sources += files('io/alsa_capturer.c')
+  io_deps += libalsa_dep
+endif
 live_ingest_io = static_library('live_ingest_io',
-  'io/v4l2_capturer.c',
+  io_sources,
   link_with: live_ingest_hal,
-  dependencies: [libdrm_dep, libpthread_dep],
+  dependencies: io_deps,
+  include_directories: live_ingest_inc,
+)
+
+executable('test_io', 'tests/test_io.c',
+  link_with: [live_ingest_hal, live_ingest_io],
+  dependencies: [libdrm_dep, libpthread_dep] + (enable_alsa ? [libalsa_dep] : []),
+  c_args: common_c_args,
   include_directories: live_ingest_inc,
 )
 

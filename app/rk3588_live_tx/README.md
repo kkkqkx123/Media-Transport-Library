@@ -18,6 +18,7 @@ meson setup build && ninja -C build
 | `io/` | 输入：`v4l2_capturer.c` HDMI/V4L2 采集 |
 | `codec/` | 编码封装：`mpp_encoder`（MPP）、`rga_converter`（RGA 格式转换） |
 | `pipeline/` | 管道层：`tx_pipeline`（采集→编码编排）；环形缓冲、SPS/VUI 与 SEI 时间戳复用 `rk3588_common` |
+| `io/` | `v4l2_capturer`（视频采集）；`alsa_capturer`（实时音频采集，ALSA S16LE PCM，`-Denable_alsa=false` 可裁剪） |
 | `file/` | 文件帧源插件（阶段2）：`file_source`（解复用 + 播放列表 + 发送调度），喂给已有发送宿接口 |
 | `mtl_tx.c` | MTL 视频发送会话层封装（支持 TAI/USER_PACING） |
 | `mtl_tx_audio.c` | MTL 音频发送会话层封装（文件源 ST30，视频无音频） |

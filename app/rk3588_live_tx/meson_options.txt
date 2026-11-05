@@ -1,0 +1,5 @@
+# rk3588_live_tx meson options
+
+option('enable_alsa', type: 'boolean', value: true,
+       description: 'enable/disable real-time ALSA audio capture (io/alsa_capturer); ' +
+                    'disable for sysroots without libasound')

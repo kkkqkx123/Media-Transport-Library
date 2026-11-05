@@ -8,7 +8,7 @@
 #include "rx_track.h"
 #include "slice_reassembler.h"
 #include "pipeline_common.h"
-#include "../hal/sei_timestamp.h"
+#include "sei_timestamp.h"
 #include "slab_pool.h"
 #include "../codec/mpp_decoder.h"
 #include "../io/drm_renderer.h"

@@ -2,7 +2,7 @@
 #define _FILE_PLAYOUT_APP_H_
 
 #include "pipeline_common.h"
-#include "shared/display_layout.h"
+#include "display_layout.h"
 #include <mtl_api.h>
 #include <st20_api.h>
 #include <stdatomic.h>

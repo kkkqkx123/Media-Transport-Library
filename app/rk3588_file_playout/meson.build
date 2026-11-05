@@ -76,9 +76,9 @@ file_playout_shared = static_library('file_playout_shared',
     '../rk3588_common/src/slab_pool.c',
     '../rk3588_common/src/timer.c',
     'shared/au_trace.c',
-    'shared/drm_mode.c',
-    'shared/display_layout.c',
-    'shared/ptp_time.c',
+    '../rk3588_common/src/drm_mode.c',
+    '../rk3588_common/src/display_layout.c',
+    '../rk3588_common/src/ptp_time.c',
     'shared/tx_tai_ts.c',
     'shared/e2e_stamp.c',
     'shared/rx_e2e_stats.c',
@@ -216,7 +216,7 @@ if build_rx
   test('drm_mode', test_drm_mode)
 
   test_display_layout = executable('test_display_layout',
-    files('tests/test_display_layout.c', 'shared/display_layout.c'),
+    files('tests/test_display_layout.c', '../rk3588_common/src/display_layout.c'),
     c_args: common_c_args,
     include_directories: file_playout_inc,
   )

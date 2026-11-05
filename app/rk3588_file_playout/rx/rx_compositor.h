@@ -2,7 +2,7 @@
 #define _RX_COMPOSITOR_H_
 
 #include "../file_playout_app.h"
-#include "../shared/display_layout.h"
+#include "display_layout.h"
 #include <mtl_api.h>
 #include <stdint.h>
 

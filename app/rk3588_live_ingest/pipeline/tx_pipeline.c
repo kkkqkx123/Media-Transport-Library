@@ -14,10 +14,10 @@
 #include "tx_pipeline.h"
 #include "ring_buffer.h"
 #include "slab_pool.h"
-#include "../hal/sei_timestamp.h"
+#include "sei_timestamp.h"
 #include "../codec/rga_converter.h"
 #include "../codec/mpp_encoder.h"
-#include "../codec/sps_vui.h"
+#include "sps_vui.h"
 #include "../io/v4l2_capturer.h"
 #include <linux/videodev2.h>
 #include <mtl_api.h>

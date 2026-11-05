@@ -28,12 +28,12 @@
 
 来自 `app/dvs_media/meson.build:46-119` 的精确映射：
 
-**`rk3588_common/src/`（基础无状态组件）**
-- `ring_buffer.c` `slab_pool.c` `timer.c`
+**`rk3588_common/src/`（基础无状态组件，第一批已纳入 `sps_vui`、`sei_timestamp`、`display_layout`、`drm_mode`、`ptp_time`）**
+- `ring_buffer.c` `slab_pool.c` `timer.c` `sps_vui.c` `sei_timestamp.c` `display_layout.c` `drm_mode.c` `ptp_time.c`
 - 可选依赖 MTL（找到时以 `-DHAVE_MTL=1` 编译，见 `rk3588_common/meson.build`）
 
 **`rk3588_file_playout/shared/`（跨应用共享的 RX/解码/显示辅助）**
-- `au_trace.c` `drm_mode.c` `display_layout.c` `ptp_time.c` `tx_tai_ts.c` `e2e_stamp.c` `rx_e2e_stats.c`
+- `au_trace.c` `tx_tai_ts.c` `e2e_stamp.c` `rx_e2e_stats.c`
 - `mpp_decoder.c`（MPP 解码封装）`drm_renderer.c`（DRM 渲染）
 
 **`rk3588_file_playout/rx/`（RX 数据面核心）**
@@ -55,11 +55,11 @@ dvs_media 自身只写"控制面 + IPC"，所有数据面动作都委托给 file
 |---|---|
 | 配置/初始化 | `file_playout_config_load` `file_playout_mtl_init` `file_playout_apply_drm_mode` `file_playout_mode_dims` `file_playout_pip_validate` |
 | 合成器 | `rx_compositor_create` `rx_compositor_start` `rx_compositor_stop` `rx_compositor_free` `rx_compositor_try_fast_apply` `rx_compositor_report_stats` `rx_compositor_lane_*` |
-| 数据结构 | `file_playout_cfg` `file_playout_pip_stream` `MP4_PIP_MAX_LANES`（`shared/display_layout.h`） |
+| 数据结构 | `file_playout_cfg` `file_playout_pip_stream` `MP4_PIP_MAX_LANES`（`rk3588_common/include/rk3588_common/display_layout.h`，第一批已由 file_playout `shared/` 上移） |
 | 编解码/渲染 | `mpp_decoder.c` `drm_renderer.c`（经 `rx_compositor` 间接调用） |
 | MTL 公共 API | `mtl_version` `mtl_ptp_read_time` `mtl_stop` `mtl_uninit` |
 
-注意 `engine_ctx.c` 直接 `#include "file_playout_config.h"` 与 `"shared/display_layout.h"`，说明 dvs_media 把 file_playout 的头文件当作"半公开 API"使用——这是 in-tree 复用的代价：file_playout 的内部头对 dvs_media 完全可见，二者强耦合。
+注意 `engine_ctx.c` 直接 `#include "file_playout_config.h"` 与 `"display_layout.h"`（后者第一批已上移 `rk3588_common`），说明 dvs_media 把 donor 的头文件当作"半公开 API"使用——这是 in-tree 复用的代价：donor 的内部头对 dvs_media 完全可见，二者强耦合。
 
 ---
 
@@ -125,11 +125,11 @@ dvs_media 与 dvs_agent **同包发布**，版本契约在 `app/dvs_common/inclu
 
 2. **rx_compositor 来源**：dvs_media 复用的是 `rk3588_file_playout/rx/rx_compositor.c`，不要与 `io/drm_renderer.c` 或 file_playout 的 `shared/drm_renderer.c` 混淆（AGENTS.md 已提示存在近似重复模块）。改 `dvs_media` 的渲染/合成行为时确认目标文件是 `rx/rx_compositor.c`。
 
-3. **强耦合 file_playout 内部头**：`engine_ctx.c` 直接引用 `file_playout_config.h` / `shared/display_layout.h`，file_playout 重构这些头会直接破坏 dvs_media。
+3. **强耦合 donor 内部头**：`engine_ctx.c` 直接引用 `file_playout_config.h` / `display_layout.h`（后者已上移 `rk3588_common`），任一 donor 重构这些头都会直接破坏 dvs_media。
 
 4. **TX 占位未闭环**：input role 当前无数据面 backend，`dvs_tx_set_backend` 仅在 `tests/test_tx_session.c` 的单元测试中注入 fake backend。生产接入 live_ingest 数据面是后续 TODO。
 
-5. **`shared/` 跨 app 重复**：`rk3588_file_playout/shared/` 同时被 file_playout 自己与 dvs_media 引用，且 AGENTS.md 提到该目录内容与 live_ingest 的 `hal/` 也有功能重叠；三处实现需保持语义一致。
+5. **donor 源码跨 app 引用**：`rk3588_common/src/` 同时被三处引用；`rk3588_file_playout/shared/` 余下部分仍被 file_playout 自己与 dvs_media 引用。新增引用前先确认归属，避免回搬。
 
 ---
 

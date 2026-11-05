@@ -1,5 +1,5 @@
 #include "engine_ctx.h"
-#include "shared/display_layout.h" /* MP4_PIP_MAX_LANES */
+#include "display_layout.h" /* MP4_PIP_MAX_LANES */
 
 #include <json-c/json.h>
 

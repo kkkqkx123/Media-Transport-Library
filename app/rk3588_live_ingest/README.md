@@ -10,10 +10,10 @@ meson setup build && ninja -C build
 
 | 目录/文件 | 说明 |
 |---|---|
-| `hal/` | 硬件抽象层：DMA 分配器（`dma_allocator` / `dma32_allocator`）、slab 池与定时器（复用 `rk3588_common`）、SEI 时间戳注入 |
+| `hal/` | 硬件抽象层：DMA 分配器（`dma_allocator` / `dma32_allocator`） |
 | `io/` | 输入输出：`v4l2_capturer.c` HDMI/V4L2 采集，`drm_renderer.c` DRM 显示 |
-| `codec/` | 编解码封装：`mpp_encoder` / `mpp_decoder`（MPP）、`rga_converter`（RGA 格式转换）、`sps_vui`（SPS/VUI 解析） |
-| `pipeline/` | 管道层：`tx_pipeline` / `rx_pipeline`、`slice_reassembler`（分片重组）、环形缓冲（复用 `rk3588_common`） |
+| `codec/` | 编解码封装：`mpp_encoder` / `mpp_decoder`（MPP）、`rga_converter`（RGA 格式转换） |
+| `pipeline/` | 管道层：`tx_pipeline` / `rx_pipeline`、`slice_reassembler`（分片重组）、环形缓冲（复用 `rk3588_common`）；SPS/VUI 与 SEI 时间戳复用 `rk3588_common` |
 | `mtl_tx.c` / `mtl_rx.c` / `mtl_rx_bridge.c` | MTL 会话层封装（TX/RX 桥接） |
 | `live_ingest_app.c` / `live_ingest_config.c` | 主程序与 JSON 配置 |
 | `tests/` | 按层划分的单元测试（`test_hal` / `test_io` / `test_codec` / `test_pipeline` / `test_sps_vui`），各阶段可独立构建运行 |

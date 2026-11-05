@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "../codec/sps_vui.h"
+#include "sps_vui.h"
 
 /* ---- helpers to build the synthetic SPS ---- */
 

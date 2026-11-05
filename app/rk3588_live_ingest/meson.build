@@ -25,13 +25,13 @@ live_ingest_inc = [include_directories('.'), common_inc]
 # ---- Phase 1: HAL (libdrm only) ----
 # sps_vui is pure C (no hardware deps) so its test builds everywhere.
 executable('test_sps_vui', 'tests/test_sps_vui.c',
-  'codec/sps_vui.c',
+  '../rk3588_common/src/sps_vui.c',
   include_directories: live_ingest_inc,
 )
 
 # RX tracking logic (seq gap / latency window / SEI offset): pure C test.
 executable('test_rx_track', 'tests/test_rx_track.c',
-  'hal/sei_timestamp.c',
+  '../rk3588_common/src/sei_timestamp.c',
   include_directories: live_ingest_inc,
 )
 
@@ -40,7 +40,7 @@ live_ingest_hal_sources = files(
   'hal/dma32_allocator.c',
   '../rk3588_common/src/timer.c',
   '../rk3588_common/src/slab_pool.c',
-  'hal/sei_timestamp.c',
+  '../rk3588_common/src/sei_timestamp.c',
 )
 
 live_ingest_hal = static_library('live_ingest_hal', live_ingest_hal_sources,
@@ -90,7 +90,7 @@ if librockchip_mpp_dep.found() and librga_dep.found()
     'codec/rga_converter.c',
     'codec/mpp_encoder.c',
     'codec/mpp_decoder.c',
-    'codec/sps_vui.c',
+    '../rk3588_common/src/sps_vui.c',
     link_with: live_ingest_hal,
     dependencies: [libdrm_dep, librga_dep, librockchip_mpp_dep],
     include_directories: live_ingest_inc,

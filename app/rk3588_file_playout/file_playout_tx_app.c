@@ -1,6 +1,6 @@
 #include "file_playout_app.h"
 #include "file_playout_config.h"
-#include "shared/display_layout.h"
+#include "display_layout.h"
 #include "tx/tx_scheduler.h"
 #include <signal.h>
 #include <stdatomic.h>

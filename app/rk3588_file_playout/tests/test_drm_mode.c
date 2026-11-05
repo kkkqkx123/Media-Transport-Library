@@ -1,4 +1,4 @@
-#include "../shared/drm_mode.h"
+#include "drm_mode.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

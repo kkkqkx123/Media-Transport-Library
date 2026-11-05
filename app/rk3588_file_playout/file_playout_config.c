@@ -1,7 +1,7 @@
 #include "file_playout_config.h"
-#include "shared/drm_mode.h"
-#include "shared/display_layout.h"
-#include "shared/ptp_time.h"
+#include "drm_mode.h"
+#include "display_layout.h"
+#include "ptp_time.h"
 #include "tx/mp4_demux.h"
 #include <errno.h>
 #include <json-c/json.h>

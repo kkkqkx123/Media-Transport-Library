@@ -1,4 +1,4 @@
-#include "../shared/display_layout.h"
+#include "display_layout.h"
 #include <stdio.h>
 #include <stdlib.h>
 

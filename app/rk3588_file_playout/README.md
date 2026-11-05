@@ -214,7 +214,7 @@ av_sync: ... clock=ptp ...
 
 ### 代码路径
 
-- `shared/ptp_time.c` — MTL `ptp_get_time_fn` 读 TAI
+- `rk3588_common/src/ptp_time.c` — MTL `ptp_get_time_fn` 读 TAI
 - `rx/media_clk.c` — ST22 MEDIA_CLK 首帧锚定到 `mtl_ptp_read_time()`
 - `rx/av_sync.c` — playout 调度与视频 PTS 同域（PTP）
 - `rx/mtl_rx_audio.c` — ST30 使用 `timestamp_first_pkt` / `st10_get_tai()`

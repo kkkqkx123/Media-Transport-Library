@@ -6,7 +6,7 @@
 #include "../hal/dma_allocator.h"
 #include "timer.h"
 #include "slab_pool.h"
-#include "../hal/sei_timestamp.h"
+#include "sei_timestamp.h"
 
 static int test_dma_allocator(void) {
   printf("  [dma_allocator] creating allocator on /dev/dri/card0...\n");

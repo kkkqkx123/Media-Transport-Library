@@ -1,5 +1,5 @@
 /* RX tracking logic unit test: x86-runnable, no hardware deps. */
-#include "../hal/sei_timestamp.h"
+#include "sei_timestamp.h"
 #include "../pipeline/rx_track.h"
 #include <stdio.h>
 

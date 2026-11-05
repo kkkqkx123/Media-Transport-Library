@@ -12,7 +12,7 @@ import re
 import sys
 
 sys.path.insert(0, "tests")
-# Inline refresh map (mirror shared/drm_mode.c)
+# Inline refresh map (mirror rk3588_common/src/drm_mode.c)
 def suggest_refresh(fps: float) -> int:
     table = [
         (23.976, 24), (24.0, 24), (25.0, 25), (29.97, 30), (30.0, 30),

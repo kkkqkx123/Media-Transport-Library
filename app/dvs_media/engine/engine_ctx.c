@@ -3,7 +3,7 @@
 #include <json-c/json.h>
 
 #include "file_playout_config.h"      /* file_playout_mtl_init, mode_dims, apply_drm_mode */
-#include "shared/display_layout.h" /* file_playout_pip_validate, MP4_PIP_MAX_LANES */
+#include "display_layout.h" /* file_playout_pip_validate, MP4_PIP_MAX_LANES */
 #include "session_admit.h"         /* whitelist + LRU admission */
 #include "audio_arbiter.h"         /* ALSA audio routing */
 #include "capability.h"

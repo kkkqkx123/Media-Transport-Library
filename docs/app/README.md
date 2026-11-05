@@ -14,6 +14,10 @@
 | [`dvs_platform_frontend_mapping.md`](./dvs_platform_frontend_mapping.md) | dvs_platform 平台前端功能映射到 dvs / rk3588 app 功能的分析 |
 | [`dvs_node_analysis.md`](./dvs_node_analysis.md) | `dvs_media` / `dvs_agent` 功能现状与 `docs/req` 需求差距分析；IPC 方式评估与网络通信（平台 WSS 注册心跳）补充建议 |
 
+## 依赖分析
+
+- [`dep/sqlite.md`](./dep/sqlite.md) — `app/dvs_common/third_party/sqlite`（SQLite amalgamation）在 dvs_agent / dvs_platform 中的使用与作用。
+
 ## 共同特征
 
 - **独立 meson 工程**：各自带有自己的 `meson.build`，**未接入** `app/meson.build`，

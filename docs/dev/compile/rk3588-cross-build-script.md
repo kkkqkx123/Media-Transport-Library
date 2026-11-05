@@ -65,7 +65,7 @@ script/build_rk3588_cross.sh --fetch
 ## 5. 构建产物与验证
 
 - `libmtl.so`：`$SYSROOT/usr/lib/aarch64-linux-gnu/libmtl.so`（aarch64）。
-- 应用：`app/rk3588_live_tx/build-aarch64/live_ingest`、`app/rk3588_playout_rx/build-aarch64/file_playout_tx`（及 `file_playout_rx`）。
+- 应用：`app/rk3588_live_tx/build-aarch64/live_ingest`（TX-only）、`app/rk3588_playout_rx/build-aarch64/file_playout_rx`（RX-only）。`file_playout_tx` 不再构建（发送传输已迁出/删除）。
 - 脚本末尾自动执行 `file`/`test -x` 断言；若失败请检查 sysroot `.pc` 是否齐全（RB16）。
 
 ## 6. 常见问题

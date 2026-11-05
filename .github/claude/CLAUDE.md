@@ -4,7 +4,14 @@
 
 This fork's goal is to run end-to-end ST 2110 media pipelines on the Rockchip RK3588 (ARM) using MTL as the transport layer. Upstream MTL targets Intel x86 + E810 NICs; the rk3588 apps prove the same stack on ARM with software pacing. Analysis lives in `docs/analysis/`.
 
-Two standalone apps live on the `feat/rk3588-apps` branch (commit `add rk3568 app`), each with its own `meson.build` and **not** wired into `app/meson.build` — build them separately with `meson setup build && ninja -C build` inside their directory. They depend on Rockchip MPP (codec), RGA, DRM, V4L2, and ALSA.
+Two standalone RK3588 apps live on the `feat/rk3588-apps` branch, each with its own `meson.build` and **not** wired into `app/meson.build`. They are cross-compiled only (aarch64/RK3588 hardware): they depend on Rockchip MPP, RGA, DRM, V4L2, and ALSA and have no desktop/x86 fallback. Build them separately inside their directory with an aarch64 cross file (see `docs/dev/compile/rk3588-apps-build.md`):
+
+```bash
+meson setup build --cross-file <sysroot>/aarch64.ini
+ninja -C build
+```
+
+Outputs: `app/rk3588_live_tx/build/live_ingest` (TX-only) and `app/rk3588_playout_rx/build/file_playout_rx` (RX-only).
 
 | App | What it does |
 |---|---|
@@ -85,6 +92,18 @@ MTL_INSTALL_PREFIX=$PWD/.local_install ./build.sh   # local prefix install
 Each subdirectory (`app/`, `tests/`, `plugins/`, `manager/`, `tests/tools/RxTxApp/`) is its own meson project. Library-only incremental rebuild: `ninja -C build`.
 
 DPDK must be built and installed first (patched from `patches/`); pinned dependency versions live in `versions.env`.
+
+### RK3588 apps (cross-compile only)
+
+`app/rk3588_live_tx` and `app/rk3588_playout_rx` are **not** part of `./build.sh` and are **not** built on x86. They require the aarch64 sysroot + ARM GNU toolchain + `mtl-pkg-config` wrapper (see `docs/dev/compile/rk3588-apps-build.md`). Minimal flow:
+
+```bash
+export PATH=<toolchain>/bin:$PATH
+meson setup build --cross-file <sysroot>/aarch64.ini
+ninja -C build
+```
+
+For LSP/clangd, keep a local build dir (e.g. `build/`) with `compile_commands.json`; for the compile server use `build-aarch64/` via `script/build_rk3588_cross.sh`.
 
 ---
 

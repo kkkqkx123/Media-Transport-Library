@@ -385,8 +385,7 @@ assert_products() {
 	test -f "$SYSROOT/usr/lib/aarch64-linux-gnu/libmtl.so" || { log_error "libmtl.so missing"; exit 1; }
 	if run_stage apps; then
 		test -x "$repo_dir/app/rk3588_live_tx/build-aarch64/live_ingest" || log_warning "live_ingest not built (dependency missing?)"
-		test -x "$repo_dir/app/rk3588_playout_rx/build-aarch64/file_playout_tx" || log_warning "file_playout_tx not built"
-		[[ "$MP4_RX" == "1" ]] && { test -x "$repo_dir/app/rk3588_playout_rx/build-aarch64/file_playout_rx" || log_warning "file_playout_rx not built"; }
+		test -x "$repo_dir/app/rk3588_playout_rx/build-aarch64/file_playout_rx" || log_warning "file_playout_rx not built (dependency missing?)"
 	fi
 	file "$SYSROOT/usr/lib/aarch64-linux-gnu/libmtl.so" 2>/dev/null | grep -q aarch64 && log_success "libmtl.so is aarch64"
 }

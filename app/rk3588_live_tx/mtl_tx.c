@@ -4,6 +4,8 @@
  */
 
 #include "mtl_tx.h"
+#include "au_trace.h"
+#include "tx_tai_ts.h"
 #include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -23,6 +25,7 @@ enum fb_state {
 struct mtl_tx {
     struct mtl_tx_params cfg;
     st22_tx_handle       handle;
+    tx_tai_ts            tai;
 
     int                  fb_cnt;
     void**               fb_addr;
@@ -44,6 +47,13 @@ static int tx_get_next_frame(void* priv, uint16_t* next_frame_idx,
         if (atomic_compare_exchange_strong(&tx->fb_states[i], &expected, FB_SENDING)) {
             *next_frame_idx = (uint16_t)i;
             meta->codestream_size = tx->fb_sizes[i];
+            {
+                uint64_t mtl_ts = meta->timestamp;
+                tx_tai_ts_fill(&tx->tai, &meta->tfmt, &meta->timestamp, meta->epoch,
+                               mtl_ts);
+            }
+            au_trace_record(AU_TRACE_TX_WIRE, tx->fb_addr[i], tx->fb_sizes[i],
+                            (int64_t)meta->timestamp);
             return 0;
         }
     }
@@ -71,7 +81,12 @@ struct mtl_tx* mtl_tx_create(struct mtl_tx_params* p) {
     struct mtl_tx* tx = calloc(1, sizeof(*tx));
     if (!tx) return NULL;
     tx->cfg = *p;
-    tx->fb_cnt = p->framebuff_cnt;
+    tx->fb_cnt = p->framebuff_cnt > 0 ? p->framebuff_cnt : 8;
+
+    float fps = p->fps > 0 ? p->fps : 60.0f;
+    uint64_t frame_period_ns =
+        (uint64_t)(1000000000.0 / (double)fps + 0.5);
+    tx_tai_ts_init(&tx->tai, p->st, frame_period_ns, p->use_tai_timestamp);
 
     tx->fb_addr   = calloc((size_t)tx->fb_cnt, sizeof(void*));
     tx->fb_sizes  = calloc((size_t)tx->fb_cnt, sizeof(size_t));
@@ -95,11 +110,13 @@ struct mtl_tx* mtl_tx_create(struct mtl_tx_params* p) {
     ops.pack_type          = ST22_PACK_CODESTREAM;
     ops.num_port           = 1;
     ops.flags |= ST22_TX_FLAG_DISABLE_BOXES;
+    if (p->use_tai_timestamp)
+        ops.flags |= ST22_TX_FLAG_USER_TIMESTAMP | ST22_TX_FLAG_USER_PACING;
     ops.framebuff_cnt      = (uint16_t)tx->fb_cnt;
     ops.framebuff_max_size = p->framebuff_max;
     ops.get_next_frame     = tx_get_next_frame;
     ops.notify_frame_done  = tx_notify_frame_done;
-    ops.payload_type       = 112;
+    ops.payload_type       = p->payload_type ? p->payload_type : 112;
     {
         unsigned int a, b, c, d;
         if (!p->dip_addr ||
@@ -122,8 +139,9 @@ struct mtl_tx* mtl_tx_create(struct mtl_tx_params* p) {
     for (int i = 0; i < tx->fb_cnt; i++)
         tx->fb_addr[i] = st22_tx_get_fb_addr(tx->handle, (uint16_t)i);
 
-    printf("mtl_tx: %d fbs x %zu bytes, %.0ffps ready (direct-write)\n",
-           tx->fb_cnt, p->framebuff_max, (double)p->fps);
+    printf("mtl_tx: %d fbs x %zu bytes, %.3ffps ready (direct-write)%s\n",
+           tx->fb_cnt, p->framebuff_max, (double)p->fps,
+           p->use_tai_timestamp ? " tai-ts" : "");
     return tx;
 
 fail:
@@ -147,6 +165,11 @@ int mtl_tx_start(struct mtl_tx* tx) {
     if (!tx) return -1;
     atomic_store(&tx->running, true);
     return 0;
+}
+
+void mtl_tx_tai_reset(struct mtl_tx* tx) {
+    if (!tx) return;
+    tx_tai_ts_reset(&tx->tai);
 }
 
 void mtl_tx_stop(struct mtl_tx* tx) {

@@ -1,6 +1,7 @@
 #ifndef _LIVE_INGEST_MTL_TX_H_
 #define _LIVE_INGEST_MTL_TX_H_
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <mtl_api.h>
@@ -17,10 +18,16 @@ struct mtl_tx_params {
     uint16_t     udp_port;
     const char*  dip_addr;
     const char*  port_name;
+    /** ST22 USER_TIMESTAMP + USER_PACING (false = MTL default pacing). */
+    bool         use_tai_timestamp;
+    uint8_t      payload_type; /* 0 = default 112 */
 };
 
 struct mtl_tx* mtl_tx_create(struct mtl_tx_params* p);
 void mtl_tx_free(struct mtl_tx* tx);
+
+/** Re-anchor TAI timeline (playlist file switch / seek). */
+void mtl_tx_tai_reset(struct mtl_tx* tx);
 
 /** Mark session active (encode thread may acquire framebuffs). */
 int  mtl_tx_start(struct mtl_tx* tx);

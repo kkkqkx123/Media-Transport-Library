@@ -30,6 +30,7 @@ struct live_ingest_cfg live_ingest_cfg_defaults(void) {
         .height      = 1080,
         .fps         = 60.0f,
         .udp_port    = 15000,
+        .audio_udp_port = 15002,
         .num_slices  = 1,
         .bitrate_bps = 40000000,
         .gop_size    = 60,
@@ -41,6 +42,12 @@ struct live_ingest_cfg live_ingest_cfg_defaults(void) {
         .cpu_capture = 1,
         .cpu_encode  = 2,
         .log_level   = "info",
+        .file_source = false,
+        .mp4_count   = 0,
+        .loop        = true,
+        .seek_ms     = 0,
+        .codestream_size = 512 * 1024,
+        .use_tai     = false,
     };
     return c;
 }
@@ -124,6 +131,44 @@ int live_ingest_config_load(const char* path, struct live_ingest_cfg* cfg) {
         cfg->cpu_capture = json_get_int(aff, "capture", cfg->cpu_capture);
         cfg->cpu_encode  = json_get_int(aff, "encoder", cfg->cpu_encode);
     }
+
+    /* file frame-source plugin (phase2): source=file selects MP4 input */
+    const char* src = json_get_string(root, "source");
+    if (src && !strcmp(src, "file"))
+        cfg->file_source = true;
+    const char* mp4 = json_get_string(root, "mp4_file");
+    if (mp4 && mp4[0] && cfg->mp4_count < LIVE_INGEST_MAX_FILES) {
+        snprintf(cfg->mp4_files[cfg->mp4_count++], LIVE_INGEST_MAX_PATH, "%s", mp4);
+        cfg->file_source = true;
+    }
+    struct json_object* plist = NULL;
+    if (json_object_object_get_ex(root, "mp4_files", &plist) &&
+        json_object_is_type(plist, json_type_array)) {
+        int n = (int)json_object_array_length(plist);
+        for (int i = 0; i < n && cfg->mp4_count < LIVE_INGEST_MAX_FILES; i++) {
+            struct json_object* e = json_object_array_get_idx(plist, i);
+            if (e) {
+                snprintf(cfg->mp4_files[cfg->mp4_count++], LIVE_INGEST_MAX_PATH,
+                         "%s", json_object_get_string(e));
+                cfg->file_source = true;
+            }
+        }
+    }
+    struct json_object* lv = NULL;
+    if (json_object_object_get_ex(root, "loop", &lv))
+        cfg->loop = json_object_get_boolean(lv);
+    struct json_object* sk = NULL;
+    if (json_object_object_get_ex(root, "seek_ms", &sk))
+        cfg->seek_ms = json_object_get_int64(sk);
+    struct json_object* au = NULL;
+    if (json_object_object_get_ex(root, "audio_udp_port", &au))
+        cfg->audio_udp_port = (uint16_t)json_object_get_int(au);
+    struct json_object* cs = NULL;
+    if (json_object_object_get_ex(root, "codestream_size", &cs))
+        cfg->codestream_size = (size_t)json_object_get_int64(cs);
+    struct json_object* tai = NULL;
+    if (json_object_object_get_ex(root, "use_tai", &tai))
+        cfg->use_tai = json_object_get_boolean(tai);
 
     const char* ll = json_get_string(root, "log_level");
     if (ll) dup_str(&cfg->log_level, g_str.log_level,

@@ -3,7 +3,7 @@
 #include "ring_buffer.h"
 #include "slab_pool.h"
 #include "pipeline_common.h"
-#include "../shared/au_trace.h"
+#include "au_trace.h"
 #include "sei_timestamp.h"
 #include <pthread.h>
 #include <sched.h>

@@ -17,9 +17,13 @@ include/rk3588_common/
   display_layout.h    # 布局矩形数学与 pip_stream 结构（第一批由 file_playout 上移）
   drm_mode.h          # 显示模式字符串/分辨率数学（第一批由 file_playout 上移）
   ptp_time.h          # PTP 时间源封装（第一批由 file_playout 上移）
+  au_trace.h          # E2E AU 追踪（TX/RX 共用，阶段2由 file_playout/shared 上移）
+  extradata_handler.h # SPS/PPS 拼接（TX 拼接与 RX 解码辅助共用，阶段2上移）
+  tx_tai_ts.h         # TX 用户时间戳/TAI 锚点（编码侧发送机制，阶段2上移）
 src/
   ring_buffer.c  slab_pool.c  timer.c  sps_vui.c  sei_timestamp.c
   display_layout.c  drm_mode.c  ptp_time.c
+  au_trace.c  extradata_handler.c  tx_tai_ts.c
 ```
 
 设计约束与上游 MTL 一致：这些组件服务数据面，避免堆分配与阻塞调用；新组件加入前先确认两个应用确实都需要，避免单应用特有逻辑上提。

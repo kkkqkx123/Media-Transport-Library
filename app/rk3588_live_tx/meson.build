@@ -16,30 +16,36 @@ librockchip_mpp_dep = dependency('rockchip_mpp', required: true)
 librga_dep = dependency('librga', required: true)
 mtl_dep = dependency('mtl', required: true)
 libjson_c_dep = dependency('json-c', required: true)
+libavformat_dep = dependency('libavformat', required: true)
+libavcodec_dep = dependency('libavcodec', required: true)
+libavutil_dep = dependency('libavutil', required: true)
 
 common_c_args = ['-DHAVE_MTL=1']
 common_inc = include_directories('../rk3588_common/include',
                                 '../rk3588_common/include/rk3588_common')
 live_ingest_inc = [include_directories('.'), common_inc]
 
-# ---- Phase 1: HAL ----
+# ---- Phase 1: HAL (DMA + TX time/trace mechanisms from rk3588_common) ----
 live_ingest_hal_sources = files(
   'hal/dma_allocator.c',
   'hal/dma32_allocator.c',
   '../rk3588_common/src/timer.c',
   '../rk3588_common/src/slab_pool.c',
   '../rk3588_common/src/sei_timestamp.c',
+  '../rk3588_common/src/au_trace.c',
+  '../rk3588_common/src/tx_tai_ts.c',
+  '../rk3588_common/src/extradata_handler.c',
 )
 
 live_ingest_hal = static_library('live_ingest_hal', live_ingest_hal_sources,
   c_args: common_c_args,
-  dependencies: [libdrm_dep],
+  dependencies: [libdrm_dep, libpthread_dep, mtl_dep],
   include_directories: live_ingest_inc,
 )
 
 executable('test_hal', 'tests/test_hal.c',
   link_with: live_ingest_hal,
-  dependencies: [libdrm_dep],
+  dependencies: [libdrm_dep, libpthread_dep, mtl_dep],
   include_directories: live_ingest_inc,
 )
 
@@ -71,8 +77,18 @@ executable('test_codec', 'tests/test_codec.c',
 live_ingest_pipe = static_library('live_ingest_pipe',
   '../rk3588_common/src/ring_buffer.c',
   'pipeline/tx_pipeline.c',
+  'mtl_tx_audio.c',
   link_with: [live_ingest_hal, live_ingest_codec, live_ingest_io],
   dependencies: [libdrm_dep, librga_dep, librockchip_mpp_dep, libpthread_dep, mtl_dep],
+  include_directories: live_ingest_inc,
+)
+
+# ---- Phase 4b: File frame-source plugin (phase2, MP4 → send sink) ----
+live_ingest_file = static_library('live_ingest_file',
+  'file/file_source.c',
+  link_with: [live_ingest_hal, live_ingest_pipe],
+  dependencies: [libpthread_dep, mtl_dep,
+                 libavformat_dep, libavcodec_dep, libavutil_dep],
   include_directories: live_ingest_inc,
 )
 
@@ -82,14 +98,16 @@ executable('test_pipeline', 'tests/test_pipeline.c',
   include_directories: live_ingest_inc,
 )
 
-# ---- Phase 5: live_ingest TX app ----
+# ---- Phase 5: live_ingest TX app (hdmi + file sources) ----
 executable('live_ingest', files(
     'live_ingest_app.c',
     'live_ingest_config.c',
     'mtl_tx.c',
   ),
-  link_with: [live_ingest_hal, live_ingest_codec, live_ingest_io, live_ingest_pipe],
+  link_with: [live_ingest_hal, live_ingest_codec, live_ingest_io,
+              live_ingest_pipe, live_ingest_file],
   dependencies: [libdrm_dep, librga_dep, librockchip_mpp_dep, libpthread_dep,
-                 mtl_dep, libjson_c_dep],
+                 mtl_dep, libjson_c_dep,
+                 libavformat_dep, libavcodec_dep, libavutil_dep],
   include_directories: live_ingest_inc,
 )

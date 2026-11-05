@@ -1,6 +1,8 @@
 #include "live_ingest_config.h"
 #include "slab_pool.h"
 #include "mtl_tx.h"
+#include "mtl_tx_audio.h"
+#include "file/file_source.h"
 #include "pipeline/tx_pipeline.h"
 #include "ring_buffer.h"
 #include <errno.h>
@@ -19,7 +21,8 @@ static void sig_handler(int s) { (void)s; atomic_store(&g_run, false); }
 
 static void usage(const char* prog) {
     fprintf(stderr, "Usage:\n");
-    fprintf(stderr, "  %s [sec] [--config FILE] [--port P] [--lip IP] [--dip IP] [--udp PORT] [--log-level L]\n", prog);
+    fprintf(stderr, "  %s [sec] [--config FILE] [--port P] [--lip IP] [--dip IP] [--udp PORT] [--audio-udp PORT] [--log-level L]\n", prog);
+    fprintf(stderr, "  %s [sec] --source file --mp4 FILE [--loop/--no-loop] [--audio-udp PORT] [--use-tai]\n", prog);
 }
 
 static int parse_args(int argc, char** argv, struct live_ingest_cfg* cfg) {
@@ -39,6 +42,24 @@ static int parse_args(int argc, char** argv, struct live_ingest_cfg* cfg) {
             cfg->tx_dip = argv[++i];
         } else if (strcmp(argv[i], "--udp") == 0 && i + 1 < argc) {
             cfg->udp_port = (uint16_t)atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--audio-udp") == 0 && i + 1 < argc) {
+            cfg->audio_udp_port = (uint16_t)atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--source") == 0 && i + 1 < argc) {
+            const char* s = argv[++i];
+            cfg->file_source = (strcmp(s, "file") == 0);
+        } else if (strcmp(argv[i], "--mp4") == 0 && i + 1 < argc) {
+            const char* mp = argv[++i];
+            if (cfg->mp4_count < LIVE_INGEST_MAX_FILES) {
+                snprintf(cfg->mp4_files[cfg->mp4_count++], LIVE_INGEST_MAX_PATH,
+                         "%s", mp);
+                cfg->file_source = true;
+            }
+        } else if (strcmp(argv[i], "--loop") == 0) {
+            cfg->loop = true;
+        } else if (strcmp(argv[i], "--no-loop") == 0) {
+            cfg->loop = false;
+        } else if (strcmp(argv[i], "--use-tai") == 0) {
+            cfg->use_tai = true;
         } else if (strcmp(argv[i], "--log-level") == 0 && i + 1 < argc) {
             cfg->log_level = argv[++i];
         } else {
@@ -109,16 +130,18 @@ static int tx_stack_create(struct tx_stack* ts, struct live_ingest_cfg* cfg,
     ts->st = st;
     if (!ts->st) return -1;
 
+    size_t fb_max = cfg->codestream_size ? cfg->codestream_size : 512 * 1024;
     struct mtl_tx_params mtxp = {
         .st = ts->st,
         .framebuff_cnt = 8,
-        .framebuff_max = 512 * 1024,
+        .framebuff_max = fb_max,
         .width = cfg->width,
         .height = cfg->height,
         .fps = cfg->fps,
         .udp_port = cfg->udp_port,
         .dip_addr = cfg->tx_dip,
         .port_name = cfg->tx_port,
+        .use_tai_timestamp = cfg->use_tai,
     };
     ts->mtx = mtl_tx_create(&mtxp);
     if (!ts->mtx) return -1;
@@ -173,6 +196,141 @@ static void tx_stack_free(struct tx_stack* ts) {
     if (ts->st) { mtl_stop(ts->st); mtl_uninit(ts->st); }
 }
 
+/* ---- File path: file_source → mtl_tx (video) + mtl_tx_audio ---- */
+struct file_stack {
+    mtl_handle st;
+    struct mtl_tx* vtx;
+    struct mtl_tx_audio* atx;
+    struct file_source* fs;
+    struct tx_mtl_sink_ops vsink;
+};
+
+static int file_video_acquire(void* priv, uint16_t* idx, void** addr) {
+    return mtl_tx_acquire_fb((struct mtl_tx*)priv, idx, addr);
+}
+
+static int file_video_publish(void* priv, uint16_t idx, size_t size) {
+    return mtl_tx_publish_fb((struct mtl_tx*)priv, idx, size);
+}
+
+static void file_video_abort(void* priv, uint16_t idx) {
+    mtl_tx_abort_fb((struct mtl_tx*)priv, idx);
+}
+
+static int file_stack_create(struct file_stack* fss, struct live_ingest_cfg* cfg,
+                             mtl_handle st) {
+    memset(fss, 0, sizeof(*fss));
+    fss->st = st;
+    if (!fss->st) return -1;
+    if (cfg->mp4_count <= 0) {
+        fprintf(stderr, "file_source: no MP4 file (--mp4 or mp4_file)\n");
+        return -EINVAL;
+    }
+    int pw = 0, ph = 0;
+    float pfps = 0.0f;
+    if (file_source_probe(cfg->mp4_files[0], &pw, &ph, &pfps) == 0) {
+        if (pw > 0 && ph > 0) {
+            if (cfg->width != pw || cfg->height != ph)
+                printf("file_source: probe %s → %dx%d (cfg %dx%d), align to file\n",
+                       cfg->mp4_files[0], pw, ph, cfg->width, cfg->height);
+            cfg->width = pw;
+            cfg->height = ph;
+        }
+        if (pfps > 0.0f) {
+            if (cfg->fps <= 0.0f || (cfg->fps > 60.0f - 0.01f && cfg->fps < 60.0f + 0.01f))
+                cfg->fps = pfps;
+            else if (cfg->fps != pfps)
+                fprintf(stderr, "file_source: fps mismatch cfg=%.3f file=%.3f, use cfg\n",
+                        (double)cfg->fps, (double)pfps);
+            else
+                cfg->fps = pfps;
+        }
+        printf("file_source: probe %s → %dx%d@%.3ffps\n",
+               cfg->mp4_files[0], cfg->width, cfg->height, (double)cfg->fps);
+    }
+    size_t fb_max = cfg->codestream_size ? cfg->codestream_size : 512 * 1024;
+    struct mtl_tx_params mtxp = {
+        .st = fss->st,
+        .framebuff_cnt = 8,
+        .framebuff_max = fb_max,
+        .width = cfg->width,
+        .height = cfg->height,
+        .fps = cfg->fps,
+        .udp_port = cfg->udp_port,
+        .dip_addr = cfg->tx_dip,
+        .port_name = cfg->tx_port,
+        .use_tai_timestamp = cfg->use_tai,
+    };
+    fss->vtx = mtl_tx_create(&mtxp);
+    if (!fss->vtx) return -1;
+    fss->vsink.priv = fss->vtx;
+    fss->vsink.acquire_fb = file_video_acquire;
+    fss->vsink.publish_fb = file_video_publish;
+    fss->vsink.abort_fb = file_video_abort;
+
+    struct mtl_tx_audio_params atxp = {
+        .st = fss->st,
+        .framebuff_cnt = 32,
+        .udp_port = cfg->audio_udp_port,
+        .dip_addr = cfg->tx_dip,
+        .port_name = cfg->tx_port,
+        .fmt = ST30_FMT_PCM16,
+        .sampling = ST30_SAMPLING_48K,
+        .ptime = ST30_PTIME_1MS,
+        .channel = 2,
+        .use_tai_timestamp = cfg->use_tai,
+    };
+    fss->atx = mtl_tx_audio_create(&atxp);
+    if (!fss->atx) {
+        fprintf(stderr, "file_source: audio TX unavailable, video-only\n");
+    }
+
+    struct file_source_params fsp = {0};
+    fsp.st = fss->st;
+    fsp.video_sink = &fss->vsink;
+    fsp.audio_tx = fss->atx;
+    for (int i = 0; i < cfg->mp4_count && i < FILE_SOURCE_MAX_FILES; i++)
+        snprintf(fsp.files[i], sizeof(fsp.files[i]), "%s", cfg->mp4_files[i]);
+    fsp.file_count = cfg->mp4_count;
+    fsp.loop = cfg->loop;
+    fsp.seek_ms = cfg->seek_ms;
+    fsp.codestream_max = fb_max;
+    fsp.width = cfg->width;
+    fsp.height = cfg->height;
+    fsp.fps = cfg->fps;
+    fss->fs = file_source_create(&fsp);
+    if (!fss->fs) {
+        if (fss->atx) { mtl_tx_audio_free(fss->atx); fss->atx = NULL; }
+        mtl_tx_free(fss->vtx);
+        fss->vtx = NULL;
+        return -1;
+    }
+    printf("FILE: %d file(s) %dx%d@%.3f udp=%u audio_udp=%u%s loop=%s\n",
+           cfg->mp4_count, cfg->width, cfg->height, (double)cfg->fps,
+           cfg->udp_port, cfg->audio_udp_port,
+           cfg->use_tai ? " tai-ts" : "", cfg->loop ? "on" : "off");
+    return 0;
+}
+
+static int file_stack_start(struct file_stack* fss) {
+    if (mtl_tx_start(fss->vtx) != 0) return -1;
+    if (fss->atx && mtl_tx_audio_start(fss->atx) != 0) return -1;
+    if (file_source_start(fss->fs, &g_run) != 0) {
+        if (fss->atx) mtl_tx_audio_stop(fss->atx);
+        mtl_tx_stop(fss->vtx);
+        return -1;
+    }
+    return 0;
+}
+
+static void file_stack_free(struct file_stack* fss) {
+    if (!fss) return;
+    if (fss->fs) { file_source_stop(fss->fs); file_source_free(fss->fs); fss->fs = NULL; }
+    if (fss->atx) { mtl_tx_audio_stop(fss->atx); mtl_tx_audio_free(fss->atx); fss->atx = NULL; }
+    if (fss->vtx) { mtl_tx_stop(fss->vtx); mtl_tx_free(fss->vtx); fss->vtx = NULL; }
+    if (fss->st) { mtl_stop(fss->st); mtl_uninit(fss->st); fss->st = 0; }
+}
+
 int main(int argc, char** argv) {
     signal(SIGINT, sig_handler);
 
@@ -197,6 +355,26 @@ int main(int argc, char** argv) {
     if (mtl_start(st) != 0) { mtl_uninit(st); return 1; }
     printf("MTL: %s (lip=%s) started\n", cfg.tx_port, cfg.tx_lip);
     apply_log_level(st, cfg.log_level);
+
+    if (cfg.file_source) {
+        struct file_stack fss;
+        if (file_stack_create(&fss, &cfg, st) != 0) {
+            mtl_stop(st);
+            mtl_uninit(st);
+            return 1;
+        }
+        if (file_stack_start(&fss) != 0) {
+            file_stack_free(&fss);
+            return 1;
+        }
+        int t = cfg.test_time;
+        while (atomic_load(&g_run) && t > 0) {
+            sleep(1);
+            t--;
+        }
+        file_stack_free(&fss);
+        return 0;
+    }
 
     struct tx_stack ts;
     int rc = tx_stack_create(&ts, &cfg, st);

@@ -1,6 +1,6 @@
 #include "mtl_rx_mp4.h"
 #include "ring_buffer.h"
-#include "../shared/au_trace.h"
+#include "au_trace.h"
 #include "pipeline_common.h"
 #include "media_clk.h"
 #include <errno.h>

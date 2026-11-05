@@ -4,7 +4,7 @@
 #include "extradata_handler.h"
 #include "mtl_tx_video.h"
 #include "../shared/au_trace.h"
-#include "../shared/e2e_stamp.h"
+#include "sei_timestamp.h"
 #include "mtl_tx_audio.h"
 #include <errno.h>
 #include <libavutil/avutil.h>
@@ -135,20 +135,21 @@ static int tx_publish_video_frame(tx_scheduler* s, struct tx_video_lane* lane,
     int ret = mtl_tx_video_acquire_fb(lane->vtx, &idx, &addr);
     if (ret < 0) return ret;
 
-    size_t stamp_sz = e2e_stamp_wire_size();
+    size_t stamp_sz = SEI_TS_NAL_SIZE;
     if (size + stamp_sz > codestream_max) {
         mtl_tx_video_abort_fb(lane->vtx, idx);
         return -EFBIG;
     }
 
     uint64_t capture_tai = tx_capture_tai_ns(s);
-    e2e_stamp_write(addr, capture_tai);
+    uint32_t frame_seq = (uint32_t)(lane->stat_video_frames + 1);
+    sei_timestamp_build((uint8_t*)addr, frame_seq, capture_tai);
     memcpy((uint8_t*)addr + stamp_sz, data, size);
     size_t wire_size = size + stamp_sz;
 
     static int stamp_log_once;
     if (!stamp_log_once++) {
-        printf("tx_sched: E2E in-band stamp enabled (+%zu B), capture_tai=%llu\n",
+        printf("tx_sched: E2E in-band SEI stamp enabled (+%zu B), capture_tai=%llu\n",
                stamp_sz, (unsigned long long)capture_tai);
     }
 

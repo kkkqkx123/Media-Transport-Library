@@ -4,7 +4,7 @@
 #include "slab_pool.h"
 #include "pipeline_common.h"
 #include "../shared/au_trace.h"
-#include "../shared/e2e_stamp.h"
+#include "sei_timestamp.h"
 #include <pthread.h>
 #include <sched.h>
 #include <stdatomic.h>
@@ -115,14 +115,16 @@ static void* bridge_thread(void* arg) {
         size_t     sz            = mp->size;
         uint64_t   tai_ns        = mp->tai_ns;
         uint64_t   capture_tai   = 0;
-        size_t     payload_off     = 0;
-        size_t     payload_sz      = sz;
 
-        if (e2e_stamp_try_parse(copy, sz, &capture_tai, &payload_off, &payload_sz)) {
+        /* Unified E2E carrier: in-band SEI NAL (same as live_ingest TX). */
+        uint32_t seq = 0;
+        uint64_t ts = 0;
+        size_t sei_sz = sz;
+        if (sei_timestamp_peek(copy, sei_sz, &seq, &ts) &&
+            sei_timestamp_extract(copy, &sei_sz, &seq, &ts)) {
+            capture_tai = ts;
             b->stat_stamp_ok++;
-            if (payload_off > 0)
-                memmove(copy, copy + payload_off, payload_sz);
-            sz = payload_sz;
+            sz = sei_sz;
         }
 
         au_trace_record(AU_TRACE_RX_BRIDGE, copy, sz, (int64_t)tai_ns);

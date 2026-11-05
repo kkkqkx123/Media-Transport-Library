@@ -25,10 +25,12 @@ libavutil_dep = dependency('libavutil', required: true)
 enable_alsa = get_option('enable_alsa')
 if enable_alsa
   libalsa_dep = dependency('alsa', required: true)
-  common_c_args += ['-DHAVE_ALSA=1']
 endif
 
 common_c_args = ['-DHAVE_MTL=1']
+if enable_alsa
+  common_c_args += ['-DHAVE_ALSA=1']
+endif
 common_inc = include_directories('../rk3588_common/include',
                                 '../rk3588_common/include/rk3588_common')
 live_ingest_inc = [include_directories('.'), common_inc]
@@ -58,10 +60,12 @@ executable('test_hal', 'tests/test_hal.c',
 )
 
 # ---- Phase 2: IO (V4L2 capture + optional ALSA audio capture) ----
-io_sources = files('io/v4l2_capturer.c')
+# alsa_capturer.c is always compiled; it gates its real implementation on
+# HAVE_ALSA and provides a failing stub otherwise, so live_tx_app keeps
+# linking with -Denable_alsa=false (video-only).
+io_sources = files('io/v4l2_capturer.c', 'io/alsa_capturer.c')
 io_deps = [libdrm_dep, libpthread_dep]
 if enable_alsa
-  io_sources += files('io/alsa_capturer.c')
   io_deps += libalsa_dep
 endif
 live_ingest_io = static_library('live_ingest_io',

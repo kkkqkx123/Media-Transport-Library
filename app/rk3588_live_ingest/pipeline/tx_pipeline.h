@@ -48,6 +48,7 @@ struct tx_pipeline_params {
     int         rga_pool_size;  /* RGA output buffer pool (4) */
 
     /* codec */
+    enum codec_format codec; /* CODEC_FMT_H264 default (0); backend sets H265 */
     int         bitrate_bps;    /* e.g. 40000000 */
     int         gop_size;       /* e.g. 60 */
     int         num_slices;     /* 1 = frame-level, 2 = slice-level */

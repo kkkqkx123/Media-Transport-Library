@@ -127,9 +127,9 @@ static int tx_pipeline_rebuild(struct tx_pipeline* tp) {
         tp->encoder = NULL;
     }
 
-    /* encoder */
+    /* encoder (codec follows the create-time params, H264 when unset) */
     struct codec_config codec_cfg = {
-        .format       = CODEC_FMT_H264,
+        .format       = tp->cfg.codec,
         .width        = tp->cfg.width, .height = tp->cfg.height,
         .fps          = tp->cfg.fps,
         .bitrate_bps  = tp->cfg.bitrate_bps,
@@ -626,7 +626,7 @@ struct tx_pipeline* tx_pipeline_create(struct tx_pipeline_params* p) {
 
     /* encoder recv uses slab as short-lived staging (one copy to MTL fb in e2e mode) */
     struct codec_config codec_cfg = {
-        .format       = CODEC_FMT_H264,
+        .format       = p->codec,
         .width        = p->width, .height = p->height,
         .fps          = p->fps,
         .bitrate_bps  = p->bitrate_bps,

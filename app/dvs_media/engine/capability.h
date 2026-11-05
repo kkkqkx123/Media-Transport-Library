@@ -15,8 +15,13 @@ typedef struct {
     int*   output_max_h;
     int*   output_max_hz;
     int    output_port_count;
-    /* input ports (capture); probed from V4L2 devices, empty when absent */
+    /* input ports (capture); probed from V4L2 devices, empty when absent.
+     * Parallel arrays share input_port_count; device/stable/signal come from
+     * the same scan table the TX backend resolves (physical identity first). */
     char** input_ports;
+    char** input_devices;  /* current /dev/videoN path per port */
+    char** input_stable;   /* stable physical identity per port */
+    int*   input_signal;   /* 1 = signal present */
     int    input_port_count;
 
     /* max simultaneous decode sessions (MPP measured; default conservative) */

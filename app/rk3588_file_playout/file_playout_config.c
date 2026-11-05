@@ -868,3 +868,156 @@ mtl_handle file_playout_mtl_init(const file_playout_cfg* cfg,
 
     return st;
 }
+
+/* Pick the worker list for a dual-port handle: explicit arg wins, otherwise
+ * the cfg shared list, then rx, then tx. Empty means MTL auto-select. */
+static const char* file_playout_dual_pick_lcores(const file_playout_cfg* cfg,
+                                                 const char* lcores) {
+    if (lcores && lcores[0]) return lcores;
+    if (!cfg) return NULL;
+    if (cfg->mtl_lcores_shared[0]) return cfg->mtl_lcores_shared;
+    if (cfg->mtl_lcores_rx[0]) return cfg->mtl_lcores_rx;
+    if (cfg->mtl_lcores_tx[0]) return cfg->mtl_lcores_tx;
+    return NULL;
+}
+
+mtl_handle file_playout_mtl_init_dual(const file_playout_cfg* cfg,
+                                   uint16_t tx_q, uint16_t rx_q,
+                                   enum mtl_log_level log_level,
+                                   const char* lcores) {
+    if (!cfg) return NULL;
+    const char* tx_port = cfg->tx_port[0] ? cfg->tx_port : NULL;
+    const char* rx_port = cfg->rx_port[0] ? cfg->rx_port : NULL;
+    if (!tx_port && !rx_port) {
+        fprintf(stderr, "MTL dual init: no tx_port nor rx_port configured\n");
+        return NULL;
+    }
+    bool same = tx_port && rx_port && strcmp(tx_port, rx_port) == 0;
+
+    file_playout_ptp_mode ptp_mode = cfg->ptp_mode;
+    int utc_offset = cfg->ptp_utc_offset;
+
+    struct mtl_init_params mtp;
+    memset(&mtp, 0, sizeof(mtp));
+    mtp.log_level = log_level;
+    mtp.flags |= MTL_FLAG_BIND_NUMA;
+
+    if (same) {
+        mtp.num_ports = 1;
+        strncpy(mtp.port[MTL_PORT_P], tx_port, MTL_PORT_MAX_LEN - 1);
+        mtp.pmd[MTL_PORT_P] = file_playout_pmd_from_port(tx_port);
+        mtp.net_proto[MTL_PORT_P] = MTL_PROTO_STATIC;
+        const char* lip = cfg->tx_lip[0] ? cfg->tx_lip : cfg->rx_lip;
+        strncpy((char*)mtp.sip_addr[MTL_PORT_P], lip, MTL_IP_ADDR_LEN - 1);
+        mtp.tx_queues_cnt[MTL_PORT_P] = tx_q;
+        mtp.rx_queues_cnt[MTL_PORT_P] = rx_q;
+    } else if (tx_port && rx_port) {
+        /* P carries TX, R carries RX; sessions select by port name. */
+        mtp.num_ports = 2;
+        strncpy(mtp.port[MTL_PORT_P], tx_port, MTL_PORT_MAX_LEN - 1);
+        mtp.pmd[MTL_PORT_P] = file_playout_pmd_from_port(tx_port);
+        mtp.net_proto[MTL_PORT_P] = MTL_PROTO_STATIC;
+        strncpy((char*)mtp.sip_addr[MTL_PORT_P], cfg->tx_lip, MTL_IP_ADDR_LEN - 1);
+        mtp.tx_queues_cnt[MTL_PORT_P] = tx_q;
+        mtp.rx_queues_cnt[MTL_PORT_P] = 0;
+        strncpy(mtp.port[MTL_PORT_R], rx_port, MTL_PORT_MAX_LEN - 1);
+        mtp.pmd[MTL_PORT_R] = file_playout_pmd_from_port(rx_port);
+        mtp.net_proto[MTL_PORT_R] = MTL_PROTO_STATIC;
+        strncpy((char*)mtp.sip_addr[MTL_PORT_R], cfg->rx_lip, MTL_IP_ADDR_LEN - 1);
+        mtp.tx_queues_cnt[MTL_PORT_R] = 0;
+        mtp.rx_queues_cnt[MTL_PORT_R] = rx_q;
+    } else if (tx_port) {
+        mtp.num_ports = 1;
+        strncpy(mtp.port[MTL_PORT_P], tx_port, MTL_PORT_MAX_LEN - 1);
+        mtp.pmd[MTL_PORT_P] = file_playout_pmd_from_port(tx_port);
+        mtp.net_proto[MTL_PORT_P] = MTL_PROTO_STATIC;
+        strncpy((char*)mtp.sip_addr[MTL_PORT_P], cfg->tx_lip, MTL_IP_ADDR_LEN - 1);
+        mtp.tx_queues_cnt[MTL_PORT_P] = tx_q;
+        mtp.rx_queues_cnt[MTL_PORT_P] = 0;
+    } else {
+        mtp.num_ports = 1;
+        strncpy(mtp.port[MTL_PORT_P], rx_port, MTL_PORT_MAX_LEN - 1);
+        mtp.pmd[MTL_PORT_P] = file_playout_pmd_from_port(rx_port);
+        mtp.net_proto[MTL_PORT_P] = MTL_PROTO_STATIC;
+        strncpy((char*)mtp.sip_addr[MTL_PORT_P], cfg->rx_lip, MTL_IP_ADDR_LEN - 1);
+        mtp.tx_queues_cnt[MTL_PORT_P] = 0;
+        mtp.rx_queues_cnt[MTL_PORT_P] = rx_q;
+    }
+
+    switch (ptp_mode) {
+    case FILE_PLAYOUT_PTP_BUILTIN:
+        mtp.flags |= MTL_FLAG_PTP_ENABLE;
+        printf("MTL: PTP mode=built-in (requires NIC HW timesync)\n");
+        break;
+    case FILE_PLAYOUT_PTP_MONOTONIC:
+        printf("MTL: PTP mode=monotonic (relative anchor only)\n");
+        break;
+    default:
+        mp4_ptp_time_ctx_init(&g_ptp_ctx, utc_offset);
+        mtp.ptp_get_time_fn = mp4_ptp_mtl_time_fn;
+        mtp.priv            = &g_ptp_ctx;
+        printf("MTL: PTP mode=external (linuxptp \u2192 CLOCK_TAI via ptp_get_time_fn)\n");
+        break;
+    }
+
+    bool has_tx = false, has_rx = false;
+    for (int i = 0; i < mtp.num_ports; i++) {
+        if (mtp.tx_queues_cnt[i] > 0) has_tx = true;
+        if (mtp.rx_queues_cnt[i] > 0) has_rx = true;
+        if (mtp.rx_queues_cnt[i] == 1) mtp.flags |= MTL_FLAG_SHARED_RX_QUEUE;
+        if (mtp.tx_queues_cnt[i] == 1) mtp.flags |= MTL_FLAG_SHARED_TX_QUEUE;
+    }
+    if (has_tx) mtp.flags |= MTL_FLAG_TX_VIDEO_MIGRATE;
+    if (has_rx) {
+        mtp.flags |= MTL_FLAG_RX_VIDEO_MIGRATE;
+        mtp.flags |= MTL_FLAG_RX_SEPARATE_VIDEO_LCORE;
+    }
+
+    const char* want = file_playout_dual_pick_lcores(cfg, lcores);
+    if (want && want[0]) {
+        const char* use = file_playout_sanitize_lcores(want);
+        if (use && use[0]) {
+            file_playout_warn_lcores("dual", use);
+            mtp.lcores = (char*)use;
+            printf("MTL: pinning lcores to %s (EAL -l 0,%s)\n", use, use);
+        } else {
+            printf("MTL: lcores auto (requested \"%s\" invalid for this host)\n",
+                   want);
+        }
+    }
+
+    mtl_handle st = mtl_init(&mtp);
+    if (!st) {
+        fprintf(stderr, "MTL dual init failed (tx=%s rx=%s)\n",
+                tx_port ? tx_port : "-", rx_port ? rx_port : "-");
+        return NULL;
+    }
+    if (mtl_start(st) != 0) {
+        fprintf(stderr, "MTL dual start failed\n");
+        mtl_uninit(st);
+        return NULL;
+    }
+    if (same || !tx_port || !rx_port) {
+        const char* pn = tx_port ? tx_port : rx_port;
+        const char* lip = tx_port ? cfg->tx_lip : cfg->rx_lip;
+        printf("MTL dual: single port %s (lip=%s txq=%u rxq=%u) started ptp=%s%s%s\n",
+               pn, lip, mtp.tx_queues_cnt[MTL_PORT_P],
+               mtp.rx_queues_cnt[MTL_PORT_P],
+               file_playout_ptp_mode_str(ptp_mode),
+               (mtp.flags & MTL_FLAG_SHARED_RX_QUEUE) ? " shared-rx" : "",
+               (mtp.flags & MTL_FLAG_SHARED_TX_QUEUE) ? " shared-tx" : "");
+        if (ptp_mode == FILE_PLAYOUT_PTP_EXTERNAL) mp4_ptp_log_status(&g_ptp_ctx, pn);
+    } else {
+        printf("MTL dual: TX %s (lip=%s txq=%u) + RX %s (lip=%s rxq=%u) started ptp=%s%s%s\n",
+               tx_port, cfg->tx_lip, mtp.tx_queues_cnt[MTL_PORT_P],
+               rx_port, cfg->rx_lip, mtp.rx_queues_cnt[MTL_PORT_R],
+               file_playout_ptp_mode_str(ptp_mode),
+               (mtp.flags & MTL_FLAG_SHARED_RX_QUEUE) ? " shared-rx" : "",
+               (mtp.flags & MTL_FLAG_SHARED_TX_QUEUE) ? " shared-tx" : "");
+        if (ptp_mode == FILE_PLAYOUT_PTP_EXTERNAL) {
+            mp4_ptp_log_status(&g_ptp_ctx, tx_port);
+            mp4_ptp_log_status(&g_ptp_ctx, rx_port);
+        }
+    }
+    return st;
+}

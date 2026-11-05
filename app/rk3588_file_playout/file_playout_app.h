@@ -126,6 +126,18 @@ mtl_handle file_playout_mtl_init(const file_playout_cfg* cfg,
                              enum mtl_log_level log_level,
                              const char* lcores);
 
+/** Dual-port MTL initialization for dvs_media (single handle, RX+TX sessions).
+ *
+ * Uses the cfg send/receive port plan (tx_port/tx_lip + rx_port/rx_lip) and
+ * registers both sides at once: a missing side is not registered, identical
+ * port names collapse to one port with combined queues. Single-port apps keep
+ * calling file_playout_mtl_init(); only the dual-role engine uses this.
+ * lcores may be NULL/empty — then shared>rx>tx from cfg is picked. */
+mtl_handle file_playout_mtl_init_dual(const file_playout_cfg* cfg,
+                                   uint16_t tx_q, uint16_t rx_q,
+                                   enum mtl_log_level log_level,
+                                   const char* lcores);
+
 #ifdef __cplusplus
 }
 #endif

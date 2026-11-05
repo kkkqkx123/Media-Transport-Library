@@ -2,7 +2,10 @@
 
 #include <json-c/json.h>
 
-#include "file_playout_config.h"      /* file_playout_mtl_init, mode_dims, apply_drm_mode */
+#include "file_playout_config.h"      /* file_playout_mtl_init_dual, mode_dims, apply_drm_mode */
+#ifdef HAVE_TX_BACKEND
+#include "engine/tx_backend.h"
+#endif
 #include "display_layout.h" /* file_playout_pip_validate, MP4_PIP_MAX_LANES */
 #include "session_admit.h"         /* whitelist + LRU admission */
 #include "audio_arbiter.h"         /* ALSA audio routing */
@@ -51,6 +54,9 @@ dvs_engine* dvs_engine_create(const file_playout_cfg* base_cfg) {
     e->comp = NULL;
     snprintf(e->role, sizeof(e->role), "output");
     dvs_tx_init(&e->tx);
+#ifdef HAVE_TX_BACKEND
+    dvs_tx_set_backend(&e->tx, dvs_tx_backend_entry);
+#endif
     atomic_store(&e->running, false);
     atomic_store(&e->rx_sessions, 0);
     atomic_store(&e->decoding, 0);
@@ -107,12 +113,26 @@ static void engine_wait_until(dvs_engine* e, uint64_t target_ns) {
     }
 }
 
+#ifdef HAVE_TX_BACKEND
+static void engine_push_tx_ctx(dvs_engine* e) {
+    dvs_tx_backend_cfg bc;
+    memset(&bc, 0, sizeof(bc));
+    snprintf(bc.tx_port, sizeof(bc.tx_port), "%s", e->cfg.tx_port);
+    snprintf(bc.drm_device, sizeof(bc.drm_device), "%s", e->cfg.drm_device);
+    /* No capture/encode affinity in file_playout_cfg; 0 selects the backend
+     * engineering defaults. */
+    bc.cpu_capture = 0;
+    bc.cpu_encode = 0;
+    dvs_tx_backend_set_ctx(e->st, &bc);
+}
+#endif
+
 int dvs_engine_init_mtl(dvs_engine* e) {
     if (!e) return -1;
     pthread_mutex_lock(&e->mu);
     if (e->st == NULL) {
-        e->st = file_playout_mtl_init(&e->cfg, e->cfg.rx_port, e->cfg.rx_lip, 0, 1,
-                                  e->cfg.mtl_log_level, e->cfg.mtl_lcores_rx);
+        e->st = file_playout_mtl_init_dual(&e->cfg, 1, 1,
+                                           e->cfg.mtl_log_level, NULL);
         if (!e->st) {
             pthread_mutex_unlock(&e->mu);
             fprintf(stderr, "dvs_engine: MTL init failed\n");
@@ -197,8 +217,8 @@ int dvs_engine_apply_layout_at(dvs_engine* e,
     pthread_mutex_lock(&e->mu);
 
     if (e->st == NULL) {
-        e->st = file_playout_mtl_init(&e->cfg, e->cfg.rx_port, e->cfg.rx_lip, 0, 1,
-                                  e->cfg.mtl_log_level, e->cfg.mtl_lcores_rx);
+        e->st = file_playout_mtl_init_dual(&e->cfg, 1, 1,
+                                           e->cfg.mtl_log_level, NULL);
         if (!e->st) {
             pthread_mutex_unlock(&e->mu);
             fprintf(stderr, "dvs_engine: MTL init failed\n");
@@ -209,6 +229,9 @@ int dvs_engine_apply_layout_at(dvs_engine* e,
 
     if (count <= 0) {
         /* clear: media off, keep MTL up for fast future commits */
+#ifdef HAVE_TX_BACKEND
+        dvs_tx_backend_stop();
+#endif
         dvs_tx_stop(&e->tx);
         file_playout_pip_stream old[MP4_PIP_MAX_LANES];
         int old_n = e->cfg.pip_stream_count;
@@ -358,6 +381,9 @@ int dvs_engine_set_role(dvs_engine* e, const char* role) {
     if (strcmp(role, "output") == 0) {
         snprintf(e->role, sizeof(e->role), "output");
         pthread_mutex_lock(&e->mu);
+#ifdef HAVE_TX_BACKEND
+        dvs_tx_backend_stop();
+#endif
         dvs_tx_stop(&e->tx);
         pthread_mutex_unlock(&e->mu);
         return 0;
@@ -379,6 +405,18 @@ int dvs_engine_tx_start(dvs_engine* e, const dvs_tx_params_t* params,
         e->comp = NULL;
     }
     e->cfg.pip_stream_count = 0;
+    if (e->st == NULL) {
+        e->st = file_playout_mtl_init_dual(&e->cfg, 1, 1,
+                                           e->cfg.mtl_log_level, NULL);
+        if (!e->st) {
+            pthread_mutex_unlock(&e->mu);
+            if (err && errlen > 0) snprintf(err, errlen, "MTL init failed");
+            return -1;
+        }
+    }
+#ifdef HAVE_TX_BACKEND
+    engine_push_tx_ctx(e);
+#endif
     int rc = dvs_tx_start(&e->tx, params, e->role, err, errlen);
     pthread_mutex_unlock(&e->mu);
     return rc;
@@ -387,6 +425,9 @@ int dvs_engine_tx_start(dvs_engine* e, const dvs_tx_params_t* params,
 void dvs_engine_tx_stop(dvs_engine* e) {
     if (!e) return;
     pthread_mutex_lock(&e->mu);
+#ifdef HAVE_TX_BACKEND
+    dvs_tx_backend_stop();
+#endif
     dvs_tx_stop(&e->tx);
     pthread_mutex_unlock(&e->mu);
 }
@@ -416,6 +457,9 @@ void dvs_engine_stop(dvs_engine* e) {
         rx_compositor_free(e->comp);
         e->comp = NULL;
     }
+#ifdef HAVE_TX_BACKEND
+    dvs_tx_backend_stop();
+#endif
     dvs_tx_stop(&e->tx);
     if (e->st) {
         mtl_stop(e->st);

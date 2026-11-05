@@ -1,4 +1,5 @@
 #include "capability.h"
+#include "engine/tx_port_map.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -21,6 +22,9 @@ static void cap_defaults(dvs_capability* cap) {
     cap->output_max_hz = NULL;
     cap->output_port_count = 0;
     cap->input_ports = NULL;
+    cap->input_devices = NULL;
+    cap->input_stable = NULL;
+    cap->input_signal = NULL;
     cap->input_port_count = 0;
     /* Conservative default; real MPP-measured value is filled at S1 end and
      * may be overridden via DVS_MAX_DECODE_SESSIONS for bring-up. */
@@ -56,9 +60,19 @@ void dvs_capability_free(dvs_capability* cap) {
     cap->output_max_h = NULL;
     cap->output_max_hz = NULL;
     cap->output_port_count = 0;
-    for (int i = 0; i < cap->input_port_count; i++) free(cap->input_ports[i]);
+    for (int i = 0; i < cap->input_port_count; i++) {
+        free(cap->input_ports[i]);
+        free(cap->input_devices[i]);
+        free(cap->input_stable[i]);
+    }
     free(cap->input_ports);
+    free(cap->input_devices);
+    free(cap->input_stable);
+    free(cap->input_signal);
     cap->input_ports = NULL;
+    cap->input_devices = NULL;
+    cap->input_stable = NULL;
+    cap->input_signal = NULL;
     cap->input_port_count = 0;
 }
 
@@ -120,29 +134,60 @@ static void probe_drm(dvs_capability* cap) {
 #endif /* HAVE_LIBDRM */
 
 static void probe_input(dvs_capability* cap) {
-    /* CAP-1: enumerate each present /dev/videoN as its own input port instead
-     * of collapsing to a single HDMI1. IDs stay stable (HDMI1..HDMI8) so the
-     * agent capability check keeps working when only one device exists. */
-    char* names[8];
-    int n = 0;
-    for (int i = 0; i < 8; i++) {
-        char path[32];
-        snprintf(path, sizeof(path), "/dev/video%d", i);
-        if (access(path, F_OK) != 0) continue;
-        char id[16];
-        snprintf(id, sizeof(id), "HDMI%d", n + 1);
-        names[n] = strdup(id);
-        if (!names[n]) break;
-        n++;
-    }
-    if (n == 0) return;
-    cap->input_ports = calloc((size_t)n, sizeof(char*));
-    if (!cap->input_ports) {
-        for (int i = 0; i < n; i++) free(names[i]);
+    /* Shared table construction with the TX backend: scan once (physical
+     * identity via QUERYCAP, device fallback), bind HDMIk in scan order.
+     * HDMIk stays agent-compatible; device/stableId/signal ride along. */
+    char devs[DVS_TX_PORT_MAX][DVS_TX_DEV_LEN];
+    char stables[DVS_TX_PORT_MAX][DVS_TX_STABLE_LEN];
+    int sig[DVS_TX_PORT_MAX];
+    memset(devs, 0, sizeof(devs));
+    memset(stables, 0, sizeof(stables));
+    memset(sig, 0, sizeof(sig));
+    int n = dvs_tx_scan_devices(devs, stables, sig, DVS_TX_PORT_MAX);
+    if (n <= 0) return;
+    dvs_tx_port_entry table[DVS_TX_PORT_MAX];
+    int m = dvs_tx_table_build(table, DVS_TX_PORT_MAX, devs, stables, sig, n);
+    if (m <= 0) return;
+    cap->input_ports = calloc((size_t)m, sizeof(char*));
+    cap->input_devices = calloc((size_t)m, sizeof(char*));
+    cap->input_stable = calloc((size_t)m, sizeof(char*));
+    cap->input_signal = calloc((size_t)m, sizeof(int));
+    if (!cap->input_ports || !cap->input_devices || !cap->input_stable ||
+        !cap->input_signal) {
+        free(cap->input_ports);
+        free(cap->input_devices);
+        free(cap->input_stable);
+        free(cap->input_signal);
+        cap->input_ports = NULL;
+        cap->input_devices = NULL;
+        cap->input_stable = NULL;
+        cap->input_signal = NULL;
         return;
     }
-    for (int i = 0; i < n; i++) cap->input_ports[i] = names[i];
-    cap->input_port_count = n;
+    for (int i = 0; i < m; i++) {
+        cap->input_ports[i] = strdup(table[i].port);
+        cap->input_devices[i] = strdup(table[i].device);
+        cap->input_stable[i] = strdup(table[i].stable_id);
+        cap->input_signal[i] = table[i].has_signal;
+        if (!cap->input_ports[i] || !cap->input_devices[i] ||
+            !cap->input_stable[i]) {
+            for (int j = 0; j <= i; j++) {
+                free(cap->input_ports[j]);
+                free(cap->input_devices[j]);
+                free(cap->input_stable[j]);
+            }
+            free(cap->input_ports);
+            free(cap->input_devices);
+            free(cap->input_stable);
+            free(cap->input_signal);
+            cap->input_ports = NULL;
+            cap->input_devices = NULL;
+            cap->input_stable = NULL;
+            cap->input_signal = NULL;
+            return;
+        }
+    }
+    cap->input_port_count = m;
 }
 
 int dvs_capability_probe(dvs_capability* cap) {
@@ -171,6 +216,18 @@ char* dvs_capability_to_json(const dvs_capability* cap) {
         json_object_object_add(p, "id", json_object_new_string(cap->input_ports[i]));
         json_object_object_add(p, "label", json_object_new_string(cap->input_ports[i]));
         json_object_object_add(p, "kind", json_object_new_string("HDMI RX"));
+        json_object_object_add(p, "device",
+                               json_object_new_string(cap->input_devices
+                                                          ? cap->input_devices[i]
+                                                          : ""));
+        json_object_object_add(p, "stableId",
+                               json_object_new_string(cap->input_stable
+                                                          ? cap->input_stable[i]
+                                                          : ""));
+        json_object_object_add(p, "signal",
+                               json_object_new_boolean(cap->input_signal
+                                                           ? cap->input_signal[i]
+                                                           : 0));
         json_object_object_add(p, "maxWidth", json_object_new_int(3840));
         json_object_object_add(p, "maxHeight", json_object_new_int(2160));
         json_object_object_add(p, "maxRefreshHz", json_object_new_int(60));

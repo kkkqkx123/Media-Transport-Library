@@ -10,7 +10,7 @@ test_state_machine = executable('test_state_machine',
 
 test_ipc = executable('test_ipc',
   files('test_ipc.c', '../ipc/ipc_server.c', '../ipc/state_machine.c',
-        '../engine/capability.c'),
+        '../engine/capability.c', '../engine/tx_port_map.c'),
   c_args: common_c_args,
   dependencies: test_dep,
   include_directories: [include_directories('..'),
@@ -31,7 +31,15 @@ test_tx_session = executable('test_tx_session',
   include_directories: include_directories('..'),
 )
 
+test_tx_port_map = executable('test_tx_port_map',
+  files('test_tx_port_map.c', '../engine/tx_port_map.c'),
+  c_args: common_c_args,
+  dependencies: [],
+  include_directories: include_directories('..'),
+)
+
 test('dvs_state_machine', test_state_machine)
 test('dvs_ipc', test_ipc, timeout: 30)
 test('dvs_session_admit', test_session_admit)
 test('dvs_tx_session', test_tx_session)
+test('dvs_tx_port_map', test_tx_port_map)

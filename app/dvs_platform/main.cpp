@@ -34,6 +34,34 @@ static std::mutex g_ops_mu;
 static std::mutex g_idem_mu;
 static std::map<std::string, std::string> g_idem_cache;
 
+// Escape a string for embedding inside a JSON string literal. Audit events
+// are built by string concatenation over untrusted ids; without this, an id
+// containing '"' can forge or break audit records (log injection).
+static std::string json_escape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (unsigned char c : s) {
+        switch (c) {
+        case '"': out += "\\\""; break;
+        case '\\': out += "\\\\"; break;
+        case '\b': out += "\\b"; break;
+        case '\f': out += "\\f"; break;
+        case '\n': out += "\\n"; break;
+        case '\r': out += "\\r"; break;
+        case '\t': out += "\\t"; break;
+        default:
+            if (c < 0x20) {
+                char b[8];
+                snprintf(b, sizeof(b), "\\u%04x", c);
+                out += b;
+            } else {
+                out += (char)c;
+            }
+        }
+    }
+    return out;
+}
+
 struct ChannelRegistry {
     std::mutex mu;
     std::map<std::string, int> node_fd;
@@ -259,7 +287,7 @@ bool route_docs(const std::string& kind, const HttpRequest& req, HttpResponse& r
             }
         }
         g_store->put_doc(kind, id, b);
-        g_store->audit("{\"kind\":\"" + kind + "\",\"id\":\"" + id + "\"}");
+        g_store->audit("{\"kind\":\"" + json_escape(kind) + "\",\"id\":\"" + json_escape(id) + "\"}");
         json_object* d = g_store->get_doc(kind, id);
         json_object_put(b);
         send_json(res, ok_envelope(d ? d : json_object_new_object(), ""));
@@ -349,7 +377,7 @@ std::string handle_barrier_ack(const std::string& opid, const std::string& node,
         state = g_ops.on_reply(opid, node, st != "blocked", st);
         missing_out = g_ops.missing(opid);
     }
-    g_store->audit("{\"commit\":\"" + node + "\",\"state\":\"" + st + "\"}");
+    g_store->audit("{\"commit\":\"" + json_escape(node) + "\",\"state\":\"" + json_escape(st) + "\"}");
     return state;
 }
 
@@ -360,6 +388,78 @@ bool ws_push(const std::string& node, const std::string& type, json_object* data
     std::string frame = s ? s : "{}";
     json_object_put(msg);
     return g_chan.send_to(node, frame);
+}
+
+// Actually execute a rollback: find the settled op whose revision matches
+// to_revision, take its window snapshot, and re-issue that layout to every
+// member with the rollback op id and applyAtNs=0 (immediate apply). Delivery
+// mirrors the prepare fanout: WS first, short HTTP as fallback. When no
+// snapshot exists the rollback is only audited — never faked as executed.
+// Callers must NOT hold g_ops_mu (execute_rollback takes it itself).
+static void execute_rollback(const std::string& rollback_op_id, int to_revision,
+                             const std::set<std::string>& members) {
+    const Operation* snap = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(g_ops_mu);
+        snap = g_ops.find_committed(to_revision);
+    }
+    if (!snap) {
+        g_store->audit("{\"rollback\":\"" + json_escape(rollback_op_id) +
+                       "\",\"executed\":0,\"reason\":\"no snapshot\"}");
+        return;
+    }
+    std::string opid_c = rollback_op_id;
+    int rev_c = to_revision;
+    std::string windows_json = snap->windows_json;
+    int wall_w = snap->wall_w, wall_h = snap->wall_h;
+    std::string token_c = g_api_token;
+    std::thread([opid_c, rev_c, windows_json, wall_w, wall_h, members, token_c]() {
+        json_object* wins = json_tokener_parse(windows_json.c_str());
+        HttpClient cli;
+        for (const auto& mid : members) {
+            json_object* nd = g_store->get_doc("node", mid);
+            if (!nd) continue;
+            std::string agent_base = body_str(nd, "agentBase");
+            json_object* geo = nullptr;
+            json_object_object_get_ex(nd, "geometry", &geo);
+            bool geo_ok = geo && rect_int(geo, "w") > 0 && rect_int(geo, "h") > 0;
+            if (!geo_ok) { json_object_put(nd); continue; }
+            Rect node{rect_int(geo, "x"), rect_int(geo, "y"),
+                      rect_int(geo, "w"), rect_int(geo, "h")};
+            json_object* frag = fragment_for_node(wins, node, wall_w, wall_h);
+            json_object* payload = json_object_new_object();
+            json_object_object_add(payload, "operationId",
+                                   json_object_new_string(opid_c.c_str()));
+            json_object_object_add(payload, "revision", json_object_new_int(rev_c));
+            json_object_object_add(payload, "applyAtNs", json_object_new_int64(0));
+            json_object_object_add(payload, "geometry", json_object_get(geo));
+            json_object_object_add(payload, "windows", frag);
+            bool via_ws = false;
+            if (ct::validate_layout_prepare(payload).empty())
+                via_ws = ws_push(mid, ct::kLayoutPrepare, json_object_get(payload));
+            if (via_ws) {
+                g_store->audit("{\"rollback\":\"" + json_escape(opid_c) +
+                               "\",\"node\":\"" + json_escape(mid) +
+                               "\",\"via\":\"ws\",\"executed\":1}");
+            } else if (!agent_base.empty()) {
+                const char* pb = json_object_to_json_string(payload);
+                std::string resp;
+                int sc = cli.post_json(agent_base + "/api/v1/node/media/layout",
+                                       std::string(pb ? pb : "{}"), resp, 5000, 2,
+                                       token_c);
+                g_store->audit("{\"rollback\":\"" + json_escape(opid_c) +
+                               "\",\"node\":\"" + json_escape(mid) +
+                               "\",\"executed\":" + std::to_string(sc == 200 ? 1 : 0) + "}");
+            } else {
+                g_store->audit("{\"rollback\":\"" + json_escape(opid_c) +
+                               "\",\"node\":\"" + json_escape(mid) +
+                               "\",\"executed\":0,\"reason\":\"no channel\"}");
+            }
+            json_object_put(payload);
+            json_object_put(nd);
+        }
+        if (wins) json_object_put(wins);
+    }).detach();
 }
 
 static std::string ws_idem_key(const std::string& msg_id, const std::string& tp, json_object* data) {
@@ -434,7 +534,7 @@ void ws_channel_loop(int fd, HttpRequest hs_req) {
     }
     g_chan.register_conn(node_id, fd);
     apply_hello_doc(data);
-    g_store->audit("{\"ws-hello\":\"" + node_id + "\"}");
+    g_store->audit("{\"ws-hello\":\"" + json_escape(node_id) + "\"}");
     {
         json_object* w = json_object_new_object();
         json_object_object_add(w, "heartbeatIntervalMs",
@@ -503,7 +603,14 @@ void ws_channel_loop(int fd, HttpRequest hs_req) {
                 } else if (state == "blocked") {
                     int to_rev = 0;
                     std::string rb;
-                    { std::lock_guard<std::mutex> lk(g_ops_mu); rb = g_ops.rollback_op(opid, &to_rev); }
+                    std::set<std::string> rb_members;
+                    {
+                        std::lock_guard<std::mutex> lk(g_ops_mu);
+                        rb = g_ops.rollback_op(opid, &to_rev);
+                        const Operation* op2 = g_ops.find(opid);
+                        if (op2) rb_members = op2->members;
+                    }
+                    if (!rb.empty()) execute_rollback(rb, to_rev, rb_members);
                     json_object_object_add(ack, "rollback", json_object_new_string(rb.c_str()));
                     json_object_object_add(ack, "toRevision", json_object_new_int(to_rev));
                 } else {
@@ -525,7 +632,7 @@ void ws_channel_loop(int fd, HttpRequest hs_req) {
                 std::string node = body_str(dd, "node");
                 std::string st = body_str(dd, "status");
                 { std::lock_guard<std::mutex> lk(g_chan.mu); g_chan.upgrade_progress[tid + "/" + node] = st; }
-                g_store->audit("{\"upgrade-progress\":\"" + node + "\",\"task\":\"" + tid + "\",\"status\":\"" + st + "\"}");
+                g_store->audit("{\"upgrade-progress\":\"" + json_escape(node) + "\",\"task\":\"" + json_escape(tid) + "\",\"status\":\"" + json_escape(st) + "\"}");
                 json_object* ack = json_object_new_object();
                 json_object_object_add(ack, "received", json_object_new_boolean(1));
                 send_wrapped(ws_idem_key(mid, tp, dd), ct::kAck, ack);
@@ -537,7 +644,7 @@ void ws_channel_loop(int fd, HttpRequest hs_req) {
                 json_object_object_add(d, "reason", json_object_new_string(e.c_str()));
                 send_wrapped(ws_idem_key(mid, tp, dd), ct::kError, d);
             } else {
-                g_store->audit("{\"config-ack\":\"" + body_str(dd, "node") + "\"}");
+                g_store->audit("{\"config-ack\":\"" + json_escape(body_str(dd, "node")) + "\"}");
                 json_object* ack = json_object_new_object();
                 json_object_object_add(ack, "received", json_object_new_boolean(1));
                 send_wrapped(ws_idem_key(mid, tp, dd), ct::kAck, ack);
@@ -559,7 +666,7 @@ void ws_channel_loop(int fd, HttpRequest hs_req) {
             g_store->put_doc("node", gone, cur);
             json_object_put(cur);
         }
-        g_store->audit("{\"ws-offline\":\"" + gone + "\"}");
+        g_store->audit("{\"ws-offline\":\"" + json_escape(gone) + "\"}");
     }
     ::close(fd);
 }
@@ -576,6 +683,24 @@ int main(int argc, char** argv) {
         else if (a == "--web-root" && i + 1 < argc) web_root_arg = argv[++i];
     }
     g_store = new PlatformStore(db);
+    g_ops.set_store(g_store);
+
+    // Crash recovery: reload persisted operations. Preparing ops keep their
+    // deadline and are expired/rolled back by the sweeper; committed ops are
+    // restored as rollback snapshots (see DVS_OP_STATE_PERSISTENCE_DESIGN.md).
+    // Fanout is deliberately not re-issued on recovery.
+    for (const auto& id : g_store->list_ids("op")) {
+        json_object* d = g_store->get_doc("op", id);
+        if (!d) continue;
+        Operation op;
+        if (operation_from_json(d, &op)) {
+            std::lock_guard<std::mutex> lk(g_ops_mu);
+            g_ops.restore(op);
+        } else {
+            g_store->del_doc("op", id);  // unparseable record, drop it
+        }
+        json_object_put(d);
+    }
 
     HttpServer::Handler h = [](const HttpRequest& req, HttpResponse& res) {
         if (req.method == "POST" && req.path == "/api/v1/nodes/register") {
@@ -610,9 +735,9 @@ int main(int argc, char** argv) {
             json_object_object_add(b, "transport", json_object_new_string("short"));
             g_store->put_doc("node", id, b);
             g_chan.set_transport(id, "short");
-            g_store->audit("{\"register\":\"" + id + "\"}");
+            g_store->audit("{\"register\":\"" + json_escape(id) + "\"}");
             if (!has_base || !has_geo)
-                g_store->audit("{\"incomplete-register\":\"" + id + "\"}");
+                g_store->audit("{\"incomplete-register\":\"" + json_escape(id) + "\"}");
             json_object* d = g_store->get_doc("node", id);
             json_object_put(b);
             send_json(res, ok_envelope(d ? d : json_object_new_object(), ""));
@@ -700,7 +825,7 @@ int main(int argc, char** argv) {
                 json_object_object_add(cur, "name", json_object_new_string(nm.c_str()));
                 g_store->put_doc("node", id, cur);
                 json_object_put(cur);
-                g_store->audit("{\"rename\":\"" + id + "\"}");
+                g_store->audit("{\"rename\":\"" + json_escape(id) + "\"}");
                 json_object* d = g_store->get_doc("node", id);
                 send_json(res, ok_envelope(d ? d : json_object_new_object(), ""));
                 return;
@@ -758,7 +883,7 @@ int main(int argc, char** argv) {
             if (req.method == "POST" && act == "retire") {
                 g_store->tombstone_add(id, now_sec());
                 g_store->del_doc("node", id);
-                g_store->audit("{\"retire\":\"" + id + "\"}");
+                g_store->audit("{\"retire\":\"" + json_escape(id) + "\"}");
                 send_json(res, ok_envelope(json_object_new_object(), "retired"));
                 return;
             }
@@ -782,7 +907,7 @@ int main(int argc, char** argv) {
                             json_object_object_add(fwd, k.c_str(), json_object_get(val));
                         else {
                             json_object_array_add(ignored, json_object_new_string(k.c_str()));
-                            g_store->audit("{\"config-push-ignored\":\"" + k + "\"}");
+                            g_store->audit("{\"config-push-ignored\":\"" + json_escape(k) + "\"}");
                         }
                     }
                 }
@@ -873,11 +998,22 @@ int main(int argc, char** argv) {
             const char* win_s = (windows && json_object_is_type(windows, json_type_array))
                 ? json_object_to_json_string(windows) : "[]";
             std::string windows_json = win_s ? win_s : "[]";
+            // Stamp the fanout snapshot + created_ns for persistence and
+            // rollback reissue (execute_rollback reads it back).
+            {
+                std::lock_guard<std::mutex> lk(g_ops_mu);
+                if (Operation* op2 = g_ops.mutable_find(opid_c)) {
+                    op2->windows_json = windows_json;
+                    op2->wall_w = wall_w;
+                    op2->wall_h = wall_h;
+                    op2->created_ns = now_ns();
+                }
+            }
             uint64_t apply_at = apply_copy;
             std::string opid_c = op_id_copy;
             std::string token_c = g_api_token;
             if (members.size() > 32)
-                g_store->audit("{\"fanout-scale\":\"" + opid_c + "\",\"members\":" +
+                g_store->audit("{\"fanout-scale\":\"" + json_escape(opid_c) + "\",\"members\":" +
                                std::to_string(members.size()) + "}");
             json_object* missing = json_object_new_array();
             for (const auto& mid : members) {
@@ -889,7 +1025,7 @@ int main(int argc, char** argv) {
                 bool has_chan = (g_chan.fd_of(mid) >= 0) || !ab.empty();
                 if (!nd || !geo_ok || !has_chan) {
                     json_object_array_add(missing, json_object_new_string(mid.c_str()));
-                    g_store->audit("{\"fanout-skip\":\"" + mid +
+                    g_store->audit("{\"fanout-skip\":\"" + json_escape(mid) +
                                    "\",\"reason\":\"no channel/geometry\"}");
                 }
                 if (nd) json_object_put(nd);
@@ -921,7 +1057,7 @@ int main(int argc, char** argv) {
                     bool via_ws = false;
                     if (verr.empty()) via_ws = ws_push(mid, ct::kLayoutPrepare, json_object_get(payload));
                     if (via_ws) {
-                        g_store->audit("{\"fanout\":\"" + mid + "\",\"via\":\"ws\"}");
+                        g_store->audit("{\"fanout\":\"" + json_escape(mid) + "\",\"via\":\"ws\"}");
                         g_chan.set_transport(mid, "ws");
                         json_object_put(payload);
                     } else if (!agent_base.empty()) {
@@ -929,11 +1065,11 @@ int main(int argc, char** argv) {
                         std::string resp;
                         int sc = cli.post_json(agent_base + "/api/v1/node/media/layout",
                                                std::string(pb ? pb : "{}"), resp, 5000, 2, token_c);
-                        g_store->audit("{\"fanout\":\"" + mid + "\",\"status\":" + std::to_string(sc) + "}");
+                        g_store->audit("{\"fanout\":\"" + json_escape(mid) + "\",\"status\":" + std::to_string(sc) + "}");
                         g_chan.set_transport(mid, "short");
                         json_object_put(payload);
                     } else {
-                        g_store->audit("{\"fanout-skip\":\"" + mid + "\",\"reason\":\"no channel\"}");
+                        g_store->audit("{\"fanout-skip\":\"" + json_escape(mid) + "\",\"reason\":\"no channel\"}");
                         json_object_put(payload);
                     }
                     json_object_put(nd);
@@ -979,7 +1115,14 @@ int main(int argc, char** argv) {
             if (state == "blocked") {
                 int to_rev = 0;
                 std::string rb;
-                { std::lock_guard<std::mutex> lk(g_ops_mu); rb = g_ops.rollback_op(opid, &to_rev); }
+                std::set<std::string> rb_members;
+                {
+                    std::lock_guard<std::mutex> lk(g_ops_mu);
+                    rb = g_ops.rollback_op(opid, &to_rev);
+                    const Operation* op2 = g_ops.find(opid);
+                    if (op2) rb_members = op2->members;
+                }
+                if (!rb.empty()) execute_rollback(rb, to_rev, rb_members);
                 json_object* d = json_object_new_object();
                 json_object_object_add(d, "rollback", json_object_new_string(rb.c_str()));
                 json_object_object_add(d, "toRevision", json_object_new_int(to_rev));
@@ -1007,7 +1150,7 @@ int main(int argc, char** argv) {
                 send_json(res, fail_envelope("INVALID_ARGUMENT", 400, verr.c_str()));
                 return;
             }
-            g_store->audit("{\"config-ack\":\"" + body_str(b, "node") + "\"}");
+            g_store->audit("{\"config-ack\":\"" + json_escape(body_str(b, "node")) + "\"}");
             if (b) json_object_put(b);
             json_object* d = json_object_new_object();
             json_object_object_add(d, "received", json_object_new_boolean(1));
@@ -1027,7 +1170,7 @@ int main(int argc, char** argv) {
             std::string node = body_str(b, "node");
             std::string st = body_str(b, "status");
             { std::lock_guard<std::mutex> lk(g_chan.mu); g_chan.upgrade_progress[tid + "/" + node] = st; }
-            g_store->audit("{\"upgrade-progress\":\"" + node + "\",\"task\":\"" + tid + "\",\"status\":\"" + st + "\"}");
+            g_store->audit("{\"upgrade-progress\":\"" + json_escape(node) + "\",\"task\":\"" + json_escape(tid) + "\",\"status\":\"" + json_escape(st) + "\"}");
             if (b) json_object_put(b);
             json_object* d = json_object_new_object();
             json_object_object_add(d, "received", json_object_new_boolean(1));
@@ -1054,7 +1197,7 @@ int main(int argc, char** argv) {
                 g_up_q.push(UpgradeJob{task_id, nodes, fn, sha});
             }
             g_up_cv.notify_one();
-            g_store->audit("{\"upgrade-enqueue\":\"" + task_id + "\"}");
+            g_store->audit("{\"upgrade-enqueue\":\"" + json_escape(task_id) + "\"}");
             json_object* d = json_object_new_object();
             json_object_object_add(d, "taskId", json_object_new_string(task_id.c_str()));
             json_object_object_add(d, "queued", json_object_new_int((int)nodes.size()));
@@ -1102,6 +1245,8 @@ int main(int argc, char** argv) {
     server.set_ws_handler("/api/v1/channel/ws", ws_channel_loop);
     // 屏障超时回收：超时未齐按阻塞处理并回滚，避免永久停留 preparing。
     std::thread([]() {
+        time_t last_gc = 0;
+        const uint64_t kOpTtlNs = 24ULL * 3600 * 1000000000ULL;
         for (;;) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
             std::vector<std::string> expired;
@@ -1112,11 +1257,44 @@ int main(int argc, char** argv) {
             for (auto& id : expired) {
                 int to_rev = 0;
                 std::string rb;
+                std::set<std::string> rb_members;
                 {
                     std::lock_guard<std::mutex> lk(g_ops_mu);
                     rb = g_ops.rollback_op(id, &to_rev);
+                    const Operation* op2 = g_ops.find(id);
+                    if (op2) rb_members = op2->members;
                 }
-                g_store->audit("{\"barrier-timeout\":\"" + id + "\"}");
+                g_store->audit("{\"barrier-timeout\":\"" + json_escape(id) + "\"}");
+                if (!rb.empty()) execute_rollback(rb, to_rev, rb_members);
+            }
+            // Replay rollbacks for blocked ops persisted without one — the
+            // crash window between the blocked persist and execute_rollback.
+            // rollback_op stamps __rolledback__, so replays are idempotent.
+            std::vector<std::string> replay;
+            {
+                std::lock_guard<std::mutex> lk(g_ops_mu);
+                replay = g_ops.pending_rollbacks();
+            }
+            for (auto& id : replay) {
+                int to_rev = 0;
+                std::string rb;
+                std::set<std::string> rb_members;
+                {
+                    std::lock_guard<std::mutex> lk(g_ops_mu);
+                    rb = g_ops.rollback_op(id, &to_rev);
+                    const Operation* op2 = g_ops.find(id);
+                    if (op2) rb_members = op2->members;
+                }
+                g_store->audit("{\"op-rollback-replay\":\"" + json_escape(id) +
+                               "\",\"rollback\":\"" + json_escape(rb) + "\"}");
+                if (!rb.empty()) execute_rollback(rb, to_rev, rb_members);
+            }
+            // Hourly: drop terminal-state ops older than 24h (memory + docs).
+            time_t now_s = time(nullptr);
+            if (last_gc == 0 || now_s - last_gc >= 3600) {
+                last_gc = now_s;
+                std::lock_guard<std::mutex> lk(g_ops_mu);
+                g_ops.gc(now_ns(), kOpTtlNs);
             }
         }
     }).detach();
@@ -1141,7 +1319,7 @@ int main(int argc, char** argv) {
                 if (ct::validate_upgrade_task(task).empty())
                     via_ws = ws_push(nid, ct::kUpgradeTask, json_object_get(task));
                 if (via_ws) {
-                    g_store->audit("{\"upgrade-push\":\"" + nid + "\",\"via\":\"ws\"}");
+                    g_store->audit("{\"upgrade-push\":\"" + json_escape(nid) + "\",\"via\":\"ws\"}");
                     json_object_put(task);
                     continue;
                 }
@@ -1149,7 +1327,7 @@ int main(int argc, char** argv) {
                 std::string base = nd ? body_str(nd, "agentBase") : "";
                 if (nd) json_object_put(nd);
                 if (base.empty()) {
-                    g_store->audit("{\"upgrade-skip\":\"" + nid + "\"}");
+                    g_store->audit("{\"upgrade-skip\":\"" + json_escape(nid) + "\"}");
                     json_object_put(task);
                     continue;
                 }
@@ -1158,7 +1336,7 @@ int main(int argc, char** argv) {
                 json_object_put(task);
                 std::string resp;
                 int sc = cli.post_json(base + "/api/v1/node/upgrade", body, resp, 10000, 2, g_api_token);
-                g_store->audit("{\"upgrade-push\":\"" + nid + "\",\"status\":" + std::to_string(sc) + "}");
+                g_store->audit("{\"upgrade-push\":\"" + json_escape(nid) + "\",\"status\":" + std::to_string(sc) + "}");
             }
         }
     }).detach();

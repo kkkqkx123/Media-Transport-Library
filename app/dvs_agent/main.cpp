@@ -1507,7 +1507,7 @@ int main(int argc, char** argv) {
             }
             // update lastHeartbeat
             json_object* hp = json_object_new_object();
-            json_object_object_add(hp, "lastHeartbeat", json_object_new_string("now"));
+            json_object_object_add(hp, "lastHeartbeat", json_object_new_string(iso_now().c_str()));
             if (patch) {
                 json_object* m = nullptr;
                 if (json_object_object_get_ex(patch, "metrics", &m)) json_object_object_add(hp, "metrics", json_object_get(m));
@@ -1577,7 +1577,7 @@ int main(int argc, char** argv) {
                     if (!json_object_object_get_ex(body, "patch", &patch)) patch = body;
                 }
                 json_object* hp = json_object_new_object();
-                json_object_object_add(hp, "lastHeartbeat", json_object_new_string("now"));
+                json_object_object_add(hp, "lastHeartbeat", json_object_new_string(iso_now().c_str()));
                 if (patch) {
                     json_object* m = nullptr;
                     if (json_object_object_get_ex(patch, "metrics", &m)) json_object_object_add(hp, "metrics", json_object_get(m));

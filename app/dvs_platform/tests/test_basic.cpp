@@ -401,6 +401,185 @@ static void test_ops_deadline() {
     assert(c.expire_sweep(999999).empty());
 }
 
+static void test_op_serialization() {
+    Operation op;
+    op.op_id = "op-x";
+    op.revision = 7;
+    op.apply_at_ns = 123456789ULL;
+    op.deadline_ns = 223456789ULL;
+    op.created_ns = 1000ULL;
+    op.state = "preparing";
+    op.windows_json = "[{\"x\":1}]";
+    op.wall_w = 3840;
+    op.wall_h = 2160;
+    op.members = {"n1", "n2"};
+    op.ready = {"n1"};
+    op.result["n1"] = "ready";
+
+    json_object* rec = operation_to_json(op);
+    assert(rec != nullptr);
+    Operation back;
+    assert(operation_from_json(rec, &back));
+    assert(back.op_id == op.op_id && back.revision == op.revision);
+    assert(back.apply_at_ns == op.apply_at_ns && back.deadline_ns == op.deadline_ns);
+    assert(back.created_ns == op.created_ns && back.state == op.state);
+    assert(back.windows_json == op.windows_json);
+    assert(back.wall_w == op.wall_w && back.wall_h == op.wall_h);
+    assert(back.members == op.members && back.ready == op.ready);
+    assert(back.result.size() == 1 && back.result["n1"] == "ready");
+    json_object_put(rec);
+
+    // Missing/empty required fields are rejected.
+    assert(!operation_from_json(nullptr, &back));
+    json_object* empty = json_object_new_object();
+    assert(!operation_from_json(empty, &back));
+    json_object_put(empty);
+}
+
+static void test_ops_persistence() {
+    const char* db = "/tmp/dvs_platform_test_ops.db";
+    std::remove(db);
+
+    // Coordinator with a store persists every state change.
+    {
+        PlatformStore s(db);
+        OpCoordinator c;
+        c.set_store(&s);
+        Operation& op = c.begin_with_deadline("op-1", 3, {"a", "b"}, 0, 999);
+        op.windows_json = "[{\"x\":1}]";
+        op.wall_w = 3840;
+        op.wall_h = 2160;
+        op.created_ns = 1000;
+        json_object* d = s.get_doc("op", "op-1");
+        assert(d != nullptr);
+        {
+            Operation back;
+            assert(operation_from_json(d, &back));
+            assert(back.state == "preparing" && back.ready.empty());
+            assert(back.deadline_ns == 999 && back.windows_json == op.windows_json);
+        }
+        json_object_put(d);
+        c.on_reply("op-1", "a", true, "ready");
+        d = s.get_doc("op", "op-1");
+        {
+            Operation back;
+            assert(operation_from_json(d, &back));
+            assert(back.ready.size() == 1);
+        }
+        json_object_put(d);
+        c.on_reply("op-1", "b", true, "ready");
+        d = s.get_doc("op", "op-1");
+        {
+            Operation back;
+            assert(operation_from_json(d, &back));
+            assert(back.state == "committed");
+        }
+        json_object_put(d);
+    }
+
+    // "Restart": fresh store handle + fresh coordinator; restore() brings
+    // committed snapshots back and find_committed() still works.
+    {
+        PlatformStore s(db);
+        OpCoordinator c;
+        c.set_store(&s);
+        for (const auto& id : s.list_ids("op")) {
+            json_object* d = s.get_doc("op", id);
+            assert(d != nullptr);
+            Operation op;
+            assert(operation_from_json(d, &op));
+            c.restore(op);
+            json_object_put(d);
+        }
+        const Operation* snap = c.find_committed(3);
+        assert(snap != nullptr && snap->op_id == "op-1");
+        assert(snap->state == "committed" && !snap->windows_json.empty());
+
+        // A blocked reply on the restored op rolls back against revision 2.
+        c.begin("op-2", 4, {"a"}, 0);
+        assert(c.on_reply("op-2", "a", false, "blocked") == "blocked");
+        int rev = 0;
+        std::string rb = c.rollback_op("op-2", &rev);
+        assert(!rb.empty() && rev == 3);
+        assert(c.find_committed(3) != nullptr);
+        // The rollback marker clears the replay scan.
+        assert(c.pending_rollbacks().empty());
+    }
+
+    // Crash window: blocked op persisted WITHOUT the rollback marker, then a
+    // fresh coordinator restores it — pending_rollbacks() must surface it,
+    // the replayed rollback_op() must work, and the marker must persist.
+    {
+        PlatformStore s(db);
+        {
+            // Simulate the crash: blocked state on disk, no marker.
+            json_object* d = json_object_new_object();
+            json_object_object_add(d, "opId", json_object_new_string("op-hang"));
+            json_object_object_add(d, "revision", json_object_new_int(5));
+            json_object_object_add(d, "state", json_object_new_string("blocked"));
+            json_object* members = json_object_new_array();
+            json_object_array_add(members, json_object_new_string("a"));
+            json_object_object_add(d, "members", members);
+            json_object_object_add(d, "windowsJson",
+                                   json_object_new_string("[{\"x\":1}]"));
+            json_object_object_add(d, "wallW", json_object_new_int(3840));
+            json_object_object_add(d, "wallH", json_object_new_int(2160));
+            assert(s.put_doc("op", "op-hang", d));
+            json_object_put(d);
+        }
+        OpCoordinator c;
+        c.set_store(&s);
+        for (const auto& id : s.list_ids("op")) {
+            json_object* d = s.get_doc("op", id);
+            assert(d != nullptr);
+            Operation op;
+            if (operation_from_json(d, &op)) c.restore(op);
+            json_object_put(d);
+        }
+        assert(c.pending_rollbacks().size() == 1);
+        assert(c.pending_rollbacks()[0] == "op-hang");
+        int rev = 0;
+        assert(!c.rollback_op("op-hang", &rev).empty());
+        assert(rev == 4);
+        assert(c.pending_rollbacks().empty());
+        json_object* d = s.get_doc("op", "op-hang");
+        {
+            Operation op;
+            assert(operation_from_json(d, &op));
+            assert(op.state == "rolledback");
+            assert(op.result.count("__rolledback__") == 1);
+        }
+        json_object_put(d);
+    }
+
+    // gc removes terminal ops past ttl and their docs, keeps preparing ones.
+    {
+        PlatformStore s(db);
+        OpCoordinator c;
+        c.set_store(&s);
+        Operation op;
+        {
+            json_object* d = s.get_doc("op", "op-1");  // rolledback by now
+            assert(operation_from_json(d, &op));
+            json_object_put(d);
+        }
+        op.state = "committed";  // terminal, created_ns ancient
+        c.restore(op);
+        assert(c.gc(999999999ULL * 1000000000ULL, 3600ULL * 1000000000ULL).size() >= 1);
+        assert(s.get_doc("op", "op-1") == nullptr);
+        assert(s.get_doc("op", "op-2") == nullptr);
+
+        OpCoordinator c2;
+        c2.set_store(&s);
+        Operation& p = c2.begin("op-live", 1, {"a"}, 0);
+        (void)p;
+        assert(c2.gc(999999999ULL * 1000000000ULL, 3600ULL * 1000000000ULL).empty());
+        assert(s.get_doc("op", "op-live") != nullptr);
+    }
+
+    std::remove(db);
+}
+
 static void test_common() {
     uint8_t out[32];
     dvs::sha256(nullptr, 0, out);
@@ -427,6 +606,8 @@ int main() {
     test_layout_apply_at();
     test_ops();
     test_ops_deadline();
+    test_op_serialization();
+    test_ops_persistence();
     test_store();
     test_contract();
     test_ws_codec();

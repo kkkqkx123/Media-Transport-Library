@@ -32,35 +32,6 @@ static void test_layout_cell_grid() {
     assert(!layout_cell_grid(10, -1, 1, 1, &cw, &ch));
 }
 
-static void test_layout_window_fragment() {
-    Rect win{1000, 500, 2000, 1000};
-    Rect left{0, 0, 1920, 1080};
-    Rect dst, src;
-    assert(layout_window_fragment(win, left, 1920, 1080, &dst, &src));
-    assert(dst.x == 1000 && dst.y == 500 && dst.w == 920 && dst.h == 580);
-    assert(src.x == 0 && src.y == 0);
-    assert(src.w > 0 && src.h > 0);
-    assert(src.x + src.w <= 1920 && src.y + src.h <= 1080);
-
-    Rect right{1920, 0, 1920, 1080};
-    assert(layout_window_fragment(win, right, 1920, 1080, &dst, &src));
-    assert(dst.x == 0 && dst.w == 1080);
-    assert(src.x + src.w <= 1920 && src.y + src.h <= 1080);
-
-    Rect far{4000, 0, 1920, 1080};
-    assert(!layout_window_fragment(win, far, 1920, 1080, &dst, &src));
-
-    assert(layout_window_fragment(win, left, 1920, 1080, nullptr, nullptr));
-
-    Rect zsrc{};
-    assert(layout_window_fragment(win, left, 0, 1080, nullptr, &zsrc));
-    assert(zsrc.w == 0 && zsrc.h == 0);
-
-    Rect a{0, 0, 5, 5};
-    Rect b{10, 10, 5, 5};
-    assert(!layout_window_fragment(a, b, 10, 10, &dst, &src));
-}
-
 static void test_layout_apply_at() {
     uint64_t at = layout_apply_at_ns(1000000000ULL, 60.0);
     assert(at >= 1000000000ULL + 50000000ULL);
@@ -602,7 +573,6 @@ static void test_common() {
 
 int main() {
     test_layout_cell_grid();
-    test_layout_window_fragment();
     test_layout_apply_at();
     test_ops();
     test_ops_deadline();

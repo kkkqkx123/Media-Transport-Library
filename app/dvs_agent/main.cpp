@@ -12,6 +12,7 @@
 #include "registration.h"
 #include "http_client.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
@@ -24,6 +25,7 @@
 #include <sstream>
 #include <map>
 #include <mutex>
+#include <vector>
 #include <fcntl.h>
 #include <unistd.h>
 #include <poll.h>
@@ -374,6 +376,160 @@ static std::string media_cmd(const std::string& type, json_object* payload,
                 "INVALID_ARGUMENT: picture changes must use prepare/commit");
     }
     return g_media->request(type, payload, timeout_ms);
+}
+
+/* Translate a platform sub-layout (unified wire shape from
+ * DVS_WINDOWS_TRANSLATION_GAPS_DESIGN.md §4: flat windows with
+ * windowId/sig/dst/src/z/muted/partial, an endpoint table, audio owner and
+ * scene volume) into the engine "streams" shape. Returns false on a
+ * whole-order rejection (signal not in the endpoint table, a cross-node
+ * window, or over the lane cap); on success *prep_out holds the prepare
+ * payload with lanes assigned by z ascending, ties in array order.
+ * Defensive clipping drops windows fully outside the node canvas. */
+static bool translate_platform_layout(json_object* body, json_object** prep_out,
+                                      std::string& err_out) {
+    *prep_out = nullptr;
+    if (!body || !json_object_is_type(body, json_type_object)) {
+        err_out = "INVALID_ARGUMENT:empty body";
+        return false;
+    }
+    json_object* wins = nullptr;
+    json_object_object_get_ex(body, "windows", &wins);
+    int wn = (wins && json_object_is_type(wins, json_type_array))
+                 ? (int)json_object_array_length(wins) : 0;
+    json_object* geo = nullptr;
+    json_object_object_get_ex(body, "geometry", &geo);
+    int canvas_w = 0, canvas_h = 0;
+    if (geo) {
+        json_object* v = nullptr;
+        if (json_object_object_get_ex(geo, "w", &v) && v) canvas_w = json_object_get_int(v);
+        if (json_object_object_get_ex(geo, "h", &v) && v) canvas_h = json_object_get_int(v);
+    }
+    /* Endpoint lookup: sig -> (address, port). A signal without a table
+     * entry leaves the agent no way to name its stream — reject the order. */
+    std::map<std::string, std::pair<std::string, int>> endpoints;
+    json_object* eps = nullptr;
+    if (json_object_object_get_ex(body, "endpoints", &eps) &&
+        json_object_is_type(eps, json_type_array)) {
+        int en = (int)json_object_array_length(eps);
+        for (int i = 0; i < en; i++) {
+            json_object* e = json_object_array_get_idx(eps, i);
+            if (!e || !json_object_is_type(e, json_type_object)) continue;
+            json_object* v = nullptr;
+            std::string sig, addr;
+            int port = 0;
+            if (json_object_object_get_ex(e, "sig", &v) && v)
+                sig = json_object_get_string(v);
+            if (json_object_object_get_ex(e, "address", &v) && v)
+                addr = json_object_get_string(v);
+            if (json_object_object_get_ex(e, "port", &v) && v)
+                port = json_object_get_int(v);
+            if (!sig.empty() && !addr.empty() && port > 0)
+                endpoints[sig] = {addr, port};
+        }
+    }
+    if (wn > 8) {  // MP4_PIP_MAX_LANES (display_layout.h)
+        err_out = "INVALID_ARGUMENT:too many windows for engine lanes";
+        return false;
+    }
+    /* Stable z-ascending order: same layer order falls back to array order,
+     * so channel assignment is deterministic (设计 §4 准入与排序). */
+    std::vector<int> order((size_t)wn);
+    for (int i = 0; i < wn; i++) order[(size_t)i] = i;
+    auto z_of = [&](int i) -> int {
+        json_object* w = json_object_array_get_idx(wins, i);
+        json_object* v = nullptr;
+        return (w && json_object_object_get_ex(w, "z", &v) && v)
+                   ? json_object_get_int(v) : 0;
+    };
+    std::stable_sort(order.begin(), order.end(),
+                     [&](int a, int b) { return z_of(a) < z_of(b); });
+
+    json_object* streams = json_object_new_array();
+    for (int idx : order) {
+        json_object* w = json_object_array_get_idx(wins, idx);
+        if (!w || !json_object_is_type(w, json_type_object)) continue;
+        json_object* v = nullptr;
+        std::string sig, win_id;
+        if (json_object_object_get_ex(w, "sig", &v) && v) sig = json_object_get_string(v);
+        if (json_object_object_get_ex(w, "windowId", &v) && v) win_id = json_object_get_string(v);
+        auto it = endpoints.find(sig);
+        if (it == endpoints.end()) {
+            json_object_put(streams);
+            err_out = "INVALID_ARGUMENT:signal '" + sig + "' not in endpoint table";
+            return false;
+        }
+        json_object* pv = nullptr;
+        bool partial = false;
+        if (json_object_object_get_ex(w, "partial", &pv) && pv)
+            partial = json_object_get_boolean(pv);
+        if (partial) {
+            json_object_put(streams);
+            /* 退化方案 (设计 §4 源裁剪分两步走): the compositor cannot crop
+             * a source today, so a cross-node window would be stretched to
+             * the full source and paint the wrong picture — reject it. */
+            err_out = "CROSS_NODE_WINDOW:window '" + win_id +
+                      "' spans multiple nodes; compositor cannot crop yet";
+            return false;
+        }
+        int dx = 0, dy = 0, dw = 0, dh = 0;
+        json_object* dst = nullptr;
+        if (json_object_object_get_ex(w, "dst", &dst) && dst) {
+            if (json_object_object_get_ex(dst, "x", &v) && v) dx = json_object_get_int(v);
+            if (json_object_object_get_ex(dst, "y", &v) && v) dy = json_object_get_int(v);
+            if (json_object_object_get_ex(dst, "w", &v) && v) dw = json_object_get_int(v);
+            if (json_object_object_get_ex(dst, "h", &v) && v) dh = json_object_get_int(v);
+        }
+        if (dw <= 0 || dh <= 0) continue;  // degenerate: silently dropped
+        /* Defensive clip against the node canvas (代理保留防御性裁剪). */
+        int cx1 = std::max(0, dx), cy1 = std::max(0, dy);
+        int cx2 = std::min(canvas_w, dx + dw), cy2 = std::min(canvas_h, dy + dh);
+        if (cx2 <= cx1 || cy2 <= cy1) {
+            fprintf(stderr, "dvs_agent: window '%s' fully outside canvas, dropped\n",
+                    win_id.c_str());
+            continue;
+        }
+        int sw = dw, sh = dh;
+        json_object* src = nullptr;
+        if (json_object_object_get_ex(w, "src", &src) && src) {
+            if (json_object_object_get_ex(src, "w", &v) && v) sw = json_object_get_int(v);
+            if (json_object_object_get_ex(src, "h", &v) && v) sh = json_object_get_int(v);
+        }
+        int lane = (int)json_object_array_length(streams);
+        json_object* s = json_object_new_object();
+        json_object_object_add(s, "lane", json_object_new_int(lane));
+        json_object_object_add(s, "main", json_object_new_boolean(lane == 0));
+        json_object_object_add(s, "sip", json_object_new_string(it->second.first.c_str()));
+        json_object_object_add(s, "udpPort", json_object_new_int(it->second.second));
+        json_object_object_add(s, "width", json_object_new_int(sw));
+        json_object_object_add(s, "height", json_object_new_int(sh));
+        json_object_object_add(s, "x", json_object_new_int(cx1));
+        json_object_object_add(s, "y", json_object_new_int(cy1));
+        json_object_object_add(s, "w", json_object_new_int(cx2 - cx1));
+        json_object_object_add(s, "h", json_object_new_int(cy2 - cy1));
+        json_object_array_add(streams, s);
+    }
+    json_object* prep = json_object_new_object();
+    json_object* opv = nullptr;
+    if (json_object_object_get_ex(body, "operationId", &opv) && opv)
+        json_object_object_add(prep, "operationId", json_object_get(opv));
+    json_object* rv = nullptr;
+    if (json_object_object_get_ex(body, "revision", &rv) && rv)
+        json_object_object_add(prep, "revision", json_object_get(rv));
+    json_object* av = nullptr;
+    if (json_object_object_get_ex(body, "applyAtNs", &av) && av)
+        json_object_object_add(prep, "applyAtNs", json_object_get(av));
+    /* Empty array = explicit clear (keep backdrop); it must still be staged
+     * so the commit applies an empty layout instead of keeping the picture. */
+    json_object_object_add(prep, "streams", streams);
+    json_object* aov = nullptr;
+    if (json_object_object_get_ex(body, "audioOwner", &aov) && aov)
+        json_object_object_add(prep, "audioOwner", json_object_get(aov));
+    json_object* vol = nullptr;
+    if (json_object_object_get_ex(body, "volume", &vol) && vol)
+        json_object_object_add(prep, "audioVolume", json_object_get(vol));
+    *prep_out = prep;
+    return true;
 }
 
 /* Read-only verbs on the query channel; never gated. */
@@ -781,16 +937,17 @@ int main(int argc, char** argv) {
             if (json_object_object_get_ex(data, "applyAtNs", &av))
                 applyAtNs = (int64_t)json_object_get_int64(av);
             if (opid.empty()) return;
-            json_object* prep = json_object_new_object();
-            json_object_object_add(prep, "operationId", json_object_new_string(opid.c_str()));
-            json_object_object_add(prep, "revision", json_object_new_int(rev));
-            json_object_object_add(prep, "applyAtNs", json_object_new_int64(applyAtNs));
-            json_object* wins = nullptr;
-            if (json_object_object_get_ex(data, "windows", &wins))
-                json_object_object_add(prep, "windows", json_object_get(wins));
-            json_object* geo = nullptr;
-            if (json_object_object_get_ex(data, "geometry", &geo))
-                json_object_object_add(prep, "geometry", json_object_get(geo));
+            /* Translate the platform sub-layout into engine streams. A whole
+             * order rejection (endpoint miss / cross-node window / lane cap)
+             * skips the prepare AND the reporter: reporting would ack ready
+             * off an idle engine while nothing was staged. The barrier then
+             * times out and the platform rolls back — never a fake ready. */
+            json_object* prep = nullptr;
+            std::string terr;
+            if (!translate_platform_layout(data, &prep, terr)) {
+                fprintf(stderr, "dvs_agent: layout rejected (%s)\n", terr.c_str());
+                return;
+            }
             std::string r = media_cmd("prepare", prep);
             json_object_put(prep);
             (void)r;
@@ -1678,16 +1835,15 @@ int main(int argc, char** argv) {
                 send_json(res, envelope_fail("INVALID_ARGUMENT", 400, "windows must be an array"));
                 return;
             }
-            json_object* prep = json_object_new_object();
-            json_object_object_add(prep, "operationId", json_object_new_string(opid.c_str()));
-            json_object_object_add(prep, "revision", json_object_new_int(rev));
-            json_object_object_add(prep, "applyAtNs", json_object_new_int64(applyAtNs));
-            json_object* wins = nullptr;
-            if (body && json_object_object_get_ex(body, "windows", &wins))
-                json_object_object_add(prep, "windows", json_object_get(wins));
-            json_object* geo = nullptr;
-            if (body && json_object_object_get_ex(body, "geometry", &geo))
-                json_object_object_add(prep, "geometry", json_object_get(geo));
+            /* Translate the platform sub-layout into engine streams before
+             * staging; a whole-order rejection answers 400 with the reason. */
+            json_object* prep = nullptr;
+            std::string terr;
+            if (!translate_platform_layout(body, &prep, terr)) {
+                if (body) json_object_put(body);
+                send_json(res, envelope_fail("INVALID_ARGUMENT", 400, terr.c_str()));
+                return;
+            }
             std::string r = media_cmd("prepare", prep);
             json_object_put(prep);
             std::string nodeId = get_str(g_store->node(), "id");

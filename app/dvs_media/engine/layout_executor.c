@@ -66,6 +66,16 @@ int dvs_layout_from_json(struct json_object* req, file_playout_pip_stream* out,
         if (json_object_object_get_ex(s, "y", &v)) p->y = json_object_get_int(v);
         if (json_object_object_get_ex(s, "w", &v)) p->w = json_object_get_int(v);
         if (json_object_object_get_ex(s, "h", &v)) p->h = json_object_get_int(v);
+        /* Source crop (forward-compatible; see display_layout.h). Zero w/h
+         * stays "full frame". */
+        if (json_object_object_get_ex(s, "srcX", &v)) p->src_x = json_object_get_int(v);
+        else if (json_object_object_get_ex(s, "src_x", &v)) p->src_x = json_object_get_int(v);
+        if (json_object_object_get_ex(s, "srcY", &v)) p->src_y = json_object_get_int(v);
+        else if (json_object_object_get_ex(s, "src_y", &v)) p->src_y = json_object_get_int(v);
+        if (json_object_object_get_ex(s, "srcW", &v)) p->src_w = json_object_get_int(v);
+        else if (json_object_object_get_ex(s, "src_w", &v)) p->src_w = json_object_get_int(v);
+        if (json_object_object_get_ex(s, "srcH", &v)) p->src_h = json_object_get_int(v);
+        else if (json_object_object_get_ex(s, "src_h", &v)) p->src_h = json_object_get_int(v);
         if (json_object_object_get_ex(s, "codestreamSize", &v))
             p->codestream_size = (size_t)json_object_get_int64(v);
     }

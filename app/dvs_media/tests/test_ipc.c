@@ -313,29 +313,27 @@ int main(void) {
   CHECK(data && jint(data, "revision") == 2, "revision persisted after commit");
   json_object_put(r);
 
-  /* 9. platform windows shape: prepare passes through and commit keeps the
-   * running picture (no engine layout was staged, so no clear) */
+  /* 9. platform windows shape: the bridge no longer silently passes the
+   * windows shape through — since the agent translates to streams
+   * (DVS_WINDOWS_TRANSLATION_GAPS_DESIGN.md), a windows-shape prepare means
+   * a pre-translation agent and is refused; no layout is staged, so a later
+   * commit keeps the running picture (no clear). */
   r = request_payload("prepare", "m-w1",
                       "{\"operationId\":\"opWin\",\"revision\":3,"
                       "\"applyAtNs\":0,"
                       "\"windows\":[{\"id\":\"w1\",\"sig\":\"s1\",\"x\":0,\"y\":0,"
                       "\"w\":1920,\"h\":1080,\"z\":1,\"muted\":false}],"
                       "\"geometry\":{\"x\":0,\"y\":0,\"w\":1920,\"h\":1080}}");
-  CHECK(r && jint(r, "status") == 202, "windows shape prepare accepted");
+  CHECK(r && jint(r, "status") != 202, "windows shape prepare refused");
   json_object_put(r);
-  ev = read_line(conn_fd, 3000);
-  CHECK(ev && jstr(ev, "type") && strcmp(jstr(ev, "type"), "media.prepare.result") == 0,
-        "windows shape prepare event pushed");
-  json_object_put(ev);
+  ev = read_line(conn_fd, 500);
+  CHECK(ev == NULL, "no prepare.result event for refused windows shape");
+  if (ev) json_object_put(ev);
   r = request_payload("commit", "m-w2", "{\"operationId\":\"opWin\",\"revision\":3}");
-  CHECK(r && jint(r, "status") == 200, "windows shape commit ok");
+  CHECK(r && jint(r, "status") == 200, "commit without staged layout keeps picture");
   json_object_put(r);
   ev = read_line(conn_fd, 2000);
-  CHECK(ev && jstr(ev, "type") && strcmp(jstr(ev, "type"), "media.layout_applied") == 0,
-        "windows shape commit broadcasts");
-  json_object_put(ev);
-  ev = read_line(conn_fd, 2000);
-  if (ev) json_object_put(ev); /* state_changed */
+  if (ev) json_object_put(ev); /* state_changed / layout_applied */
 
   /* 10. oversized query_state: 300 lanes must not truncate the envelope */
   r = request("query_state", "m-big", NULL);

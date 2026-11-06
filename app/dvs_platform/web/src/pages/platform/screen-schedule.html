@@ -407,6 +407,18 @@
         function cx(c) { return c * (CELL_W + GAP) + GAP; }
         function cy(r) { return r * (CELL_H + GAP) + GAP; }
 
+        /* 逻辑单位 → 整墙像素（按行列像素表缩放；运行态保持逻辑单位，
+         * 快照与平台下发使用像素——见 DVS_WINDOWS_TRANSLATION_GAPS_DESIGN.md
+         * 单位换算点定在前端保存时）。 */
+        function colPx(i) { return (wall.colPixels && wall.colPixels[i]) || 1920; }
+        function rowPx(i) { return (wall.rowPixels && wall.rowPixels[i]) || 1080; }
+        function pxX(c) { var x = 0; for (var i = 0; i < c; i++) x += colPx(i); return x; }
+        function pxY(r) { var y = 0; for (var i = 0; i < r; i++) y += rowPx(i); return y; }
+        function pxW(c, cs) { var w = 0; for (var i = c; i < c + cs; i++) w += colPx(i); return w; }
+        function pxH(r, rs) { var h = 0; for (var i = r; i < r + rs; i++) h += rowPx(i); return h; }
+        function wallPixelW() { var w = 0; for (var i = 0; i < COLS; i++) w += colPx(i); return w; }
+        function wallPixelH() { var h = 0; for (var i = 0; i < ROWS; i++) h += rowPx(i); return h; }
+
         /* ---------- 画布 ---------- */
         function buildCells() {
           var layer = $("cell-layer");
@@ -622,9 +634,18 @@
           windows = s.layout.map(function (l) {
             var signal = sigById(l.sig);
             if (!signal.ok) return null;
-            return { id: winSeq++, sigId: signal.id, sigName: signal.name + " · " + signal.port, x: cx(l.c), y: cy(l.r), w: cw(l.cs), h: ch(l.rs), z: ++zTop, muted: true };
+            var px, py, pw, ph;
+            if (l.x != null) {
+              /* 像素快照（新）：直接使用整墙像素。 */
+              px = l.x; py = l.y; pw = l.w; ph = l.h;
+            } else {
+              /* 旧格位快照：换算成像素（只读兼容，存量数据不迁移）。 */
+              px = pxX(l.c); py = pxY(l.r); pw = pxW(l.c, l.cs); ph = pxH(l.r, l.rs);
+            }
+            return { id: winSeq++, sigId: signal.id, sigName: signal.name + " · " + signal.port, x: px, y: py, w: pw, h: ph, z: ++zTop, muted: l.muted != null ? !!l.muted : true };
           }).filter(Boolean);
-          if (windows.length) windows[windows.length - 1].muted = false;
+          if (windows.length && !windows.some(function (w) { return !w.muted; }))
+            windows[windows.length - 1].muted = false;
           $("vol").value = s.volume;
           $("vol-val").textContent = s.volume;
           clearDirty();
@@ -696,8 +717,14 @@
         }
 
         function snapshotLayout() {
+          /* 需求口径：快照存整墙像素 + 静音位（坐标换算在保存时完成）。
+           * 旧格位快照 {sig,c,r,cs,rs} 仍可被 applyScene 读取。 */
           return windows.map(function (w) {
-            return { sig: w.sigId, c: Math.round((w.x - GAP) / (CELL_W + GAP)), r: Math.round((w.y - GAP) / (CELL_H + GAP)), cs: Math.max(1, Math.round((w.w + GAP) / (CELL_W + GAP))), rs: Math.max(1, Math.round((w.h + GAP) / (CELL_H + GAP))) };
+            var c = Math.round((w.x - GAP) / (CELL_W + GAP));
+            var r = Math.round((w.y - GAP) / (CELL_H + GAP));
+            var cs = Math.max(1, Math.round((w.w + GAP) / (CELL_W + GAP)));
+            var rs = Math.max(1, Math.round((w.h + GAP) / (CELL_H + GAP)));
+            return { sig: w.sigId, x: pxX(c), y: pxY(r), w: pxW(c, cs), h: pxH(r, rs), muted: !!w.muted };
           });
         }
         function sigIdByName(nm) {
@@ -770,6 +797,63 @@
           protoOpenDrawer("drawer-scene");
         };
 
+        /* ---------- 平台真实下发（原型提示替换为真实分发 + 回执等待） ---------- */
+        function boundNodeIds() {
+          var ids = [];
+          (wall.bindings || []).forEach(function (row) {
+            (row || []).forEach(function (b) {
+              if (b && b.node && ids.indexOf(String(b.node).toLowerCase()) < 0)
+                ids.push(String(b.node).toLowerCase());
+            });
+          });
+          return ids;
+        }
+        function nextRevision() {
+          var key = "dvs-op-rev-" + wall.id;
+          var rev = Number(localStorage.getItem(key) || 0) + 1;
+          localStorage.setItem(key, String(rev));
+          return rev;
+        }
+        function scenePixelWindows(s) {
+          return (s.layout || []).map(function (l) {
+            if (l.x != null) return { id: "w-" + s.id + "-" + l.sig, sig: l.sig, x: l.x, y: l.y, w: l.w, h: l.h, z: 1, muted: !!l.muted };
+            return { id: "w-" + s.id + "-" + l.sig, sig: l.sig, x: pxX(l.c), y: pxY(l.r), w: pxW(l.c, l.cs), h: pxH(l.r, l.rs), z: 1, muted: !!l.muted };
+          });
+        }
+        /* POST /api/v1/ops/prepare 后轮询操作状态直至 committed/blocked。
+         * 返回 Promise<true>（屏障达成）或 false（超时/回退）。 */
+        function dispatchAndWait(pixelWindows, volume) {
+          var members = boundNodeIds();
+          if (!members.length) return Promise.resolve(false);
+          var opId = "op-" + wall.id + "-" + Date.now().toString(36);
+          return DvsApi.requestAsync("POST", "/api/v1/ops/prepare", {
+            operationId: opId,
+            revision: nextRevision(),
+            members: members,
+            wall: { w: wallPixelW(), h: wallPixelH() },
+            windows: pixelWindows,
+            volume: volume == null ? Number($("vol").value) : volume
+          }).then(function (r) {
+            if (!r.ok) { protoToast(r.msg || "平台拒绝该操作"); return false; }
+            return new Promise(function (resolve) {
+              var tries = 0;
+              var timer = setInterval(function () {
+                if (++tries > 40) { clearInterval(timer); resolve(false); return; }
+                DvsApi.request("GET", "/api/v1/ops/" + encodeURIComponent(opId)).then(function (st) {
+                  var op = st.ok && st.data ? st.data : null;
+                  var state = op ? op.state : "";
+                  if (state === "committed" || state === "rolledback" || state === "blocked") {
+                    clearInterval(timer);
+                    if (state !== "committed" && op && op.rollback)
+                      protoToast("屏障未达成，已回退：" + op.rollback);
+                    resolve(state === "committed");
+                  }
+                });
+              }, 500);
+            });
+          });
+        }
+
         /* ---------- 事件 ---------- */
         $("win-layer").addEventListener("dragover", function (e) { e.preventDefault(); });
         $("win-layer").addEventListener("drop", function (e) {
@@ -789,11 +873,12 @@
               protoToast("存在 " + offlineCount() + " 个离线格位，已阻止切换；当前场景保持不变");
               return;
             }
-            protoToast("节点准备完成，正在按统一时间同帧切换…");
-            setTimeout(function () {
+            protoToast("已下发切换，等待各节点准备回执…");
+            dispatchAndWait(scenePixelWindows(target), target.volume).then(function (ok) {
+              if (!ok) { $("dd-scene").value = current.id; protoToast("切换失败：节点未全部就绪，当前场景保持不变"); return; }
               applyScene(target);
               protoToast("场景已同帧生效，全部节点回执成功");
-            }, 350);
+            });
           });
         });
         $("btn-save-scene").onclick = function () {
@@ -880,13 +965,15 @@
             title: "一键清屏",
             content: "将关闭当前 " + windows.length + " 个窗口（已保存的场景不受影响）。确认清屏？",
             onOk: function () {
-              setTimeout(function () {
+              /* 空窗口数组 = 显式清屏（保留底图），走真实两阶段分发。 */
+              dispatchAndWait([], null).then(function (ok) {
                 btn.disabled = false;
+                if (!ok) { protoToast("清屏未达成：节点未全部就绪，当前画面保持不变"); return; }
                 windows = [];
                 clearDirty();
                 renderWindows();
                 protoToast("已清屏：不改变绑定与设置，不产生未保存改动，场景名保留");
-              }, 200);
+              });
             },
             onCancel: function () { btn.disabled = false; }
           });

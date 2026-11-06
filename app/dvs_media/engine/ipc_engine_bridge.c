@@ -236,8 +236,12 @@ static int hook_prepare(struct json_object* req, char* err, size_t errlen) {
         }
     }
     /* Layout staging: only validate when a recognizable layout body is present.
-     * Pure operation frames (operationId/revision/applyAtNs) and the platform
-     * windows/geometry shape are accepted without engine validation in V1. */
+     * Pure operation frames (operationId/revision/applyAtNs only) pass through
+     * so the barrier can close without touching the picture. The platform
+     * windows/geometry shape is no longer silently accepted: since the agent
+     * translates to streams (DVS_WINDOWS_TRANSLATION_GAPS_DESIGN.md), a
+     * windows-shape prepare means a pre-translation agent — refuse it loudly
+     * instead of staging nothing and faking success on commit. */
     {
         struct json_object* t = NULL;
         if (req && (json_object_object_get_ex(req, "streams", &t) ||
@@ -247,6 +251,10 @@ static int hook_prepare(struct json_object* req, char* err, size_t errlen) {
                 return -1;
             }
             return 0;
+        }
+        if (req && json_object_object_get_ex(req, "windows", &t) && t) {
+            snprintf(err, errlen, "unsupported layout shape: agent must translate windows to streams");
+            return -1;
         }
     }
     return 0;

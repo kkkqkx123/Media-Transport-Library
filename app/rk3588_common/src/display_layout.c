@@ -127,6 +127,20 @@ int file_playout_pip_validate(const file_playout_pip_stream* streams, int count,
                     i, s->x, s->y, s->w, s->h, mode_w, mode_h);
             return -1;
         }
+        /* Source crop must stay inside the decoded frame; zero w/h means the
+         * full frame. A partial crop has no render path yet (the agent is
+         * supposed to reject cross-node windows upstream), so refuse it here
+         * too — never silently stretch. */
+        int cx = s->src_x, cy = s->src_y;
+        int cw = s->src_w > 0 ? s->src_w : s->width;
+        int ch = s->src_h > 0 ? s->src_h : s->height;
+        if (cx < 0 || cy < 0 || cw <= 0 || ch <= 0 || cx + cw > s->width ||
+            cy + ch > s->height || cw != s->width || ch != s->height) {
+            fprintf(stderr,
+                    "pip_streams[%d]: unsupported source crop (%d,%d %dx%d of %dx%d)\n",
+                    i, cx, cy, cw, ch, s->width, s->height);
+            return -1;
+        }
         if (s->main)
             main_count++;
 

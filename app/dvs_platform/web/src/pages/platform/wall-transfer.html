@@ -102,6 +102,7 @@
                       <th class="col-check"><input type="checkbox" id="chk-all" /></th>
                       <th class="col-name">设备别名</th>
                       <th class="col-text">IP</th>
+                      <th class="col-text">端口</th>
                       <th class="col-status">传输方式</th>
                       <th class="ops col-ops">操作</th>
                     </tr>
@@ -197,6 +198,7 @@
               '<td class="col-check"><input type="checkbox" class="chk-row" data-name="' + esc(d.name) + '" /></td>' +
               '<td class="col-name">' + esc(d.name) + (d.inUse ? ' <span style="font-size:12px;color:var(--td-warning-color)">' + d.inUse + " 窗口在用</span>" : "") + "</td>" +
               '<td class="col-text">' + d.ip + "</td>" +
+              '<td class="col-text"><input type="number" class="proto-input wl-port" data-name="' + esc(d.name) + '" min="1" max="65535" step="1" value="' + (d.port || 50010) + '" style="width: 90px; height: 30px" /></td>' +
               '<td class="col-status"><select class="proto-select sel-trans" data-name="' + esc(d.name) + '" style="width: 90px; height: 30px">' +
               '<option' + (d.transMode === "单播" ? " selected" : "") + '>单播</option><option' + (d.transMode === "组播" ? " selected" : "") + ">组播</option></select></td>" +
               '<td class="ops col-ops"><button type="button" class="link btn-remove" data-name="' + esc(d.name) + '">移除</button></td>' +
@@ -209,6 +211,14 @@
               var d = whitelist.find(function (x) { return x.name === sel.getAttribute("data-name"); });
               if (d) d.transMode = sel.value;
               markDirty();
+            });
+          });
+          document.querySelectorAll(".wl-port").forEach(function (inp) {
+            inp.addEventListener("change", function () {
+              var d = whitelist.find(function (x) { return x.name === inp.getAttribute("data-name"); });
+              var p = Math.floor(Number(inp.value));
+              if (d && p >= 1 && p <= 65535) { d.port = p; markDirty(); }
+              else if (d) { inp.value = d.port || 50010; protoToast("端口取值 1~65535，已还原"); }
             });
           });
           document.querySelectorAll(".btn-remove").forEach(function (btn) {
@@ -281,7 +291,7 @@
             var id = c.getAttribute("data-id");
             var cd = catalog.find(function (x) { return x.id === id; });
             var sel = document.querySelector('.add-trans[data-id="' + id + '"]');
-            whitelist.push({ id: id, name: cd.name, ip: cd.ip, transMode: sel ? sel.value : "单播", inUse: useCount(cd) });
+            whitelist.push({ id: id, name: cd.name, ip: cd.ip, port: 50010 + whitelist.length, transMode: sel ? sel.value : "单播", inUse: useCount(cd) });
           });
           $("add-cancel").click();
           markDirty();
@@ -310,7 +320,7 @@
               wall = store.updateWall(wall.id, {
                 whitelist: whitelist.map(function (device) {
                   var registered = window.DvsNodeState.get(device.id);
-                  return { id: device.id, name: registered ? registered.name : device.name, ip: registered ? registered.ip : device.ip, transMode: device.transMode };
+                  return { id: device.id, name: registered ? registered.name : device.name, ip: registered ? registered.ip : device.ip, port: device.port || 50010, transMode: device.transMode };
                 }),
                 windows: (latestWall.windows || []).filter(function (win) {
                   return removedSignals.indexOf(win.sig) < 0 && removedIds.indexOf(win.sig) < 0 && removedIds.indexOf(win.sourceId) < 0;

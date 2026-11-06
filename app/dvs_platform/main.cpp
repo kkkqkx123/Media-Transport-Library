@@ -2,6 +2,7 @@
 #include <json-c/json.h>
 
 #include <atomic>
+#include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <condition_variable>
@@ -33,6 +34,16 @@ static OpCoordinator g_ops;
 static std::mutex g_ops_mu;
 static std::mutex g_idem_mu;
 static std::map<std::string, std::string> g_idem_cache;
+
+// Layout admission limits (DVS_WINDOWS_TRANSLATION_GAPS_DESIGN.md §4):
+// window count is capped at the engine's NV12 lane budget; window size
+// shares the 64~7680 per-cell pixel floor so degenerate rects never reach
+// a node. Violations reject the whole order — the same-frame invariant
+// forbids partial walls.
+// Engine lane budget: mirrors MP4_PIP_V1_NV12_LANES (rk3588_common
+// display_layout.h) without pulling the rk3588 dependency in.
+static const int kMaxWindowsPerNode = 4;
+static const int kMinWindowSize = 64;
 
 // Escape a string for embedding inside a JSON string literal. Audit events
 // are built by string concatenation over untrusted ids; without this, an id
@@ -201,43 +212,60 @@ int rect_int(json_object* o, const char* k) {
         return json_object_get_int(v);
     return 0;
 }
-// Intersect the global window set against one node's canvas rect and
-// produce the node-local window list (with source crop). Caller owns the
-// returned array. Pure pixel math; node never rounds (platform owns rounding).
-json_object* fragment_for_node(json_object* windows, const Rect& node,
-                               int wall_w, int wall_h) {
+// Intersect the global flat window set (wall pixels: id/sig/x/y/w/h/z/muted)
+// against one node's canvas rect and produce the node-local flat window list
+// in the unified wire shape: windowId/sig/dst/src/z/muted, where dst is the
+// node-local target rect and src the source crop relative to the window
+// origin (window rect maps 1:1 onto the signal frame). Cross-node windows
+// thus carry a partial crop; single-node windows carry the full source.
+// Caller owns the returned array. Pure pixel math; node never rounds
+// (platform owns rounding).
+json_object* fragment_for_node(json_object* windows, const Rect& node) {
     json_object* out = json_object_new_array();
     if (!windows || !json_object_is_type(windows, json_type_array)) return out;
     int n = json_object_array_length(windows);
     for (int i = 0; i < n; i++) {
         json_object* w = json_object_array_get_idx(windows, i);
-        json_object* win = nullptr, * src = nullptr, * stream = nullptr;
-        json_object_object_get_ex(w, "win", &win);
-        json_object_object_get_ex(w, "src", &src);
-        json_object_object_get_ex(w, "stream", &stream);
-        Rect gw{rect_int(win, "x"), rect_int(win, "y"),
-                rect_int(win, "w"), rect_int(win, "h")};
-        Rect gs{0, 0, rect_int(src, "w"), rect_int(src, "h")};
-        Rect dst{}, ls{};
-        if (layout_window_fragment(gw, node, gs.w, gs.h, &dst, &ls)) {
-            json_object* nw = json_object_new_object();
-            json_object* nd = json_object_new_object();
-            json_object_object_add(nd, "x", json_object_new_int(dst.x));
-            json_object_object_add(nd, "y", json_object_new_int(dst.y));
-            json_object_object_add(nd, "w", json_object_new_int(dst.w));
-            json_object_object_add(nd, "h", json_object_new_int(dst.h));
-            json_object* ns = json_object_new_object();
-            json_object_object_add(ns, "x", json_object_new_int(ls.x));
-            json_object_object_add(ns, "y", json_object_new_int(ls.y));
-            json_object_object_add(ns, "w", json_object_new_int(ls.w));
-            json_object_object_add(ns, "h", json_object_new_int(ls.h));
-            json_object_object_add(nw, "win", nd);
-            json_object_object_add(nw, "src", ns);
-            if (stream) json_object_object_add(nw, "stream", json_object_get(stream));
-            json_object_array_add(out, nw);
-        }
+        Rect gw{rect_int(w, "x"), rect_int(w, "y"),
+                rect_int(w, "w"), rect_int(w, "h")};
+        if (gw.w <= 0 || gw.h <= 0) continue;
+        // Node-local intersection: dst inside the node canvas, src relative
+        // to the window origin so the visible slice of the source is explicit.
+        int ix1 = std::max(gw.x, node.x), iy1 = std::max(gw.y, node.y);
+        int ix2 = std::min(gw.x + gw.w, node.x + node.w);
+        int iy2 = std::min(gw.y + gw.h, node.y + node.h);
+        if (ix2 <= ix1 || iy2 <= iy1) continue;
+        json_object* nw = json_object_new_object();
+        json_object_object_add(nw, "windowId",
+                               json_object_new_string(body_str(w, "id").c_str()));
+        json_object_object_add(nw, "sig",
+                               json_object_new_string(body_str(w, "sig").c_str()));
+        json_object* nd = json_object_new_object();
+        json_object_object_add(nd, "x", json_object_new_int(ix1 - node.x));
+        json_object_object_add(nd, "y", json_object_new_int(iy1 - node.y));
+        json_object_object_add(nd, "w", json_object_new_int(ix2 - ix1));
+        json_object_object_add(nd, "h", json_object_new_int(iy2 - iy1));
+        json_object* ns = json_object_new_object();
+        json_object_object_add(ns, "x", json_object_new_int(ix1 - gw.x));
+        json_object_object_add(ns, "y", json_object_new_int(iy1 - gw.y));
+        json_object_object_add(ns, "w", json_object_new_int(ix2 - ix1));
+        json_object_object_add(ns, "h", json_object_new_int(iy2 - iy1));
+        json_object_object_add(nw, "dst", nd);
+        json_object_object_add(nw, "src", ns);
+        // Partial crop = the window crosses this node's boundary. The
+        // compositor cannot consume a crop today, so the agent must reject
+        // partial windows explicitly instead of stretching the full source.
+        bool partial = (ix1 != gw.x || iy1 != gw.y ||
+                        (ix2 - ix1) != gw.w || (iy2 - iy1) != gw.h);
+        json_object_object_add(nw, "partial", json_object_new_boolean(partial ? 1 : 0));
+        json_object* zv = nullptr;
+        if (json_object_object_get_ex(w, "z", &zv))
+            json_object_object_add(nw, "z", json_object_get(zv));
+        json_object* mv = nullptr;
+        if (json_object_object_get_ex(w, "muted", &mv) && json_object_is_type(mv, json_type_boolean))
+            json_object_object_add(nw, "muted", json_object_get(mv));
+        json_object_array_add(out, nw);
     }
-    (void)wall_w; (void)wall_h; // reserved for future global-coord validation
     return out;
 }
 // Generic docs CRUD mounted at /api/v1/<kind>[/<id>].
@@ -403,11 +431,13 @@ struct LayoutDelivery {
 // short HTTP to the agent base as fallback. Shared by the prepare fanout and
 // the rollback reissue, which previously duplicated this loop inline. Audits
 // stay with the callers because the two paths use different audit schemas.
+// volume < 0 omits the scene-volume key (rollback reissue keeps the engine
+// volume untouched); audioOwner derives from the windows themselves (the
+// latest un-muted window speaks, matching the frontend behavior).
 static LayoutDelivery deliver_layout_prepare(const std::string& node_id,
                                              const std::string& opid,
                                              int revision, int64_t apply_at_ns,
-                                             json_object* wins, int wall_w,
-                                             int wall_h,
+                                             json_object* wins, int volume,
                                              const std::string& token) {
     LayoutDelivery d;
     json_object* nd = g_store->get_doc("node", node_id);
@@ -423,13 +453,66 @@ static LayoutDelivery deliver_layout_prepare(const std::string& node_id,
     }
     Rect node{rect_int(geo, "x"), rect_int(geo, "y"),
               rect_int(geo, "w"), rect_int(geo, "h")};
-    json_object* frag = fragment_for_node(wins, node, wall_w, wall_h);
+    json_object* frag = fragment_for_node(wins, node);
+    // Endpoint table: only the signals this node's windows reference. Entries
+    // come from the whitelist docs; the port field is authoritative (added per
+    // DVS_WINDOWS_TRANSLATION_GAPS_DESIGN.md), defaulting to the requirement
+    // example's port range when a legacy entry omits it.
+    std::set<std::string> sigs;
+    int fn = json_object_array_length(frag);
+    for (int i = 0; i < fn; i++)
+        sigs.insert(body_str(json_object_array_get_idx(frag, i), "sig"));
+    json_object* endpoints = json_object_new_array();
+    if (!sigs.empty()) {
+        for (auto& wid : g_store->list_ids("whitelist")) {
+            json_object* wl = g_store->get_doc("whitelist", wid);
+            if (!wl) continue;
+            std::string wsig = body_str(wl, "sig");
+            if (wsig.empty()) wsig = body_str(wl, "id");
+            if (!sigs.count(wsig)) { json_object_put(wl); continue; }
+            json_object* ep = json_object_new_object();
+            json_object_object_add(ep, "sig", json_object_new_string(wsig.c_str()));
+            json_object_object_add(ep, "address",
+                                   json_object_new_string(body_str(wl, "address").c_str()));
+            json_object* pv = nullptr;
+            int port = 0;
+            if (json_object_object_get_ex(wl, "port", &pv)) port = json_object_get_int(pv);
+            if (port <= 0) port = 50010;
+            json_object_object_add(ep, "port", json_object_new_int(port));
+            std::string mode = body_str(wl, "mode");
+            json_object_object_add(ep, "mode",
+                                   json_object_new_string(mode.empty() ? "multicast" : mode.c_str()));
+            json_object_array_add(endpoints, ep);
+            json_object_put(wl);
+        }
+    }
+    // Audio owner: latest un-muted window in fanout order (the frontend mutes
+    // the others when a new window opens, so the newest un-muted one speaks).
+    std::string audio_owner;
+    if (wins) {
+        int wn = json_object_array_length(wins);
+        for (int i = wn - 1; i >= 0; i--) {
+            json_object* w = json_object_array_get_idx(wins, i);
+            json_object* mv = nullptr;
+            bool muted = false;
+            if (json_object_object_get_ex(w, "muted", &mv))
+                muted = json_object_get_boolean(mv);
+            std::string wid = body_str(w, "id");
+            if (!wid.empty() && !muted) { audio_owner = wid; break; }
+        }
+    }
     json_object* payload = json_object_new_object();
     json_object_object_add(payload, "operationId", json_object_new_string(opid.c_str()));
     json_object_object_add(payload, "revision", json_object_new_int(revision));
     json_object_object_add(payload, "applyAtNs", json_object_new_int64(apply_at_ns));
     json_object_object_add(payload, "geometry", json_object_get(geo));
     json_object_object_add(payload, "windows", frag);
+    json_object_object_add(payload, "endpoints", endpoints);
+    if (!audio_owner.empty())
+        json_object_object_add(payload, "audioOwner",
+                               json_object_new_string(audio_owner.c_str()));
+    if (volume >= 0)
+        json_object_object_add(payload, "volume", json_object_new_int(volume));
     bool via_ws = false;
     if (ct::validate_layout_prepare(payload).empty())
         via_ws = ws_push(node_id, ct::kLayoutPrepare, json_object_get(payload));
@@ -471,13 +554,12 @@ static void execute_rollback(const std::string& rollback_op_id, int to_revision,
     std::string opid_c = rollback_op_id;
     int rev_c = to_revision;
     std::string windows_json = snap->windows_json;
-    int wall_w = snap->wall_w, wall_h = snap->wall_h;
     std::string token_c = g_api_token;
-    std::thread([opid_c, rev_c, windows_json, wall_w, wall_h, members, token_c]() {
+    std::thread([opid_c, rev_c, windows_json, members, token_c]() {
         json_object* wins = json_tokener_parse(windows_json.c_str());
         for (const auto& mid : members) {
             LayoutDelivery d = deliver_layout_prepare(
-                mid, opid_c, rev_c, 0, wins, wall_w, wall_h, token_c);
+                mid, opid_c, rev_c, 0, wins, -1, token_c);
             if (d.skipped && d.skip_reason == "no geometry")
                 continue; // no geometry: silently skipped, as before
             if (d.via_ws) {
@@ -1018,6 +1100,55 @@ int main(int argc, char** argv) {
                 send_json(res, fail_envelope("INVALID_ARGUMENT", 400, "need operationId+members"));
                 return;
             }
+            json_object* wall = nullptr;
+            if (b) json_object_object_get_ex(b, "wall", &wall);
+            json_object* windows = nullptr;
+            if (b) json_object_object_get_ex(b, "windows", &windows);
+            int wall_w = rect_int(wall, "w"), wall_h = rect_int(wall, "h");
+            // Admission before anything is registered or fanned out: the
+            // whole order is rejected on any violation (the same-frame
+            // invariant forbids partial walls, see
+            // DVS_WINDOWS_TRANSLATION_GAPS_DESIGN.md §4 准入与排序).
+            {
+                int win_n = (windows && json_object_is_type(windows, json_type_array))
+                                ? (int)json_object_array_length(windows) : 0;
+                if (win_n > kMaxWindowsPerNode) {
+                    if (b) json_object_put(b);
+                    send_json(res, fail_envelope(
+                                       "INVALID_ARGUMENT", 400,
+                                       "too many windows for node channel cap"));
+                    return;
+                }
+                bool need_wall = win_n > 0;
+                for (int i = 0; i < win_n; i++) {
+                    json_object* w = json_object_array_get_idx(windows, i);
+                    int wx = rect_int(w, "x"), wy = rect_int(w, "y");
+                    int ww = rect_int(w, "w"), wh = rect_int(w, "h");
+                    // Minimal size: same floor as the per-cell pixel range
+                    // (64~7680) so a degenerate window can never reach a node.
+                    if (ww < kMinWindowSize || wh < kMinWindowSize) {
+                        if (b) json_object_put(b);
+                        send_json(res, fail_envelope(
+                                           "INVALID_ARGUMENT", 400,
+                                           "window below minimum size"));
+                        return;
+                    }
+                    // Canvas sanity: windows are already wall pixels (the
+                    // frontend converts on save), so anything outside the
+                    // declared wall means a conversion bug — reject the order.
+                    if (need_wall && (wall_w <= 0 || wall_h <= 0 || wx < 0 || wy < 0 ||
+                                      wx + ww > wall_w || wy + wh > wall_h)) {
+                        if (b) json_object_put(b);
+                        send_json(res, fail_envelope(
+                                           "INVALID_ARGUMENT", 400,
+                                           "window outside wall canvas"));
+                        return;
+                    }
+                }
+            }
+            int volume = 80;
+            if (b && json_object_object_get_ex(b, "volume", &v) && v)
+                volume = json_object_get_int(v);
             uint64_t apply_ns = layout_apply_at_ns(now_ns(), fps);
             uint64_t deadline = now_ns() + (uint64_t)ct::barrier_timeout_ms() * 1000000ULL;
             std::string op_id_copy; uint64_t apply_copy = 0;
@@ -1027,17 +1158,13 @@ int main(int argc, char** argv) {
                 op_id_copy = op.op_id; apply_copy = op.apply_at_ns;
             }
 
-            json_object* wall = nullptr;
-            if (b) json_object_object_get_ex(b, "wall", &wall);
-            json_object* windows = nullptr;
-            if (b) json_object_object_get_ex(b, "windows", &windows);
-            int wall_w = rect_int(wall, "w"), wall_h = rect_int(wall, "h");
             const char* win_s = (windows && json_object_is_type(windows, json_type_array))
                 ? json_object_to_json_string(windows) : "[]";
             std::string windows_json = win_s ? win_s : "[]";
             uint64_t apply_at = apply_copy;
             std::string opid_c = op_id_copy;
             std::string token_c = g_api_token;
+            int volume_c = volume;
             // Stamp the fanout snapshot + created_ns for persistence and
             // rollback reissue (execute_rollback reads it back).
             {
@@ -1068,12 +1195,12 @@ int main(int argc, char** argv) {
                 }
                 if (nd) json_object_put(nd);
             }
-            std::thread([opid_c, rev, apply_at, members, windows_json, wall_w, wall_h,
+            std::thread([opid_c, rev, apply_at, members, windows_json, volume_c,
                            token_c]() {
                 json_object* wins = json_tokener_parse(windows_json.c_str());
                 for (const auto& mid : members) {
                     LayoutDelivery d = deliver_layout_prepare(
-                        mid, opid_c, rev, (int64_t)apply_at, wins, wall_w, wall_h,
+                        mid, opid_c, rev, (int64_t)apply_at, wins, volume_c,
                         token_c);
                     if (d.via_ws) {
                         g_store->audit("{\"fanout\":\"" + json_escape(mid) + "\",\"via\":\"ws\"}");

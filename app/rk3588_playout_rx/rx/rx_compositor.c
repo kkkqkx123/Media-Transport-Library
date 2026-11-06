@@ -582,6 +582,11 @@ int rx_compositor_try_fast_apply(rx_compositor* comp,
         if (strncmp(a->sip, b->sip, sizeof(a->sip)) != 0) return 1;
         if (a->udp_port != b->udp_port) return 1;
         if (a->width != b->width || a->height != b->height) return 1;
+        /* A crop change can only come with a source-size change today (full
+         * frame is the only accepted crop), but compare anyway so a future
+         * crop render path never silently keeps stale planes. */
+        if (a->src_x != b->src_x || a->src_y != b->src_y ||
+            a->src_w != b->src_w || a->src_h != b->src_h) return 1;
     }
     int mode_w = comp->layout.mode_w;
     int mode_h = comp->layout.mode_h;
@@ -596,6 +601,10 @@ int rx_compositor_try_fast_apply(rx_compositor* comp,
         comp->lanes[i].stream.y = streams[i].y;
         comp->lanes[i].stream.w = streams[i].w;
         comp->lanes[i].stream.h = streams[i].h;
+        comp->lanes[i].stream.src_x = streams[i].src_x;
+        comp->lanes[i].stream.src_y = streams[i].src_y;
+        comp->lanes[i].stream.src_w = streams[i].src_w;
+        comp->lanes[i].stream.src_h = streams[i].src_h;
         comp->lanes[i].stream.main = streams[i].main;
         comp->lanes[i].stream.lane = streams[i].lane;
     }

@@ -460,10 +460,10 @@
                   });
                 } else {
                   patch.whitelist = (wall.whitelist || []).filter(function (item) { return item.id !== d.id; });
-                  var legacy = { e1: "s1", e2: "s2", m1: "s3", t3: "s4", p1: "s5" };
-                  patch.windows = (wall.windows || []).filter(function (win) { return win.sig !== d.id && win.sig !== legacy[d.id]; });
+                  /* 信号标识以白名单设备标识为准；历史别名映射已归一删除。 */
+                  patch.windows = (wall.windows || []).filter(function (win) { return win.sig !== d.id; });
                   patch.scenes = (wall.scenes || []).map(function (scene) {
-                    return Object.assign({}, scene, { layout: (scene.layout || []).filter(function (item) { return item.sig !== d.id && item.sig !== legacy[d.id]; }) });
+                    return Object.assign({}, scene, { layout: (scene.layout || []).filter(function (item) { return item.sig !== d.id; }) });
                   });
                 }
                 DvsPlatformStore.updateWall(wall.id, patch);

@@ -390,6 +390,66 @@ bool ws_push(const std::string& node, const std::string& type, json_object* data
     return g_chan.send_to(node, frame);
 }
 
+// Outcome of one per-node layout delivery attempt.
+struct LayoutDelivery {
+    bool sent = false;       // payload handed to a transport (WS or HTTP)
+    bool via_ws = false;
+    int http_status = 0;     // meaningful when sent && !via_ws
+    bool skipped = false;
+    std::string skip_reason; // "no node doc" / "no geometry" / "no channel"
+};
+
+// Deliver one per-node layout.prepare payload to a single node: WS first,
+// short HTTP to the agent base as fallback. Shared by the prepare fanout and
+// the rollback reissue, which previously duplicated this loop inline. Audits
+// stay with the callers because the two paths use different audit schemas.
+static LayoutDelivery deliver_layout_prepare(const std::string& node_id,
+                                             const std::string& opid,
+                                             int revision, int64_t apply_at_ns,
+                                             json_object* wins, int wall_w,
+                                             int wall_h,
+                                             const std::string& token) {
+    LayoutDelivery d;
+    json_object* nd = g_store->get_doc("node", node_id);
+    if (!nd) { d.skipped = true; d.skip_reason = "no node doc"; return d; }
+    std::string agent_base = body_str(nd, "agentBase");
+    json_object* geo = nullptr;
+    json_object_object_get_ex(nd, "geometry", &geo);
+    bool geo_ok = geo && rect_int(geo, "w") > 0 && rect_int(geo, "h") > 0;
+    if (!geo_ok) {
+        d.skipped = true; d.skip_reason = "no geometry";
+        json_object_put(nd);
+        return d;
+    }
+    Rect node{rect_int(geo, "x"), rect_int(geo, "y"),
+              rect_int(geo, "w"), rect_int(geo, "h")};
+    json_object* frag = fragment_for_node(wins, node, wall_w, wall_h);
+    json_object* payload = json_object_new_object();
+    json_object_object_add(payload, "operationId", json_object_new_string(opid.c_str()));
+    json_object_object_add(payload, "revision", json_object_new_int(revision));
+    json_object_object_add(payload, "applyAtNs", json_object_new_int64(apply_at_ns));
+    json_object_object_add(payload, "geometry", json_object_get(geo));
+    json_object_object_add(payload, "windows", frag);
+    bool via_ws = false;
+    if (ct::validate_layout_prepare(payload).empty())
+        via_ws = ws_push(node_id, ct::kLayoutPrepare, json_object_get(payload));
+    if (via_ws) {
+        d.sent = true; d.via_ws = true;
+    } else if (!agent_base.empty()) {
+        const char* pb = json_object_to_json_string(payload);
+        std::string resp;
+        d.http_status = HttpClient().post_json(
+            agent_base + "/api/v1/node/media/layout",
+            std::string(pb ? pb : "{}"), resp, 5000, 2, token);
+        d.sent = true;
+    } else {
+        d.skipped = true; d.skip_reason = "no channel";
+    }
+    json_object_put(payload);
+    json_object_put(nd);
+    return d;
+}
+
 // Actually execute a rollback: find the settled op whose revision matches
 // to_revision, take its window snapshot, and re-issue that layout to every
 // member with the rollback op id and applyAtNs=0 (immediate apply). Delivery
@@ -415,48 +475,25 @@ static void execute_rollback(const std::string& rollback_op_id, int to_revision,
     std::string token_c = g_api_token;
     std::thread([opid_c, rev_c, windows_json, wall_w, wall_h, members, token_c]() {
         json_object* wins = json_tokener_parse(windows_json.c_str());
-        HttpClient cli;
         for (const auto& mid : members) {
-            json_object* nd = g_store->get_doc("node", mid);
-            if (!nd) continue;
-            std::string agent_base = body_str(nd, "agentBase");
-            json_object* geo = nullptr;
-            json_object_object_get_ex(nd, "geometry", &geo);
-            bool geo_ok = geo && rect_int(geo, "w") > 0 && rect_int(geo, "h") > 0;
-            if (!geo_ok) { json_object_put(nd); continue; }
-            Rect node{rect_int(geo, "x"), rect_int(geo, "y"),
-                      rect_int(geo, "w"), rect_int(geo, "h")};
-            json_object* frag = fragment_for_node(wins, node, wall_w, wall_h);
-            json_object* payload = json_object_new_object();
-            json_object_object_add(payload, "operationId",
-                                   json_object_new_string(opid_c.c_str()));
-            json_object_object_add(payload, "revision", json_object_new_int(rev_c));
-            json_object_object_add(payload, "applyAtNs", json_object_new_int64(0));
-            json_object_object_add(payload, "geometry", json_object_get(geo));
-            json_object_object_add(payload, "windows", frag);
-            bool via_ws = false;
-            if (ct::validate_layout_prepare(payload).empty())
-                via_ws = ws_push(mid, ct::kLayoutPrepare, json_object_get(payload));
-            if (via_ws) {
+            LayoutDelivery d = deliver_layout_prepare(
+                mid, opid_c, rev_c, 0, wins, wall_w, wall_h, token_c);
+            if (d.skipped && d.skip_reason == "no geometry")
+                continue; // no geometry: silently skipped, as before
+            if (d.via_ws) {
                 g_store->audit("{\"rollback\":\"" + json_escape(opid_c) +
                                "\",\"node\":\"" + json_escape(mid) +
                                "\",\"via\":\"ws\",\"executed\":1}");
-            } else if (!agent_base.empty()) {
-                const char* pb = json_object_to_json_string(payload);
-                std::string resp;
-                int sc = cli.post_json(agent_base + "/api/v1/node/media/layout",
-                                       std::string(pb ? pb : "{}"), resp, 5000, 2,
-                                       token_c);
+            } else if (d.sent) {
                 g_store->audit("{\"rollback\":\"" + json_escape(opid_c) +
                                "\",\"node\":\"" + json_escape(mid) +
-                               "\",\"executed\":" + std::to_string(sc == 200 ? 1 : 0) + "}");
+                               "\",\"executed\":" +
+                               std::to_string(d.http_status == 200 ? 1 : 0) + "}");
             } else {
                 g_store->audit("{\"rollback\":\"" + json_escape(opid_c) +
                                "\",\"node\":\"" + json_escape(mid) +
-                               "\",\"executed\":0,\"reason\":\"no channel\"}");
+                               "\",\"executed\":0,\"reason\":\"" + d.skip_reason + "\"}");
             }
-            json_object_put(payload);
-            json_object_put(nd);
         }
         if (wins) json_object_put(wins);
     }).detach();
@@ -998,6 +1035,9 @@ int main(int argc, char** argv) {
             const char* win_s = (windows && json_object_is_type(windows, json_type_array))
                 ? json_object_to_json_string(windows) : "[]";
             std::string windows_json = win_s ? win_s : "[]";
+            uint64_t apply_at = apply_copy;
+            std::string opid_c = op_id_copy;
+            std::string token_c = g_api_token;
             // Stamp the fanout snapshot + created_ns for persistence and
             // rollback reissue (execute_rollback reads it back).
             {
@@ -1008,10 +1048,8 @@ int main(int argc, char** argv) {
                     op2->wall_h = wall_h;
                     op2->created_ns = now_ns();
                 }
+                g_ops.persist(opid_c);
             }
-            uint64_t apply_at = apply_copy;
-            std::string opid_c = op_id_copy;
-            std::string token_c = g_api_token;
             if (members.size() > 32)
                 g_store->audit("{\"fanout-scale\":\"" + json_escape(opid_c) + "\",\"members\":" +
                                std::to_string(members.size()) + "}");
@@ -1033,46 +1071,21 @@ int main(int argc, char** argv) {
             std::thread([opid_c, rev, apply_at, members, windows_json, wall_w, wall_h,
                            token_c]() {
                 json_object* wins = json_tokener_parse(windows_json.c_str());
-                HttpClient cli;
                 for (const auto& mid : members) {
-                    json_object* nd = g_store->get_doc("node", mid);
-                    if (!nd) continue;
-                    std::string agent_base = body_str(nd, "agentBase");
-                    json_object* geo = nullptr;
-                    json_object_object_get_ex(nd, "geometry", &geo);
-                    bool geo_ok = geo && rect_int(geo, "w") > 0 && rect_int(geo, "h") > 0;
-                    if (!geo_ok) { json_object_put(nd); continue; }
-                    Rect node{rect_int(geo, "x"), rect_int(geo, "y"),
-                              rect_int(geo, "w"), rect_int(geo, "h")};
-                    json_object* frag = fragment_for_node(wins, node, wall_w, wall_h);
-                    json_object* payload = json_object_new_object();
-                    json_object_object_add(payload, "operationId",
-                                           json_object_new_string(opid_c.c_str()));
-                    json_object_object_add(payload, "revision", json_object_new_int(rev));
-                    json_object_object_add(payload, "applyAtNs",
-                                           json_object_new_int64((int64_t)apply_at));
-                    json_object_object_add(payload, "geometry", json_object_get(geo));
-                    json_object_object_add(payload, "windows", frag);
-                    std::string verr = ct::validate_layout_prepare(payload);
-                    bool via_ws = false;
-                    if (verr.empty()) via_ws = ws_push(mid, ct::kLayoutPrepare, json_object_get(payload));
-                    if (via_ws) {
+                    LayoutDelivery d = deliver_layout_prepare(
+                        mid, opid_c, rev, (int64_t)apply_at, wins, wall_w, wall_h,
+                        token_c);
+                    if (d.via_ws) {
                         g_store->audit("{\"fanout\":\"" + json_escape(mid) + "\",\"via\":\"ws\"}");
                         g_chan.set_transport(mid, "ws");
-                        json_object_put(payload);
-                    } else if (!agent_base.empty()) {
-                        const char* pb = json_object_to_json_string(payload);
-                        std::string resp;
-                        int sc = cli.post_json(agent_base + "/api/v1/node/media/layout",
-                                               std::string(pb ? pb : "{}"), resp, 5000, 2, token_c);
-                        g_store->audit("{\"fanout\":\"" + json_escape(mid) + "\",\"status\":" + std::to_string(sc) + "}");
+                    } else if (d.sent) {
+                        g_store->audit("{\"fanout\":\"" + json_escape(mid) +
+                                       "\",\"status\":" + std::to_string(d.http_status) + "}");
                         g_chan.set_transport(mid, "short");
-                        json_object_put(payload);
                     } else {
-                        g_store->audit("{\"fanout-skip\":\"" + json_escape(mid) + "\",\"reason\":\"no channel\"}");
-                        json_object_put(payload);
+                        g_store->audit("{\"fanout-skip\":\"" + json_escape(mid) +
+                                       "\",\"reason\":\"" + d.skip_reason + "\"}");
                     }
-                    json_object_put(nd);
                 }
                 if (wins) json_object_put(wins);
             }).detach();

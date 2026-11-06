@@ -100,6 +100,11 @@ void OpCoordinator::persist(const Operation& op) {
     }
 }
 
+void OpCoordinator::persist(const std::string& op_id) {
+    auto it = ops_.find(op_id);
+    if (it != ops_.end()) persist(it->second);
+}
+
 Operation& OpCoordinator::begin(const std::string& op_id, int revision,
                                 const std::set<std::string>& members,
                                 uint64_t apply_at_ns) {

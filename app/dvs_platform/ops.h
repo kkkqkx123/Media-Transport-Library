@@ -72,6 +72,11 @@ public:
     // created_ns is older than ttl_ns, deleting their persisted docs.
     // Preparing ops are never gc'd — expire_sweep() owns them.
     std::vector<std::string> gc(uint64_t now_ns, uint64_t ttl_ns);
+    // Persist the current in-memory state of one op (no-op when absent or
+    // when no store is set). For callers that mutate via mutable_find() and
+    // want the doc to reflect the stamped fields immediately; caller holds
+    // g_ops_mu as with the other methods.
+    void persist(const std::string& op_id);
 
 private:
     // Persist one operation as a docs("op", op_id) record (no-op when no

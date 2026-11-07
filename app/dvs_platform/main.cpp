@@ -37,13 +37,12 @@ static std::mutex g_idem_mu;
 static std::map<std::string, std::string> g_idem_cache;
 
 // Layout admission limits (DVS_WINDOWS_TRANSLATION_GAPS_DESIGN.md §4):
-// window count is capped at the engine's NV12 lane budget; window size
-// shares the 64~7680 per-cell pixel floor so degenerate rects never reach
-// a node. Violations reject the whole order — the same-frame invariant
+// window size shares the 64~7680 per-cell pixel floor so degenerate rects
+// never reach a node; the per-node window budget (layout.h,
+// max_windows_per_node) is enforced per member canvas at prepare, never on
+// the wall-global count — a 16-window wall over 16 nodes needs one plane per
+// node. Violations reject the whole order — the same-frame invariant
 // forbids partial walls.
-// Engine lane budget: mirrors MP4_PIP_V1_NV12_LANES (rk3588_common
-// display_layout.h) without pulling the rk3588 dependency in.
-static const int kMaxWindowsPerNode = 4;
 static const int kMinWindowSize = 64;
 
 // Escape a string for embedding inside a JSON string literal. Audit events
@@ -2019,12 +2018,29 @@ int main(int argc, char** argv) {
             {
                 int win_n = (windows && json_object_is_type(windows, json_type_array))
                                 ? (int)json_object_array_length(windows) : 0;
-                if (win_n > kMaxWindowsPerNode) {
-                    if (b) json_object_put(b);
-                    send_json(res, fail_envelope(
-                                       "INVALID_ARGUMENT", 400,
-                                       "too many windows for node channel cap"));
-                    return;
+                // Per-node plane budget (never wall-global): the overlay limit
+                // is per member canvas. Windows spread over many nodes are
+                // fine; only one node intersecting more than the budget rejects
+                // the whole order. Members without stored geometry stay
+                // missing-report at fanout and are skipped here.
+                {
+                    std::vector<std::pair<std::string, Rect>> known;
+                    for (const auto& mid : members) {
+                        json_object* nd = g_store->get_doc("node", mid);
+                        json_object* geo = nullptr;
+                        if (nd) json_object_object_get_ex(nd, "geometry", &geo);
+                        bool ok = geo && rect_int(geo, "w") > 0 && rect_int(geo, "h") > 0;
+                        if (ok)
+                            known.emplace_back(mid, Rect{rect_int(geo, "x"), rect_int(geo, "y"),
+                                                         rect_int(geo, "w"), rect_int(geo, "h")});
+                        if (nd) json_object_put(nd);
+                    }
+                    std::string budget_err = validate_per_node_budget(windows, known);
+                    if (!budget_err.empty()) {
+                        if (b) json_object_put(b);
+                        send_json(res, fail_envelope("INVALID_ARGUMENT", 400, budget_err));
+                        return;
+                    }
                 }
                 bool need_wall = win_n > 0;
                 for (int i = 0; i < win_n; i++) {
@@ -2056,6 +2072,12 @@ int main(int argc, char** argv) {
             int volume = 80;
             if (b && json_object_object_get_ex(b, "volume", &v) && v)
                 volume = json_object_get_int(v);
+            if (!validate_volume(volume).empty()) {
+                if (b) json_object_put(b);
+                send_json(res, fail_envelope("INVALID_ARGUMENT", 400,
+                    "volume must be 0..100"));
+                return;
+            }
             if ((int)members.size() > max_wall_members()) {
                 if (b) json_object_put(b);
                 send_json(res, fail_envelope("INVALID_ARGUMENT", 400,
@@ -2295,6 +2317,8 @@ int main(int argc, char** argv) {
                     json_object_new_string(op->scene_id.c_str()));
                 json_object_object_add(d, "layoutHash",
                     json_object_new_string(op->layout_hash.c_str()));
+                json_object_object_add(d, "volume",
+                    json_object_new_int(op->volume));
                 json_object* ma = json_object_new_array();
                 for (auto& m : miss)
                     json_object_array_add(ma, json_object_new_string(m.c_str()));

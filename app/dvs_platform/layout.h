@@ -4,6 +4,7 @@
 #include <set>
 #include <string>
 #include <utility>
+#include <vector>
 
 // Pixel layout math. The platform owns all rounding: node never rounds.
 // Convention: left/top edges round down, right/bottom edges round up.
@@ -40,6 +41,9 @@ std::string binding_sig_of(json_object* doc);
 bool multicast_pool_next(const std::set<std::pair<std::string, int>>& used,
                          int want_port, std::string* addr_out, int* port_out);
 std::string validate_playback_shape(json_object* doc);
+// Prepare/rollback scene volume: 0..100 inclusive. Returns "" on success
+// else "CODE:reason" (loud fail, whole order rejected).
+std::string validate_volume(int volume);
 // Canonical hash of the windows array for idempotency and receipt matching.
 std::string layout_windows_hash(json_object* windows);
 // Read-only dirty compare: {dirty, diff[], savedHash, liveHash}.
@@ -58,6 +62,19 @@ bool base_subrect(int wall_w, int wall_h, const Rect& node, Rect* out);
 // origin (window rect maps 1:1 onto the signal frame). Caller owns the
 // returned array. Pure pixel math; node never rounds (platform owns rounding).
 json_object* fragment_for_node(json_object* windows, const Rect& node);
+// Per-node window budget: at most this many windows may land on one member
+// canvas (mirrors MP4_PIP_V1_NV12_LANES without pulling the rk3588 dep).
+// The wall-global window count is intentionally unbounded: a 16-window wall
+// spread over 16 nodes needs one plane per node, well within budget.
+int max_windows_per_node();
+// Per-node budget check over the wall-global window list: every listed member
+// canvas must intersect at most max_windows_per_node() windows (same fragment
+// math the fanout uses). Caller passes geometry-known members only; unknown
+// geometry stays missing-report at fanout. Returns "" on success else
+// "CODE:reason" naming the first over-budget node.
+std::string validate_per_node_budget(
+    json_object* windows,
+    const std::vector<std::pair<std::string, Rect>>& members);
 // Clock gate: max tolerable PTP offset in microseconds (env override).
 int ptp_max_offset_us();
 // Node qualification for fanout: online, role output, clock synced within

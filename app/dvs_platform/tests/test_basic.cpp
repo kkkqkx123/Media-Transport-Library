@@ -4,6 +4,8 @@
 #include <cstring>
 #include <set>
 #include <string>
+#include <utility>
+#include <vector>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -985,7 +987,11 @@ static void test_validation_gaps() {
             json_object_array_add(many, e);
         }
         json_object_object_add(s, "windows", many);
-        assert(!validate_scene_shape(s, 0, 0).empty());
+        // Wall-global window count is unbounded (per-node budget is enforced
+        // at prepare, where member geometries are known): five overlapping
+        // windows are a valid saved scene even though one node could not
+        // display them all.
+        assert(validate_scene_shape(s, 0, 0).empty());
         json_object_put(s);
     }
     {
@@ -1705,6 +1711,52 @@ static void test_fragment_for_node() {
     }
 }
 
+static void test_per_node_budget() {
+    assert(max_windows_per_node() == 4);
+    // No members or no windows: nothing to budget, passes.
+    {
+        std::vector<std::pair<std::string, Rect>> none;
+        assert(validate_per_node_budget(nullptr, none).empty());
+        json_object* empty = json_object_new_array();
+        assert(validate_per_node_budget(empty, none).empty());
+        json_object_put(empty);
+    }
+    // Four overlapping windows on one node pass; the fifth rejects naming it.
+    {
+        json_object* wins = json_object_new_array();
+        for (int i = 0; i < 5; i++) {
+            char id[16];
+            snprintf(id, sizeof(id), "w%d", i);
+            json_object_array_add(wins, mk_win(id, "s", 0, 0, 960, 540));
+        }
+        std::vector<std::pair<std::string, Rect>> one = {{"n1", Rect{0, 0, 1920, 1080}}};
+        json_object* four = json_object_new_array();
+        for (int i = 0; i < 4; i++)
+            json_object_array_add(four,
+                json_object_get(json_object_array_get_idx(wins, i)));
+        assert(validate_per_node_budget(four, one).empty());
+        std::string err = validate_per_node_budget(wins, one);
+        assert(!err.empty() && err.find("n1") != std::string::npos);
+        json_object_put(four);
+        json_object_put(wins);
+    }
+    // Sixteen windows spread over sixteen nodes: one plane each, passes.
+    {
+        json_object* wins = json_object_new_array();
+        std::vector<std::pair<std::string, Rect>> members;
+        for (int i = 0; i < 16; i++) {
+            char id[16], nid[16];
+            snprintf(id, sizeof(id), "w%d", i);
+            snprintf(nid, sizeof(nid), "n%d", i);
+            int nx = (i % 4) * 1920, ny = (i / 4) * 1080;
+            json_object_array_add(wins, mk_win(id, "s", nx, ny, 1920, 1080));
+            members.emplace_back(nid, Rect{nx, ny, 1920, 1080});
+        }
+        assert(validate_per_node_budget(wins, members).empty());
+        json_object_put(wins);
+    }
+}
+
 static void test_p3_barrier_and_scale() {
     assert(barrier_lanes_ready(nullptr));
     {
@@ -1741,6 +1793,11 @@ static void test_p3_barrier_and_scale() {
     }
     assert(fanout_parallelism() >= 1 && fanout_parallelism() <= 16);
     assert(max_wall_members() >= 1);
+    assert(validate_volume(0).empty());
+    assert(validate_volume(80).empty());
+    assert(validate_volume(100).empty());
+    assert(!validate_volume(-1).empty());
+    assert(!validate_volume(101).empty());
     {
         OpCoordinator c;
         c.begin_with_deadline("op-vol", 5, {"a"}, 100, 200);
@@ -1776,6 +1833,7 @@ int main() {
     test_ws_codec();
     test_business_rules();
     test_p2_business_rules();
+    test_per_node_budget();
     test_wall_ops();
     test_ops_gaps();
     test_fragment_for_node();

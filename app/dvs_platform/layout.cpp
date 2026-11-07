@@ -101,6 +101,22 @@ json_object* fragment_for_node(json_object* windows, const Rect& node) {
     return out;
 }
 
+int max_windows_per_node() { return 4; }
+
+std::string validate_per_node_budget(
+    json_object* windows,
+    const std::vector<std::pair<std::string, Rect>>& members) {
+    for (const auto& kv : members) {
+        json_object* frag = fragment_for_node(windows, kv.second);
+        int n = frag ? (int)json_object_array_length(frag) : 0;
+        if (frag) json_object_put(frag);
+        if (n > max_windows_per_node())
+            return "INVALID_ARGUMENT:node " + kv.first +
+                   " exceeds per-node window budget";
+    }
+    return "";
+}
+
 std::string docs_trim(const std::string& s) {
     size_t a = 0;
     while (a < s.size() && isspace((unsigned char)s[a])) a++;
@@ -215,8 +231,6 @@ std::string validate_scene_shape(json_object* doc, int wall_w, int wall_h) {
     if (!wins) return "";
     if (!json_object_is_type(wins, json_type_array))
         return "INVALID_ARGUMENT:scene windows must be array";
-    if ((int)json_object_array_length(wins) > 4)
-        return "INVALID_ARGUMENT:too many windows for node channel cap";
     for (size_t i = 0; i < json_object_array_length(wins); i++) {
         json_object* w = json_object_array_get_idx(wins, i);
         if (!w || !json_object_is_type(w, json_type_object))
@@ -446,6 +460,12 @@ std::string validate_playback_shape(json_object* doc) {
             if (st == s) ok = true;
         if (!ok) return "INVALID_ARGUMENT:playback-task bad status";
     }
+    return "";
+}
+
+std::string validate_volume(int volume) {
+    if (volume < 0 || volume > 100)
+        return "INVALID_ARGUMENT:volume must be 0..100";
     return "";
 }
 

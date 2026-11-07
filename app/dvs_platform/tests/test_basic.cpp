@@ -421,6 +421,7 @@ static void test_ops_persistence() {
         op.wall_w = 3840;
         op.wall_h = 2160;
         op.created_ns = 1000;
+        c.persist("op-1");  // direct stamps bypass the coordinator: persist like main.cpp does
         json_object* d = s.get_doc("op", "op-1");
         assert(d != nullptr);
         {
@@ -468,6 +469,13 @@ static void test_ops_persistence() {
 
         // A blocked reply on the restored op rolls back against revision 2.
         c.begin("op-2", 4, {"a"}, 0);
+        if (Operation* m = c.mutable_find("op-2")) {
+            // Production stamps created_ns right after begin (see main.cpp
+            // fanout); without it gc() treats the op as ageless and keeps
+            // its doc forever.
+            m->created_ns = 2000;
+            c.persist("op-2");
+        }
         assert(c.on_reply("op-2", "a", false, "blocked") == "blocked");
         int rev = 0;
         std::string rb = c.rollback_op("op-2", &rev);
@@ -524,19 +532,23 @@ static void test_ops_persistence() {
     }
 
     // gc removes terminal ops past ttl and their docs, keeps preparing ones.
+    // All persisted ops are restored first (as production does at startup),
+    // otherwise gc — which only collects in-memory ops — could never reach
+    // their docs.
     {
         PlatformStore s(db);
         OpCoordinator c;
         c.set_store(&s);
-        Operation op;
-        {
-            json_object* d = s.get_doc("op", "op-1");  // rolledback by now
-            assert(operation_from_json(d, &op));
+        for (const auto& id : s.list_ids("op")) {
+            json_object* d = s.get_doc("op", id);
+            assert(d != nullptr);
+            Operation op;
+            if (operation_from_json(d, &op)) c.restore(op);
             json_object_put(d);
         }
-        op.state = "committed";  // terminal, created_ns ancient
-        c.restore(op);
-        assert(c.gc(999999999ULL * 1000000000ULL, 3600ULL * 1000000000ULL).size() >= 1);
+        // op-1 (committed) and op-2 (rolledback) are ancient and collected;
+        // op-hang (rolledback but ageless: createdNs unknown) is kept.
+        assert(c.gc(999999999ULL * 1000000000ULL, 3600ULL * 1000000000ULL).size() == 2);
         assert(s.get_doc("op", "op-1") == nullptr);
         assert(s.get_doc("op", "op-2") == nullptr);
 

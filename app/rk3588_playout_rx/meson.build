@@ -102,7 +102,7 @@ file_playout_rx_lib = static_library('file_playout_rx_lib',
 )
 
 file_playout_rx = executable('file_playout_rx',
-  files('file_playout_config.c', 'file_playout_rx_app.c'),
+  files('file_playout_config.c', 'file_playout_app.c'),
   c_args: common_c_args,
   dependencies: [mtl_dep, threads_dep, libasound_dep, libjson_c_dep,
                  libavformat_dep, libavcodec_dep, libavutil_dep],

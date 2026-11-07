@@ -147,14 +147,33 @@ static struct json_object* big_lane_stats(void) {
   return arr;
 }
 
+/* Prepare gate mirroring the engine bridge (engine/ipc_engine_bridge.c
+ * hook_prepare) which cannot link into this no-MTL test target: pure
+ * operation frames and streams/layout shapes pass; the platform
+ * windows/geometry shape is refused so a pre-translation agent can never
+ * stage nothing and fake success on commit. */
+static int test_prepare_gate(struct json_object* req, char* err, size_t errlen) {
+  struct json_object* t = NULL;
+  if (req && (json_object_object_get_ex(req, "streams", &t) ||
+               json_object_object_get_ex(req, "layout", &t)))
+    return 0;
+  if (req && json_object_object_get_ex(req, "windows", &t) && t) {
+    snprintf(err, errlen,
+             "unsupported layout shape: agent must translate windows to streams");
+    return -1;
+  }
+  return 0;
+}
+
 int main(void) {
   unlink(SOCK);
   dvs_ipc_set_prepare_delay_ms(100);
-  /* only query hooks: prepare/commit stay NULL so the server keeps its
-   * pure state-machine mode for the flow tests below */
+  /* Query + prepare-gate hooks: commit stays NULL so the server keeps its
+   * pure state-machine mode for the flow tests below. */
   {
     dvs_ipc_engine_hooks_t hooks;
     memset(&hooks, 0, sizeof(hooks));
+    hooks.prepare = test_prepare_gate;
     hooks.lane_stats = big_lane_stats;
     dvs_ipc_install_hooks(&hooks);
   }
@@ -330,10 +349,13 @@ int main(void) {
   CHECK(ev == NULL, "no prepare.result event for refused windows shape");
   if (ev) json_object_put(ev);
   r = request_payload("commit", "m-w2", "{\"operationId\":\"opWin\",\"revision\":3}");
-  CHECK(r && jint(r, "status") == 200, "commit without staged layout keeps picture");
+  CHECK(r && jint(r, "status") == 409 && jstr(r, "code") &&
+            strcmp(jstr(r, "code"), "INVALID_STATE") == 0,
+        "commit without staged layout refused, picture kept");
   json_object_put(r);
-  ev = read_line(conn_fd, 2000);
-  if (ev) json_object_put(ev); /* state_changed / layout_applied */
+  ev = read_line(conn_fd, 500);
+  CHECK(ev == NULL, "refused commit broadcasts nothing");
+  if (ev) json_object_put(ev);
 
   /* 10. oversized query_state: 300 lanes must not truncate the envelope */
   r = request("query_state", "m-big", NULL);

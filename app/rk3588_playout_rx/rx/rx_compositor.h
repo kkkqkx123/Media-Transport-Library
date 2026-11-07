@@ -57,6 +57,17 @@ int rx_compositor_lane_count(const rx_compositor* comp);
 const file_playout_pip_stream* rx_compositor_lane_stream(const rx_compositor* comp,
                                                           int idx);
 int rx_compositor_lane_running(const rx_compositor* comp, int idx);
+/* Ready = decode thread alive and PTS progressed within the freshness window.
+ * A stale lane still counts as a session but not as decoding (ME-2). */
+int rx_compositor_lane_ready(const rx_compositor* comp, int idx);
+int rx_compositor_ready_count(const rx_compositor* comp);
+/* Current on-screen layer count (0 when no compositor). */
+int rx_compositor_layer_count(const rx_compositor* comp);
+/* Reselect the ST30 audio subscription without rebuilding video lanes.
+ * Empty sip or zero port stops audio (mute). Returns 0 on success. */
+int rx_compositor_audio_select(rx_compositor* comp, const char* sip,
+                               uint16_t audio_port);
+int rx_compositor_audio_running(const rx_compositor* comp);
 unsigned long long rx_compositor_lane_lost_frames(const rx_compositor* comp, int idx);
 unsigned long long rx_compositor_lane_last_pts_ns(const rx_compositor* comp, int idx);
 

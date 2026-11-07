@@ -49,7 +49,20 @@ typedef struct {
 
 /* Probe all subsystems. Returns 0 on success (best-effort; never fails hard). */
 int dvs_capability_probe(dvs_capability* cap);
+/* Static decode ceiling: min(compositor lane limit, DRM plane count), with
+ * the DVS_MAX_DECODE_SESSIONS bring-up override taking precedence. */
+int dvs_capability_static_ceiling(const dvs_capability* cap);
+/* Runtime available decodes: static ceiling minus admitted sessions. */
+int dvs_capability_available(const dvs_capability* cap);
 void dvs_capability_refresh_mtl(dvs_capability* cap, void* mtl_handle);
+/* Backend from the MTL port names, sharing the PMD prefix mapping with
+ * file_playout_mtl_init_dual. Single/dual merge uses the registered ports. */
+void dvs_capability_refresh_backend(dvs_capability* cap, const char* tx_port,
+                                     const char* rx_port);
+/* PTP refresh honoring the playout clock mode (0 external, 1 builtin,
+ * 2 monotonic). Monotonic always reports unknown. */
+void dvs_capability_refresh_ptp(dvs_capability* cap, void* mtl_handle,
+                                int ptp_mode);
 
 /* Release dynamically allocated arrays inside cap. */
 void dvs_capability_free(dvs_capability* cap);

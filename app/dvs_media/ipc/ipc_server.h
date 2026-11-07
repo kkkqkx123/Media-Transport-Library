@@ -29,6 +29,10 @@ typedef struct {
     /* MTL version string (e.g. from mtl_version()). May be NULL; the
      * capability reply then keeps the last probed value. */
     const char* (*mtl_version)(void);
+    /* Backend string derived from the registered MTL ports. May be NULL. */
+    const char* (*backend)(void);
+    /* Applied audio snapshot for query_state. May be NULL. */
+    struct json_object* (*audio_status)(void);
     /* Per-lane readiness stats for the barrier. May be NULL; query_state
      * then reports an empty lanes array. */
     struct json_object* (*lane_stats)(void);

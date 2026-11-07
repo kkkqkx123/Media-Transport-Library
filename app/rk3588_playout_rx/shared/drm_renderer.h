@@ -30,6 +30,11 @@ typedef struct drm_layer_frame {
     uint32_t ver_stride;
     int      content_w;
     int      content_h;
+    /* Source crop inside the decoded frame; w/h <= 0 means full content. */
+    int      src_x;
+    int      src_y;
+    int      src_w;
+    int      src_h;
 } drm_layer_frame;
 
 struct drm_renderer* drm_renderer_create(const drm_renderer_params* params);

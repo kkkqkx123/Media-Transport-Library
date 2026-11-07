@@ -10,11 +10,13 @@ test_state_machine = executable('test_state_machine',
 
 test_ipc = executable('test_ipc',
   files('test_ipc.c', '../ipc/ipc_server.c', '../ipc/state_machine.c',
-        '../engine/capability.c', '../engine/tx_port_map.c'),
+        '../engine/capability.c', '../engine/tx_port_map.c',
+        '../engine/session_admit.c'),
   c_args: common_c_args,
   dependencies: test_dep,
   include_directories: [include_directories('..'),
-                        include_directories('../../dvs_common/include')],
+                        include_directories('../../dvs_common/include'),
+                        file_playout_inc],
 )
 
 test_session_admit = executable('test_session_admit',

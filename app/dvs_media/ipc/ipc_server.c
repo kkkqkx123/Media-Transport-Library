@@ -692,6 +692,15 @@ static int handle_line(dvs_client_t* c, char* line) {
     json_object* lanes = (g_hooks.lane_stats) ? g_hooks.lane_stats() : NULL;
     if (!lanes) lanes = json_object_new_array();
     json_object_object_add(datao, "lanes", lanes);
+    json_object* audio = (g_hooks.audio_status) ? g_hooks.audio_status() : NULL;
+    if (!audio) {
+      audio = json_object_new_object();
+      json_object_object_add(audio, "owner", json_object_new_string(""));
+      json_object_object_add(audio, "volume", json_object_new_int(0));
+      json_object_object_add(audio, "muted", json_object_new_boolean(1));
+      json_object_object_add(audio, "applied", json_object_new_boolean(0));
+    }
+    json_object_object_add(datao, "audio", audio);
     json_object_object_add(datao, "rxSessions", json_object_new_int(rx_sessions));
     json_object_object_add(datao, "decoding", json_object_new_int(decoding));
     json_object_object_add(datao, "layers", json_object_new_int(layers));
@@ -726,6 +735,13 @@ static int handle_line(dvs_client_t* c, char* line) {
       const char* v = g_hooks.mtl_version();
       if (v && v[0]) {
         snprintf(g_cap.mtl_version, sizeof(g_cap.mtl_version), "%s", v);
+        refreshed = 1;
+      }
+    }
+    if (g_hooks.backend) {
+      const char* b = g_hooks.backend();
+      if (b && b[0]) {
+        snprintf(g_cap.mtl_backend, sizeof(g_cap.mtl_backend), "%s", b);
         refreshed = 1;
       }
     }

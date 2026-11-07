@@ -8,6 +8,9 @@
 #include "engine_ctx.h"
 #include "engine/layout_executor.h"
 #include "engine/session_mgr.h"
+#include "engine/session_admit.h"
+#include "display_layout.h"
+#include <time.h>
 #include <mtl_api.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -239,13 +242,34 @@ static int hook_prepare(struct json_object* req, char* err, size_t errlen) {
      * Pure operation frames (operationId/revision/applyAtNs only) pass through
      * so the barrier can close without touching the picture. The platform
      * windows/geometry shape is no longer silently accepted: since the agent
-     * translates to streams (DVS_WINDOWS_TRANSLATION_GAPS_DESIGN.md), a
-     * windows-shape prepare means a pre-translation agent — refuse it loudly
-     * instead of staging nothing and faking success on commit. */
+     * translates to streams, a windows-shape prepare means a pre-translation
+     * agent — refuse it loudly instead of staging nothing. Streams are
+     * validated here (whitelist + shape) so prepare fails fast with 400 and
+     * never stages a layout the commit could only half-apply. */
     {
         struct json_object* t = NULL;
         if (req && (json_object_object_get_ex(req, "streams", &t) ||
                      json_object_object_get_ex(req, "layout", &t))) {
+            file_playout_pip_stream vs[MP4_PIP_MAX_LANES];
+            int vn = 0;
+            if (dvs_layout_from_json(req, vs, &vn) != 0) {
+                snprintf(err, errlen, "bad layout");
+                return -1;
+            }
+            for (int i = 0; i < vn; i++) {
+                if (!vs[i].sip[0] || !vs[i].udp_port || vs[i].width <= 0 ||
+                    vs[i].height <= 0 || vs[i].fps <= 0.0f) {
+                    snprintf(err, errlen, "bad stream %d", i);
+                    return -1;
+                }
+                if (!dvs_session_whitelist_check(vs[i].sip, vs[i].udp_port)) {
+                    snprintf(err, errlen, "source %s:%u not whitelisted",
+                             vs[i].sip, (unsigned)vs[i].udp_port);
+                    return -1;
+                }
+            }
+            /* Stage via the layout executor so applyAtNs/audioOwner routing
+             * stay in the pending shadow; commit applies them atomically. */
             if (dvs_layout_prepare_from_json(req) != 0) {
                 snprintf(err, errlen, "bad layout");
                 return -1;
@@ -278,10 +302,29 @@ static void hook_counts(int* rx_sessions, int* decoding, int* layers) {
 
 static void hook_ptp_state(char* state, size_t n, int* offset_us) {
     if (!s_eng || !s_eng->st) return;
+    if (s_eng->cfg.ptp_mode == FILE_PLAYOUT_PTP_MONOTONIC) {
+        if (state && n > 0) snprintf(state, n, "unknown");
+        if (offset_us) *offset_us = 0;
+        return;
+    }
     uint64_t t = mtl_ptp_read_time(s_eng->st);
-    if (t == 0) return;
+    if (t == 0) {
+        if (state && n > 0) snprintf(state, n, "unknown");
+        if (offset_us) *offset_us = 0;
+        return;
+    }
     if (state && n > 0) snprintf(state, n, "synced");
-    if (offset_us) *offset_us = 0;
+    if (offset_us) {
+        struct timespec ts;
+#ifdef CLOCK_TAI
+        clock_gettime(CLOCK_TAI, &ts);
+#else
+        clock_gettime(CLOCK_REALTIME, &ts);
+#endif
+        uint64_t tai = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+        int64_t d = (int64_t)(t - tai);
+        *offset_us = (int)(d / 1000);
+    }
 }
 
 /* Per-lane readiness snapshot. Empty array means zero admitted sessions;
@@ -349,7 +392,37 @@ static json_object* hook_tx_status(void) {
     return dvs_engine_tx_status(s_eng);
 }
 
-static const char* hook_mtl_version(void) { return mtl_version(); }
+static const char* hook_mtl_version(void) {
+    if (!s_eng || !s_eng->st) return NULL;
+    return mtl_version();
+}
+
+static const char* hook_backend(void) {
+    static char buf[16];
+    if (!s_eng) return "unknown";
+    const char* tx = s_eng->cfg.tx_port[0] ? s_eng->cfg.tx_port : NULL;
+    const char* rx = s_eng->cfg.rx_port[0] ? s_eng->cfg.rx_port : NULL;
+    const char* pick = tx ? tx : rx;
+    if (tx && rx && strcmp(tx, rx) != 0) {
+        /* Dual ports with different prefixes cannot be one backend string. */
+        return "unknown";
+    }
+    if (!pick) return "unknown";
+    if (strncmp(pick, "kernel:", 7) == 0) return "kernel";
+    if (strncmp(pick, "native_af_xdp:", 14) == 0) return "af_xdp";
+    if (strncmp(pick, "dpdk_af_xdp:", 12) == 0) return "af_xdp";
+    if (strncmp(pick, "dpdk_af_packet:", 15) == 0) return "af_xdp";
+    if (pick[0]) {
+        snprintf(buf, sizeof(buf), "dpdk");
+        return buf;
+    }
+    return "unknown";
+}
+
+static json_object* hook_audio_status(void) {
+    if (!s_eng) return NULL;
+    return dvs_engine_audio_status(s_eng);
+}
 
 void dvs_ipc_attach_engine(dvs_engine* e) {
     s_eng = e;
@@ -361,7 +434,9 @@ void dvs_ipc_attach_engine(dvs_engine* e) {
         .counts = hook_counts,
         .ptp_state = hook_ptp_state,
         .mtl_version = hook_mtl_version,
+        .backend = hook_backend,
         .lane_stats = hook_lane_stats,
+        .audio_status = hook_audio_status,
         .tx_start = hook_tx_start,
         .tx_stop = hook_tx_stop,
         .tx_status = hook_tx_status,

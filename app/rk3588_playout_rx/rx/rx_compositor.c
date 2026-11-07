@@ -28,6 +28,9 @@
 #define RX_ST22_FB_CNT     8
 #define RX_CODED_POOL_CNT  24
 
+/* Lane considered stale when no PTS progress within this window. */
+#define RX_LANE_READY_TIMEOUT_NS (3000000000ULL)
+
 typedef struct rx_video_lane {
     rx_compositor*        comp;
     file_playout_pip_stream   stream;
@@ -46,6 +49,7 @@ typedef struct rx_video_lane {
     uint64_t              stat_received;
     uint64_t              stat_decoded;
     uint64_t              last_rx_pts;
+    uint64_t              last_progress_mono_ns;
     rx_e2e_stats          e2e;
     uint64_t              snap_received;
     uint64_t              snap_decoded;
@@ -179,6 +183,12 @@ static void* decode_thread(void* arg) {
         if (!pkt) continue;
         lane->stat_received++;
         lane->last_rx_pts = pkt->pts;
+        {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            lane->last_progress_mono_ns =
+                (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+        }
         lane_feed_packet(comp, lane, pkt->data, pkt->size, pkt->pts,
                          pkt->capture_tai_ns);
         if (lane->coded_pool && pkt->data)
@@ -267,6 +277,10 @@ static void* render_thread(void* arg) {
         frames[frame_count].ver_stride  = main_vs;
         frames[frame_count].content_w   = main_lane->stream.width;
         frames[frame_count].content_h   = main_lane->stream.height;
+        frames[frame_count].src_x       = main_lane->stream.src_x;
+        frames[frame_count].src_y       = main_lane->stream.src_y;
+        frames[frame_count].src_w       = main_lane->stream.src_w;
+        frames[frame_count].src_h       = main_lane->stream.src_h;
         lane_capture[frame_count]       = main_cap;
         frame_count++;
 
@@ -287,6 +301,10 @@ static void* render_thread(void* arg) {
             frames[frame_count].ver_stride  = vs;
             frames[frame_count].content_w   = lane->stream.width;
             frames[frame_count].content_h   = lane->stream.height;
+            frames[frame_count].src_x       = lane->stream.src_x;
+            frames[frame_count].src_y       = lane->stream.src_y;
+            frames[frame_count].src_w       = lane->stream.src_w;
+            frames[frame_count].src_h       = lane->stream.src_h;
             lane_capture[frame_count]       = cap;
             frame_count++;
         }
@@ -646,6 +664,76 @@ const file_playout_pip_stream* rx_compositor_lane_stream(const rx_compositor* co
 int rx_compositor_lane_running(const rx_compositor* comp, int idx) {
     if (!comp || idx < 0 || idx >= comp->lane_count) return 0;
     return atomic_load(&comp->lanes[idx].running) ? 1 : 0;
+}
+
+static uint64_t comp_mono_now(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
+int rx_compositor_lane_ready(const rx_compositor* comp, int idx) {
+    if (!comp || idx < 0 || idx >= comp->lane_count) return 0;
+    const rx_video_lane* lane = &comp->lanes[idx];
+    if (!atomic_load(&lane->running)) return 0;
+    if (lane->last_progress_mono_ns == 0) return 0;
+    uint64_t now = comp_mono_now();
+    if (now < lane->last_progress_mono_ns) return 1;
+    return (now - lane->last_progress_mono_ns) <= RX_LANE_READY_TIMEOUT_NS;
+}
+
+int rx_compositor_ready_count(const rx_compositor* comp) {
+    if (!comp) return 0;
+    int n = 0;
+    for (int i = 0; i < comp->lane_count; i++)
+        n += rx_compositor_lane_ready(comp, i) ? 1 : 0;
+    return n;
+}
+
+int rx_compositor_layer_count(const rx_compositor* comp) {
+    if (!comp) return 0;
+    return comp->layout.layer_count;
+}
+
+int rx_compositor_audio_running(const rx_compositor* comp) {
+    if (!comp) return 0;
+    return comp->audio_rx ? 1 : 0;
+}
+
+int rx_compositor_audio_select(rx_compositor* comp, const char* sip,
+                               uint16_t audio_port) {
+    if (!comp) return -1;
+    if (!sip || !sip[0] || audio_port == 0) {
+        if (comp->audio_rx) {
+            mtl_rx_audio_stop(comp->audio_rx);
+            mtl_rx_audio_free(comp->audio_rx);
+            comp->audio_rx = NULL;
+        }
+        return 0;
+    }
+    if (!comp->alsa || !comp->cfg.mt) return -1;
+    mtl_rx_audio_params arp = {
+        .st             = comp->cfg.mt,
+        .rx_port        = comp->cfg.rx_port,
+        .rx_sip         = sip,
+        .audio_udp_port = audio_port,
+        .payload_type   = 98,
+        .alsa           = comp->alsa,
+        .sync           = &comp->sync,
+        .cpu            = comp->cfg.cpu_audio,
+    };
+    mtl_rx_audio* fresh = mtl_rx_audio_create(&arp);
+    if (!fresh) return -1;
+    if (mtl_rx_audio_start(fresh) != 0) {
+        mtl_rx_audio_free(fresh);
+        return -1;
+    }
+    if (comp->audio_rx) {
+        mtl_rx_audio_stop(comp->audio_rx);
+        mtl_rx_audio_free(comp->audio_rx);
+    }
+    comp->audio_rx = fresh;
+    return 0;
 }
 
 unsigned long long rx_compositor_lane_lost_frames(const rx_compositor* comp, int idx) {

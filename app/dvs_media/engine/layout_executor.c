@@ -42,12 +42,16 @@ int dvs_layout_from_json(struct json_object* req, file_playout_pip_stream* out,
 
     int n = json_object_array_length(arr);
     if (n > MP4_PIP_MAX_LANES) n = MP4_PIP_MAX_LANES;
+    int any_lane = 0;
     for (int i = 0; i < n; i++) {
         struct json_object* s = json_object_array_get_idx(arr, i);
         file_playout_pip_stream* p = &out[i];
         memset(p, 0, sizeof(*p));
         struct json_object* v;
-        if (json_object_object_get_ex(s, "lane", &v)) p->lane = json_object_get_int(v);
+        if (json_object_object_get_ex(s, "lane", &v)) {
+            p->lane = json_object_get_int(v);
+            any_lane = 1;
+        }
         if (json_object_object_get_ex(s, "main", &v)) p->main = json_object_get_boolean(v);
         if (json_object_object_get_ex(s, "sip", &v))
             strncpy(p->sip, json_object_get_string(v), MP4_PIP_SIP_LEN - 1);
@@ -78,6 +82,9 @@ int dvs_layout_from_json(struct json_object* req, file_playout_pip_stream* out,
         else if (json_object_object_get_ex(s, "src_h", &v)) p->src_h = json_object_get_int(v);
         if (json_object_object_get_ex(s, "codestreamSize", &v))
             p->codestream_size = (size_t)json_object_get_int64(v);
+    }
+    if (!any_lane) {
+        for (int i = 0; i < n; i++) out[i].lane = i;
     }
     *count = n;
     return 0;

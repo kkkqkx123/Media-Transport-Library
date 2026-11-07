@@ -65,6 +65,12 @@ typedef struct display_layer {
     int      dst_y;
     int      dst_w;
     int      dst_h;
+    /* Source crop inside the decoded frame (resolved: zero w/h at input
+     * means the full frame, stored here as full content size). */
+    int      src_x;
+    int      src_y;
+    int      src_w;
+    int      src_h;
     int      zpos;
     uint32_t plane_id;
     int      lane;

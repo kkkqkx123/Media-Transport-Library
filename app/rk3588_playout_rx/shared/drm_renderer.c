@@ -222,11 +222,12 @@ static int ensure_bg_crtc(struct drm_renderer* r) {
 }
 
 static int set_plane_rect(struct drm_renderer* r, uint32_t plane_id, uint32_t fb_id,
-                          int dst_x, int dst_y, int dst_w, int dst_h, int src_w,
-                          int src_h) {
+                          int dst_x, int dst_y, int dst_w, int dst_h, int src_x,
+                          int src_y, int src_w, int src_h) {
     return drmModeSetPlane(r->fd, plane_id, (uint32_t)r->crtc_id, fb_id, 0,
                            (uint32_t)dst_x, (uint32_t)dst_y, (uint32_t)dst_w,
-                           (uint32_t)dst_h, 0, 0, (uint32_t)src_w << 16,
+                           (uint32_t)dst_h, (uint32_t)src_x << 16,
+                           (uint32_t)src_y << 16, (uint32_t)src_w << 16,
                            (uint32_t)src_h << 16);
 }
 
@@ -419,6 +420,11 @@ int drm_renderer_update_layout(struct drm_renderer* r,
     for (int i = 0; i < next->layer_count; i++) {
         if (next->layers[i].plane_id != r->layout.layers[i].plane_id)
             return -EXDEV;
+        if (next->layers[i].src_x != r->layout.layers[i].src_x ||
+            next->layers[i].src_y != r->layout.layers[i].src_y ||
+            next->layers[i].src_w != r->layout.layers[i].src_w ||
+            next->layers[i].src_h != r->layout.layers[i].src_h)
+            return -EXDEV;
     }
     pthread_mutex_lock(&r->layout_mu);
     for (int i = 0; i < next->layer_count; i++) {
@@ -426,6 +432,10 @@ int drm_renderer_update_layout(struct drm_renderer* r,
         r->layout.layers[i].dst_y = next->layers[i].dst_y;
         r->layout.layers[i].dst_w = next->layers[i].dst_w;
         r->layout.layers[i].dst_h = next->layers[i].dst_h;
+        r->layout.layers[i].src_x = next->layers[i].src_x;
+        r->layout.layers[i].src_y = next->layers[i].src_y;
+        r->layout.layers[i].src_w = next->layers[i].src_w;
+        r->layout.layers[i].src_h = next->layers[i].src_h;
         r->layout.layers[i].zpos  = next->layers[i].zpos;
         r->layout.layers[i].lane  = next->layers[i].lane;
         r->layout.layers[i].main  = next->layers[i].main;
@@ -564,8 +574,19 @@ int drm_renderer_display_layers(struct drm_renderer* r,
             continue;
         }
 
+        int sx = fr->src_w > 0 ? fr->src_x : lay.src_x;
+        int sy = fr->src_h > 0 ? fr->src_y : lay.src_y;
+        int sw = fr->src_w > 0 ? fr->src_w : (lay.src_w > 0 ? lay.src_w : cw);
+        int sh = fr->src_h > 0 ? fr->src_h : (lay.src_h > 0 ? lay.src_h : ch);
+        if (sx < 0) sx = 0;
+        if (sy < 0) sy = 0;
+        if (sw <= 0 || sw > cw) sw = cw;
+        if (sh <= 0 || sh > ch) sh = ch;
+        if (sx + sw > cw) sx = cw - sw;
+        if (sy + sh > ch) sy = ch - sh;
+
         if (set_plane_rect(r, plane_id, fb_id, lay.dst_x, lay.dst_y, lay.dst_w,
-                           lay.dst_h, cw, ch) < 0) {
+                           lay.dst_h, sx, sy, sw, sh) < 0) {
             perror("SetPlane layer");
             drmModeRmFB(r->fd, fb_id);
             continue;
@@ -614,7 +635,8 @@ int drm_renderer_display(struct drm_renderer* r, int dma_fd, uint32_t hor_stride
         }
         const display_layer* lay = &r->layout.layers[0];
         if (set_plane_rect(r, r->video_plane_id, fb_id, lay->dst_x, lay->dst_y,
-                           lay->dst_w, lay->dst_h, r->width, r->height) < 0) {
+                           lay->dst_w, lay->dst_h, 0, 0, r->width,
+                           r->height) < 0) {
             perror("SetPlane");
             drmModeRmFB(r->fd, fb_id);
             return -errno;

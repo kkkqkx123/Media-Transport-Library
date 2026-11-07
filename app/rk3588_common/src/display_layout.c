@@ -128,16 +128,14 @@ int file_playout_pip_validate(const file_playout_pip_stream* streams, int count,
             return -1;
         }
         /* Source crop must stay inside the decoded frame; zero w/h means the
-         * full frame. A partial crop has no render path yet (the agent is
-         * supposed to reject cross-node windows upstream), so refuse it here
-         * too — never silently stretch. */
+         * full frame. Partial crops render via the plane source rectangle. */
         int cx = s->src_x, cy = s->src_y;
         int cw = s->src_w > 0 ? s->src_w : s->width;
         int ch = s->src_h > 0 ? s->src_h : s->height;
         if (cx < 0 || cy < 0 || cw <= 0 || ch <= 0 || cx + cw > s->width ||
-            cy + ch > s->height || cw != s->width || ch != s->height) {
+            cy + ch > s->height) {
             fprintf(stderr,
-                    "pip_streams[%d]: unsupported source crop (%d,%d %dx%d of %dx%d)\n",
+                    "pip_streams[%d]: invalid source crop (%d,%d %dx%d of %dx%d)\n",
                     i, cx, cy, cw, ch, s->width, s->height);
             return -1;
         }
@@ -190,6 +188,10 @@ int display_layout_from_pip_streams(const file_playout_pip_stream* streams, int 
         lay->dst_y                   = s->y;
         lay->dst_w                   = s->w;
         lay->dst_h                   = s->h;
+        lay->src_x                   = s->src_x;
+        lay->src_y                   = s->src_y;
+        lay->src_w                   = s->src_w > 0 ? s->src_w : s->width;
+        lay->src_h                   = s->src_h > 0 ? s->src_h : s->height;
         lay->zpos                    = s->main ? 0 : (i + 1);
         lay->lane                    = s->lane >= 0 ? s->lane : i;
         lay->main                    = s->main;

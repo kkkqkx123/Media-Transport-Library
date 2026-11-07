@@ -77,17 +77,10 @@ void dvs_engine_destroy(dvs_engine* e) {
 
 void dvs_capability_refresh_mtl(dvs_capability* cap, void* mtl_handle) {
     if (!cap) return;
-    const char* v = mtl_version();
-    if (v && v[0]) {
-        snprintf(cap->mtl_version, sizeof(cap->mtl_version), "%s", v);
-        snprintf(cap->mtl_backend, sizeof(cap->mtl_backend), "dpdk");
-    }
     if (mtl_handle) {
-        uint64_t t = mtl_ptp_read_time(mtl_handle);
-        if (t != 0) {
-            snprintf(cap->ptp_state, sizeof(cap->ptp_state), "synced");
-            cap->ptp_offset_us = 0;
-        }
+        const char* v = mtl_version();
+        if (v && v[0])
+            snprintf(cap->mtl_version, sizeof(cap->mtl_version), "%s", v);
     }
 }
 
@@ -114,6 +107,46 @@ static void engine_wait_until(dvs_engine* e, uint64_t target_ns) {
         }
         nanosleep(&ts, NULL);
     }
+}
+
+/* Recompute the live counters from the running compositor. Caller holds mu. */
+static void engine_refresh_counts_locked(dvs_engine* e) {
+    if (!e->comp) {
+        atomic_store(&e->rx_sessions, dvs_session_count());
+        atomic_store(&e->decoding, 0);
+        atomic_store(&e->layers, 0);
+        return;
+    }
+    atomic_store(&e->rx_sessions, rx_compositor_lane_count(e->comp));
+    atomic_store(&e->decoding, rx_compositor_ready_count(e->comp));
+    atomic_store(&e->layers, rx_compositor_layer_count(e->comp));
+}
+
+static void engine_release_gone(const file_playout_pip_stream* old_streams,
+                                int old_n,
+                                const file_playout_pip_stream* new_streams,
+                                int new_n) {
+    for (int i = 0; i < old_n; i++) {
+        bool gone = true;
+        for (int j = 0; j < new_n; j++) {
+            if (strcmp(old_streams[i].sip, new_streams[j].sip) == 0 &&
+                old_streams[i].udp_port == new_streams[j].udp_port) {
+                gone = false;
+                break;
+            }
+        }
+        if (gone) dvs_session_release(old_streams[i].sip, old_streams[i].udp_port);
+    }
+}
+
+/* Wait for the shadow compositor to produce its first ready lane. */
+static int engine_shadow_wait_ready(rx_compositor* shadow) {
+    for (int i = 0; i < 50; i++) {
+        if (rx_compositor_ready_count(shadow) > 0) return 0;
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = 100000000L};
+        nanosleep(&ts, NULL);
+    }
+    return rx_compositor_ready_count(shadow) > 0 ? 0 : -1;
 }
 
 #ifdef HAVE_TX_BACKEND
@@ -154,19 +187,6 @@ static rx_compositor* build_compositor(dvs_engine* e,
     memcpy(cfg->pip_streams, streams, (size_t)count * sizeof(*streams));
     cfg->pip_stream_count = count;
 
-    /* Admission: enforce whitelist and refresh LRU for each source. Reject
-     * the whole layout if any source is not whitelisted. */
-    dvs_session_tick();
-    for (int i = 0; i < count; i++) {
-        int lane = 0;
-        if (dvs_session_admit(cfg->pip_streams[i].sip,
-                              cfg->pip_streams[i].udp_port, &lane) != 0) {
-            fprintf(stderr, "dvs_engine: source %s:%u rejected by whitelist\n",
-                    cfg->pip_streams[i].sip, cfg->pip_streams[i].udp_port);
-            return NULL;
-        }
-    }
-
     if (cfg->width <= 0) cfg->width = 1920;
     if (cfg->height <= 0) cfg->height = 1080;
     if (cfg->fps <= 0.0f)
@@ -178,6 +198,19 @@ static rx_compositor* build_compositor(dvs_engine* e,
     if (file_playout_pip_validate(cfg->pip_streams, count, mode_w, mode_h) < 0) {
         fprintf(stderr, "dvs_engine: layout validation failed\n");
         return NULL;
+    }
+
+    /* Admission after validation: a rejected layout never pollutes the LRU.
+     * Any source failing the whitelist rejects the whole layout. */
+    dvs_session_tick();
+    for (int i = 0; i < count; i++) {
+        int lane = 0;
+        if (dvs_session_admit(cfg->pip_streams[i].sip,
+                              cfg->pip_streams[i].udp_port, &lane) != 0) {
+            fprintf(stderr, "dvs_engine: source %s:%u rejected by whitelist\n",
+                    cfg->pip_streams[i].sip, cfg->pip_streams[i].udp_port);
+            return NULL;
+        }
     }
 
     rx_compositor_params cp = {
@@ -254,9 +287,7 @@ int dvs_engine_apply_layout_at(dvs_engine* e,
         e->cfg.pip_stream_count = 0;
         for (int i = 0; i < old_n; i++)
             dvs_session_release(old[i].sip, old[i].udp_port);
-        atomic_store(&e->rx_sessions, 0);
-        atomic_store(&e->decoding, 0);
-        atomic_store(&e->layers, 0);
+        engine_refresh_counts_locked(e);
         pthread_mutex_unlock(&e->mu);
         return 0;
     }
@@ -264,10 +295,6 @@ int dvs_engine_apply_layout_at(dvs_engine* e,
     if (e->comp) {
         int fr = rx_compositor_try_fast_apply(e->comp, streams, count);
         if (fr == 0) {
-            file_playout_pip_stream old[MP4_PIP_MAX_LANES];
-            int old_n = e->cfg.pip_stream_count;
-            if (old_n > MP4_PIP_MAX_LANES) old_n = MP4_PIP_MAX_LANES;
-            memcpy(old, e->cfg.pip_streams, (size_t)old_n * sizeof(*old));
             if (apply_at_ns != 0) {
                 pthread_mutex_unlock(&e->mu);
                 engine_wait_until(e, apply_at_ns);
@@ -280,20 +307,7 @@ int dvs_engine_apply_layout_at(dvs_engine* e,
             memcpy(e->cfg.pip_streams, streams,
                    (size_t)count * sizeof(*streams));
             e->cfg.pip_stream_count = count;
-            for (int i = 0; i < old_n; i++) {
-                bool gone = true;
-                for (int j = 0; j < count; j++) {
-                    if (strcmp(old[i].sip, streams[j].sip) == 0 &&
-                        old[i].udp_port == streams[j].udp_port) {
-                        gone = false;
-                        break;
-                    }
-                }
-                if (gone) dvs_session_release(old[i].sip, old[i].udp_port);
-            }
-            atomic_store(&e->rx_sessions, count);
-            atomic_store(&e->decoding, count);
-            atomic_store(&e->layers, count);
+            engine_refresh_counts_locked(e);
             pthread_mutex_unlock(&e->mu);
             dvs_audio_set(e, e->audio_owner, e->audio_volume);
             if (!atomic_load(&e->running)) {
@@ -311,29 +325,85 @@ int dvs_engine_apply_layout_at(dvs_engine* e,
             fprintf(stderr, "dvs_engine: layout validation failed\n");
             return -1;
         }
-        rx_compositor_stop(e->comp);
-        rx_compositor_free(e->comp);
-        e->comp = NULL;
+        /* source change: fall through to the shadow exchange below. The live
+         * compositor keeps displaying until the shadow is ready. */
     }
 
-    rx_compositor* comp = build_compositor(e, streams, count);
-    if (!comp) {
+    /* Shadow exchange: build and start the new compositor before touching the
+     * live one, then swap. A failed shadow never disturbs the picture. */
+    file_playout_pip_stream old[MP4_PIP_MAX_LANES];
+    int old_n = e->cfg.pip_stream_count;
+    if (old_n > MP4_PIP_MAX_LANES) old_n = MP4_PIP_MAX_LANES;
+    memcpy(old, e->cfg.pip_streams, (size_t)old_n * sizeof(*old));
+    file_playout_pip_stream saved_new[MP4_PIP_MAX_LANES];
+    memcpy(saved_new, streams, (size_t)count * sizeof(*streams));
+
+    rx_compositor* shadow = build_compositor(e, streams, count);
+    if (!shadow) {
+        /* build touched cfg.pip_streams: restore the live layout view. */
+        memcpy(e->cfg.pip_streams, old, (size_t)old_n * sizeof(*old));
+        e->cfg.pip_stream_count = old_n;
+        for (int i = 0; i < old_n; i++) {
+            int lane = 0;
+            dvs_session_admit(old[i].sip, old[i].udp_port, &lane);
+        }
         pthread_mutex_unlock(&e->mu);
+        fprintf(stderr, "dvs_engine: shadow prepare failed, picture kept\n");
         return -1;
     }
-    if (rx_compositor_start(comp) != 0) {
-        rx_compositor_free(comp);
+    if (rx_compositor_start(shadow) != 0) {
+        rx_compositor_free(shadow);
+        memcpy(e->cfg.pip_streams, old, (size_t)old_n * sizeof(*old));
+        e->cfg.pip_stream_count = old_n;
         pthread_mutex_unlock(&e->mu);
-        fprintf(stderr, "dvs_engine: compositor start failed\n");
+        fprintf(stderr, "dvs_engine: shadow start failed, picture kept\n");
         return -1;
     }
-    e->comp = comp;
-    atomic_store(&e->rx_sessions, count);
-    atomic_store(&e->decoding, count);
-    atomic_store(&e->layers, count);
+    /* cfg already carries the new layout via build_compositor; snapshot it
+     * back in case the build normalized anything, then wait for content. */
+    memcpy(saved_new, e->cfg.pip_streams, (size_t)count * sizeof(*saved_new));
+    int need_wait = (e->comp != NULL);
+    pthread_mutex_unlock(&e->mu);
+    int ready_rc = 0;
+    if (need_wait) ready_rc = engine_shadow_wait_ready(shadow);
+    pthread_mutex_lock(&e->mu);
+    if (ready_rc != 0) {
+        pthread_mutex_unlock(&e->mu);
+        rx_compositor_stop(shadow);
+        rx_compositor_free(shadow);
+        pthread_mutex_lock(&e->mu);
+        memcpy(e->cfg.pip_streams, old, (size_t)old_n * sizeof(*old));
+        e->cfg.pip_stream_count = old_n;
+        pthread_mutex_unlock(&e->mu);
+        fprintf(stderr, "dvs_engine: shadow no first frame, picture kept\n");
+        return -1;
+    }
+    if (apply_at_ns != 0) {
+        pthread_mutex_unlock(&e->mu);
+        engine_wait_until(e, apply_at_ns);
+        pthread_mutex_lock(&e->mu);
+        if (!e->comp && old_n > 0) {
+            pthread_mutex_unlock(&e->mu);
+            rx_compositor_stop(shadow);
+            rx_compositor_free(shadow);
+            return -1;
+        }
+    }
+    rx_compositor* prev = e->comp;
+    e->comp = shadow;
+    memcpy(e->cfg.pip_streams, saved_new, (size_t)count * sizeof(*saved_new));
+    e->cfg.pip_stream_count = count;
+    engine_release_gone(old, old_n, saved_new, count);
+    engine_refresh_counts_locked(e);
     pthread_mutex_unlock(&e->mu);
 
-    /* Apply the pending audio owner/volume routing. */
+    if (prev) {
+        rx_compositor_stop(prev);
+        rx_compositor_free(prev);
+    }
+    fprintf(stderr, "dvs_engine: layout swapped %d -> %d\n", old_n, count);
+
+    /* Audio follows the commit (owner resolved against the new lanes). */
     dvs_audio_set(e, e->audio_owner, e->audio_volume);
 
     if (!atomic_load(&e->running)) {
@@ -532,6 +602,37 @@ void dvs_engine_set_audio(dvs_engine* e, const char* owner, int volume) {
     e->audio_volume = volume;
 }
 
+struct json_object* dvs_engine_audio_status(dvs_engine* e) {
+    struct json_object* o = json_object_new_object();
+    if (!o) return NULL;
+    if (!e) {
+        json_object_object_add(o, "owner", json_object_new_string(""));
+        json_object_object_add(o, "volume", json_object_new_int(0));
+        json_object_object_add(o, "muted", json_object_new_boolean(1));
+        json_object_object_add(o, "applied", json_object_new_boolean(0));
+        return o;
+    }
+    pthread_mutex_lock(&e->mu);
+    char owner[64], sip[32];
+    uint16_t port;
+    int vol, ok;
+    snprintf(owner, sizeof(owner), "%s", e->audio_applied_owner);
+    snprintf(sip, sizeof(sip), "%s", e->audio_applied_sip);
+    port = e->audio_applied_port;
+    vol = e->audio_applied_volume;
+    ok = e->audio_applied_ok;
+    int sub = e->comp ? rx_compositor_audio_running(e->comp) : 0;
+    pthread_mutex_unlock(&e->mu);
+    json_object_object_add(o, "owner", json_object_new_string(owner));
+    json_object_object_add(o, "sip", json_object_new_string(sip));
+    json_object_object_add(o, "audioPort", json_object_new_int(port));
+    json_object_object_add(o, "volume", json_object_new_int(vol));
+    json_object_object_add(o, "muted", json_object_new_boolean(port == 0));
+    json_object_object_add(o, "subscribed", json_object_new_boolean(sub));
+    json_object_object_add(o, "applied", json_object_new_boolean(ok));
+    return o;
+}
+
 void dvs_engine_counts(dvs_engine* e, int* rx_sessions, int* decoding,
                        int* layers) {
     if (!e) {
@@ -540,9 +641,24 @@ void dvs_engine_counts(dvs_engine* e, int* rx_sessions, int* decoding,
         if (layers) *layers = 0;
         return;
     }
-    if (rx_sessions) *rx_sessions = atomic_load(&e->rx_sessions);
-    if (decoding) *decoding = atomic_load(&e->decoding);
-    if (layers) *layers = atomic_load(&e->layers);
+    pthread_mutex_lock(&e->mu);
+    int rx = 0, dec = 0, lay = 0;
+    if (e->comp) {
+        rx = rx_compositor_lane_count(e->comp);
+        dec = rx_compositor_ready_count(e->comp);
+        lay = rx_compositor_layer_count(e->comp);
+    } else {
+        rx = dvs_session_count();
+        dec = 0;
+        lay = 0;
+    }
+    atomic_store(&e->rx_sessions, rx);
+    atomic_store(&e->decoding, dec);
+    atomic_store(&e->layers, lay);
+    pthread_mutex_unlock(&e->mu);
+    if (rx_sessions) *rx_sessions = rx;
+    if (decoding) *decoding = dec;
+    if (layers) *layers = lay;
 }
 
 struct json_object* dvs_engine_lane_stats(dvs_engine* e) {
@@ -564,7 +680,7 @@ struct json_object* dvs_engine_lane_stats(dvs_engine* e) {
             json_object_object_add(o, "sip", json_object_new_string(st->sip));
             json_object_object_add(o, "udp_port", json_object_new_int(st->udp_port));
             json_object_object_add(o, "ready",
-                                  json_object_new_boolean(rx_compositor_lane_running(comp, i)));
+                                  json_object_new_boolean(rx_compositor_lane_ready(comp, i)));
             json_object_object_add(o, "lostFrames",
                                   json_object_new_int64(rx_compositor_lane_lost_frames(comp, i)));
             json_object_object_add(o, "lastPtsNs",

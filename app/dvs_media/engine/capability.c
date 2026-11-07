@@ -1,5 +1,8 @@
 #include "capability.h"
+#include "engine/session_admit.h"
 #include "engine/tx_port_map.h"
+
+#include "display_layout.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -190,6 +193,76 @@ static void probe_input(dvs_capability* cap) {
     cap->input_port_count = m;
 }
 
+int dvs_capability_static_ceiling(const dvs_capability* cap) {
+    int planes = (cap && cap->max_layers > 0) ? cap->max_layers : 4;
+    int ceiling = planes < MP4_PIP_V1_NV12_LANES ? planes : MP4_PIP_V1_NV12_LANES;
+    const char* m = getenv("DVS_MAX_DECODE_SESSIONS");
+    if (m) {
+        int v = atoi(m);
+        if (v > 0) ceiling = v;
+    }
+    if (ceiling < 1) ceiling = 1;
+    return ceiling;
+}
+
+int dvs_capability_available(const dvs_capability* cap) {
+    int ceiling = dvs_capability_static_ceiling(cap);
+    int used = dvs_session_count();
+    int avail = ceiling - used;
+    return avail < 0 ? 0 : avail;
+}
+
+static const char* cap_backend_from_port(const char* port) {
+    if (!port || !port[0]) return NULL;
+    if (strncmp(port, "kernel:", 7) == 0) return "kernel";
+    if (strncmp(port, "native_af_xdp:", 14) == 0) return "af_xdp";
+    if (strncmp(port, "dpdk_af_xdp:", 12) == 0) return "af_xdp";
+    if (strncmp(port, "dpdk_af_packet:", 15) == 0) return "af_xdp";
+    return "dpdk";
+}
+
+void dvs_capability_refresh_backend(dvs_capability* cap, const char* tx_port,
+                                    const char* rx_port) {
+    if (!cap) return;
+    int have_tx = tx_port && tx_port[0];
+    int have_rx = rx_port && rx_port[0];
+    if (!have_tx && !have_rx) {
+        snprintf(cap->mtl_backend, sizeof(cap->mtl_backend), "unknown");
+        return;
+    }
+    if (have_tx && have_rx && strcmp(tx_port, rx_port) == 0) {
+        const char* b = cap_backend_from_port(tx_port);
+        snprintf(cap->mtl_backend, sizeof(cap->mtl_backend), "%s",
+                 b ? b : "unknown");
+        return;
+    }
+    const char* btx = have_tx ? cap_backend_from_port(tx_port) : NULL;
+    const char* brx = have_rx ? cap_backend_from_port(rx_port) : NULL;
+    if (btx && brx) {
+        if (strcmp(btx, brx) == 0)
+            snprintf(cap->mtl_backend, sizeof(cap->mtl_backend), "%s", btx);
+        else
+            snprintf(cap->mtl_backend, sizeof(cap->mtl_backend), "unknown");
+    } else if (btx) {
+        snprintf(cap->mtl_backend, sizeof(cap->mtl_backend), "%s", btx);
+    } else if (brx) {
+        snprintf(cap->mtl_backend, sizeof(cap->mtl_backend), "%s", brx);
+    } else {
+        snprintf(cap->mtl_backend, sizeof(cap->mtl_backend), "unknown");
+    }
+}
+
+void dvs_capability_refresh_ptp(dvs_capability* cap, void* mtl_handle,
+                                int ptp_mode) {
+    if (!cap) return;
+    /* Monotonic mode has no TAI discipline: always unknown. Live offset math
+     * lives in hook_ptp_state where the MTL handle is available. */
+    (void)mtl_handle;
+    (void)ptp_mode;
+    snprintf(cap->ptp_state, sizeof(cap->ptp_state), "unknown");
+    cap->ptp_offset_us = 0;
+}
+
 int dvs_capability_probe(dvs_capability* cap) {
     if (!cap) return -1;
     cap_defaults(cap);
@@ -253,7 +326,9 @@ char* dvs_capability_to_json(const dvs_capability* cap) {
     json_object_object_add(o, "outputPorts", ports);
 
     json_object_object_add(o, "maxDecodeSessions",
-                          json_object_new_int(cap->max_decode_sessions));
+                          json_object_new_int(dvs_capability_static_ceiling(cap)));
+    json_object_object_add(o, "availableDecodeSessions",
+                          json_object_new_int(dvs_capability_available(cap)));
     json_object_object_add(o, "maxLayers", json_object_new_int(cap->max_layers));
 
     /* TX static ceiling (SoC limits; capture ports reuse inputPorts). */

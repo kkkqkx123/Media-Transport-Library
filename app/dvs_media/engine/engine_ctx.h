@@ -30,9 +30,16 @@ typedef struct dvs_engine {
     atomic_int      layers;
     pthread_mutex_t mu;        /* guards st/comp swap during reconfiguration */
 
-    /* pending audio routing (audio arbitration; applied on layout commit) */
+    /* pending audio routing (window identifier + volume; applied on commit,
+     * or immediately when only the owner changes) */
     char            audio_owner[64];
     int             audio_volume;
+    /* last applied audio state (honest query, never pending echo) */
+    char            audio_applied_owner[64];
+    char            audio_applied_sip[32];
+    uint16_t        audio_applied_port;
+    int             audio_applied_volume;
+    int             audio_applied_ok;
 
     /* node role driving mutual exclusion ("input" | "output"); TX may
      * only start in the input role, RX only composes in the output role. */
@@ -67,6 +74,9 @@ int  dvs_engine_apply_layout_at(dvs_engine* e,
 
 /* Set the desired audio owner/volume; applied on the next layout commit. */
 void dvs_engine_set_audio(dvs_engine* e, const char* owner, int volume);
+
+/* Applied audio snapshot for query_state (new ref, never NULL). */
+struct json_object* dvs_engine_audio_status(dvs_engine* e);
 
 /* Store an output mode from the node agent. Validates ranges and updates the
  * cached config; when a compositor is running it is rebuilt so the new mode

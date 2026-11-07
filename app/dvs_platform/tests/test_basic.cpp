@@ -583,6 +583,158 @@ static void test_common() {
     assert(cli.get("", resp) == -1);
 }
 
+static void test_business_rules() {
+    // Groups.
+    {
+        json_object* g = json_object_new_object();
+        assert(!validate_group_shape(g).empty());
+        json_object_object_add(g, "name", json_object_new_string("  A  "));
+        assert(validate_group_shape(g).empty());
+        assert(docs_lower(docs_trim("  A  ")) == "a");
+        json_object_put(g);
+    }
+    // Walls.
+    {
+        json_object* w = json_object_new_object();
+        assert(!validate_wall_shape(w).empty());
+        json_object_object_add(w, "name", json_object_new_string("w1"));
+        json_object_object_add(w, "rows", json_object_new_int(2));
+        json_object_object_add(w, "cols", json_object_new_int(2));
+        assert(validate_wall_shape(w).empty());
+        json_object_object_add(w, "rows", json_object_new_int(7));
+        assert(!validate_wall_shape(w).empty());
+        json_object_object_del(w, "rows");
+        json_object_object_add(w, "rows", json_object_new_int(1));
+        json_object_object_add(w, "mode", json_object_new_string("BAD"));
+        assert(!validate_wall_shape(w).empty());
+        json_object_object_del(w, "mode");
+        json_object_object_add(w, "mode", json_object_new_string("LED"));
+        json_object* rp = json_object_new_array();
+        json_object_array_add(rp, json_object_new_int(1080));
+        json_object_object_add(w, "rowPixels", rp);
+        assert(validate_wall_shape(w).empty());
+        json_object_put(w);
+        json_object* d = json_object_new_object();
+        json_object_object_add(d, "deleted", json_object_new_boolean(1));
+        assert(wall_is_deleted(d));
+        json_object_put(d);
+        json_object* nd = json_object_new_object();
+        assert(!wall_is_deleted(nd));
+        json_object_put(nd);
+    }
+    // Scenes.
+    {
+        json_object* s = json_object_new_object();
+        json_object_object_add(s, "snapshotVersion", json_object_new_int(2));
+        assert(!validate_scene_shape(s, 0, 0).empty());
+        json_object_object_del(s, "snapshotVersion");
+        json_object_object_add(s, "snapshotVersion", json_object_new_int(1));
+        json_object_object_add(s, "volume", json_object_new_int(120));
+        assert(!validate_scene_shape(s, 0, 0).empty());
+        json_object_object_del(s, "volume");
+        json_object_object_add(s, "volume", json_object_new_int(80));
+        json_object* wins = json_object_new_array();
+        json_object* w0 = json_object_new_object();
+        json_object_object_add(w0, "id", json_object_new_string("w1"));
+        json_object_object_add(w0, "sig", json_object_new_string("s1"));
+        json_object_object_add(w0, "x", json_object_new_int(0));
+        json_object_object_add(w0, "y", json_object_new_int(0));
+        json_object_object_add(w0, "w", json_object_new_int(100));
+        json_object_object_add(w0, "h", json_object_new_int(100));
+        json_object_array_add(wins, w0);
+        json_object_object_add(s, "windows", wins);
+        assert(validate_scene_shape(s, 0, 0).empty());
+        assert(!validate_scene_shape(s, 50, 50).empty());
+        assert(validate_scene_shape(s, 1920, 1080).empty());
+        json_object_put(s);
+    }
+    // Bindings / whitelist / playback shapes.
+    {
+        json_object* b = json_object_new_object();
+        assert(!validate_binding_shape(b).empty());
+        json_object_object_add(b, "wallId", json_object_new_string("w1"));
+        json_object_object_add(b, "nodeId", json_object_new_string("n1"));
+        assert(validate_binding_shape(b).empty());
+        json_object_put(b);
+        json_object* wl = json_object_new_object();
+        assert(!validate_whitelist_shape(wl).empty());
+        json_object_object_add(wl, "sig", json_object_new_string("s1"));
+        json_object_object_add(wl, "address", json_object_new_string("239.10.0.1"));
+        assert(validate_whitelist_shape(wl).empty());
+        json_object_object_add(wl, "port", json_object_new_int(99999));
+        assert(!validate_whitelist_shape(wl).empty());
+        json_object_put(wl);
+        json_object* t = json_object_new_object();
+        assert(!validate_playback_shape(t).empty());
+        json_object_object_add(t, "wallId", json_object_new_string("w1"));
+        json_object_object_add(t, "sceneId", json_object_new_string("s1"));
+        json_object_object_add(t, "targetNodeId", json_object_new_string("n1"));
+        assert(validate_playback_shape(t).empty());
+        json_object_object_add(t, "status", json_object_new_string("bogus"));
+        assert(!validate_playback_shape(t).empty());
+        json_object_put(t);
+    }
+    // Hash + dirty compare + subrect + clock gate.
+    {
+        json_object* a = json_object_new_array();
+        json_object* b = json_object_new_array();
+        assert(layout_windows_hash(a) == layout_windows_hash(b));
+        json_object* e = json_object_new_object();
+        json_object_object_add(e, "id", json_object_new_string("w1"));
+        json_object_array_add(b, e);
+        assert(layout_windows_hash(a) != layout_windows_hash(b));
+        json_object* d = layout_dirty_compare(a, 80, b, 80);
+        json_object* dv = nullptr;
+        assert(json_object_object_get_ex(d, "dirty", &dv) && json_object_get_boolean(dv));
+        json_object_put(d);
+        json_object* d2 = layout_dirty_compare(a, 80, a, 80);
+        assert(json_object_object_get_ex(d2, "dirty", &dv) && !json_object_get_boolean(dv));
+        json_object_put(d2);
+        json_object_put(a);
+        json_object_put(b);
+        Rect sub;
+        assert(base_subrect(3840, 2160, Rect{1920, 0, 1920, 1080}, &sub));
+        assert(sub.x == 1920 && sub.w == 1920);
+        assert(!base_subrect(3840, 2160, Rect{5000, 0, 100, 100}, &sub));
+        assert(ptp_max_offset_us() > 0);
+        json_object* n = json_object_new_object();
+        std::string reason;
+        assert(!node_clock_ok(n, &reason));
+        json_object_object_add(n, "online", json_object_new_boolean(1));
+        json_object_object_add(n, "role", json_object_new_string("output"));
+        assert(!node_clock_ok(n, &reason));
+        json_object* ptp = json_object_new_object();
+        json_object_object_add(ptp, "state", json_object_new_string("synced"));
+        json_object_object_add(ptp, "offsetUs", json_object_new_int(100));
+        json_object_object_add(n, "ptp", ptp);
+        assert(node_clock_ok(n, &reason));
+        json_object_put(n);
+    }
+}
+
+static void test_wall_ops() {
+    OpCoordinator c;
+    c.begin_with_deadline("op-w1", 3, {"a"}, 100, 200);
+    if (Operation* m = c.mutable_find("op-w1")) {
+        m->wall_id = "wall-1";
+        m->scene_id = "scene-1";
+        m->layout_hash = "abc";
+    }
+    assert(c.wall_has_preparing("wall-1", ""));
+    assert(!c.wall_has_preparing("wall-1", "op-w1"));
+    assert(!c.wall_has_preparing("wall-2", ""));
+    assert(c.on_reply("op-w1", "a", true, "ready") == "committed");
+    assert(!c.wall_has_preparing("wall-1", ""));
+    assert(c.wall_committed_revision("wall-1") == 3);
+    assert(c.wall_committed_revision("wall-2") == 0);
+    json_object* rec = operation_to_json(*c.find("op-w1"));
+    Operation back;
+    assert(operation_from_json(rec, &back));
+    assert(back.wall_id == "wall-1" && back.scene_id == "scene-1");
+    assert(back.layout_hash == "abc");
+    json_object_put(rec);
+}
+
 int main() {
     test_layout_cell_grid();
     test_layout_apply_at();
@@ -593,6 +745,8 @@ int main() {
     test_store();
     test_contract();
     test_ws_codec();
+    test_business_rules();
+    test_wall_ops();
     test_common();
 
     printf("dvs_platform_basic OK\n");

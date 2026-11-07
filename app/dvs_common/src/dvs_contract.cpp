@@ -23,6 +23,9 @@ namespace {
 std::atomic<uint64_t> g_req_seq{0};
 std::atomic<uint64_t> g_msg_seq{0};
 
+// Optional clock summary attached to hello/heartbeat. Additive only:
+// absent means unknown, present-but-malformed is rejected.
+
 bool is_obj(json_object* o) {
     return o && json_object_is_type(o, json_type_object);
 }
@@ -55,6 +58,22 @@ bool rect_ok(json_object* o) {
         if (!json_object_is_type(v, json_type_int)) return false;
     }
     return true;
+}
+// Optional ptp/clock summary: {state, offsetUs, domain}. Absent is unknown
+// and valid; present must be an object with a non-empty state string and an
+// integer offset. Frame clock and vsync stay additive and unchecked.
+std::string ptp_opt_err(json_object* o) {
+    json_object* p = field(o, "ptp");
+    if (!p) p = field(o, "clock");
+    if (!p) return "";
+    if (!is_obj(p)) return "INVALID_ARGUMENT:ptp must be object";
+    std::string st;
+    if (!str_field(p, "state", st) || st.empty())
+        return "INVALID_ARGUMENT:ptp missing state";
+    json_object* off = field(p, "offsetUs");
+    if (off && !json_object_is_type(off, json_type_int))
+        return "INVALID_ARGUMENT:ptp offsetUs must be int";
+    return "";
 }
 }  // namespace
 
@@ -147,6 +166,8 @@ std::string validate_hello(json_object* data) {
     if (cap && !is_obj(cap)) return "INVALID_ARGUMENT:hello capability must be object";
     json_object* net = field(data, "network");
     if (net && !is_obj(net)) return "INVALID_ARGUMENT:hello network must be object";
+    std::string pe = ptp_opt_err(data);
+    if (!pe.empty()) return pe;
     return "";
 }
 
@@ -163,6 +184,8 @@ std::string validate_heartbeat(json_object* data) {
         return "INVALID_ARGUMENT:heartbeat lanesDigest ready/total must be int";
     if (ready < 0 || total < 0 || ready > total)
         return "INVALID_ARGUMENT:heartbeat lanesDigest range illegal";
+    std::string pe = ptp_opt_err(data);
+    if (!pe.empty()) return pe;
     return "";
 }
 

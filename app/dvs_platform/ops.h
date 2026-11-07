@@ -27,6 +27,10 @@ struct Operation {
     std::string windows_json;
     int wall_w = 0;
     int wall_h = 0;
+    // 场景归属与一致性：prepare 时由调用方写入，随快照持久化。
+    std::string wall_id;
+    std::string scene_id;
+    std::string layout_hash;
 };
 
 class OpCoordinator {
@@ -59,6 +63,11 @@ public:
     // Mutable access for callers holding their own coordinator lock (the
     // HTTP layer stamps the fanout snapshot / created_ns after begin()).
     Operation* mutable_find(const std::string& op_id);
+    // 同一面墙是否存在准备中操作（调用方持有锁）。exclude 跳过自身重建。
+    bool wall_has_preparing(const std::string& wall_id,
+                            const std::string& exclude_op) const;
+    // 该墙已提交的最大修订号（无提交返回 0）。
+    int wall_committed_revision(const std::string& wall_id) const;
     // 超时回收：把已过 deadline 仍 preparing 的屏障置为 blocked 并返回其 id。
     std::vector<std::string> expire_sweep(uint64_t now_ns);
     // The latest settled (committed/rolledback) op with this revision, for

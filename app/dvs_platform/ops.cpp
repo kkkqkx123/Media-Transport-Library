@@ -13,6 +13,10 @@ json_object* operation_to_json(const Operation& op) {
     json_object_object_add(o, "windowsJson", json_object_new_string(op.windows_json.c_str()));
     json_object_object_add(o, "wallW", json_object_new_int(op.wall_w));
     json_object_object_add(o, "wallH", json_object_new_int(op.wall_h));
+    json_object_object_add(o, "wallId", json_object_new_string(op.wall_id.c_str()));
+    json_object_object_add(o, "sceneId", json_object_new_string(op.scene_id.c_str()));
+    json_object_object_add(o, "layoutHash",
+                           json_object_new_string(op.layout_hash.c_str()));
     json_object* members = json_object_new_array();
     for (const auto& m : op.members)
         json_object_array_add(members, json_object_new_string(m.c_str()));
@@ -63,6 +67,9 @@ bool operation_from_json(json_object* o, Operation* out) {
     out->windows_json = jstr(o, "windowsJson");
     out->wall_w = jint(o, "wallW");
     out->wall_h = jint(o, "wallH");
+    out->wall_id = jstr(o, "wallId");
+    out->scene_id = jstr(o, "sceneId");
+    out->layout_hash = jstr(o, "layoutHash");
     json_object* arr = nullptr;
     out->members.clear();
     if (json_object_object_get_ex(o, "members", &arr) &&
@@ -130,6 +137,9 @@ Operation& OpCoordinator::begin_with_deadline(const std::string& op_id, int revi
     op.windows_json.clear();
     op.wall_w = 0;
     op.wall_h = 0;
+    op.wall_id.clear();
+    op.scene_id.clear();
+    op.layout_hash.clear();
     persist(op);
     return op;
 }
@@ -191,6 +201,29 @@ std::string OpCoordinator::rollback_op(const std::string& op_id, int* to_revisio
 const Operation* OpCoordinator::find(const std::string& op_id) const {
     auto it = ops_.find(op_id);
     return (it == ops_.end()) ? nullptr : &it->second;
+}
+
+bool OpCoordinator::wall_has_preparing(const std::string& wall_id,
+                                       const std::string& exclude_op) const {
+    if (wall_id.empty()) return false;
+    for (const auto& kv : ops_) {
+        const Operation& op = kv.second;
+        if (op.op_id == exclude_op) continue;
+        if (op.state != "preparing") continue;
+        if (op.wall_id == wall_id) return true;
+    }
+    return false;
+}
+
+int OpCoordinator::wall_committed_revision(const std::string& wall_id) const {
+    int best = 0;
+    for (const auto& kv : ops_) {
+        const Operation& op = kv.second;
+        if (op.wall_id != wall_id) continue;
+        if (op.state != "committed" && op.state != "rolledback") continue;
+        if (op.revision > best) best = op.revision;
+    }
+    return best;
 }
 
 std::vector<std::string> OpCoordinator::expire_sweep(uint64_t now_ns) {

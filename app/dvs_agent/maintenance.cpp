@@ -113,6 +113,7 @@ json_object* Maintenance::factory_reset() {
     json_object* patch = json_object_new_object();
     json_object_object_add(patch, "role", json_object_new_string("output"));
     json_object_object_add(patch, "pendingRole", json_object_new_null());
+    json_object_object_add(patch, "roleCleanup", json_object_new_null());
     json_object_object_add(patch, "input", json_object_new_object());
     json_object_object_add(patch, "output", json_object_new_null());
     json_object* sip = json_object_new_object();

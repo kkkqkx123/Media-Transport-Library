@@ -311,10 +311,17 @@ static std::string sync_pending_role(const std::string& want) {
     json_object* pp = json_object_new_object();
     std::string out;
     if (want == cur) {
+        // Role settled: clear both the pending mirror and the cleanup flag
+        // so the platform sees a node fully converged on its role.
         json_object_object_add(pp, "pendingRole", json_object_new_null());
+        json_object_object_add(pp, "roleCleanup", json_object_new_null());
     } else {
+        // Activation stays deferred to reboot; record that a platform-side
+        // cleanup (unbind/unlist) is still owed before the switch settles.
         json_object_object_add(pp, "pendingRole",
                                json_object_new_string(want.c_str()));
+        json_object_object_add(pp, "roleCleanup",
+                               json_object_new_string("pending-reboot"));
         out = want;
     }
     g_store->update_node(pp);
@@ -1382,8 +1389,10 @@ int main(int argc, char** argv) {
             json_object* d = json_object_new_object();
             json_object* role = nullptr; json_object_object_get_ex(n, "role", &role);
             json_object* pr = nullptr; json_object_object_get_ex(n, "pendingRole", &pr);
-            json_object_object_add(d, "role", json_object_get(role));
-            json_object_object_add(d, "pendingRole", json_object_get(pr));
+            json_object_object_add(d, "role", role ? json_object_get(role) : json_object_new_null());
+            json_object_object_add(d, "pendingRole", pr ? json_object_get(pr) : json_object_new_null());
+            json_object* rc = nullptr; json_object_object_get_ex(n, "roleCleanup", &rc);
+            json_object_object_add(d, "roleCleanup", rc ? json_object_get(rc) : json_object_new_null());
             json_object* cr = nullptr; json_object_object_get_ex(n, "configRevision", &cr);
             json_object* rrev = nullptr;
             if (cr) json_object_object_get_ex(cr, "role", &rrev);

@@ -148,6 +148,7 @@ void NodeStore::load() {
         json_object_object_add(seed, "configStates", cs);
         json_object_object_add(seed, "configRevision", json_object_new_object());
         json_object_object_add(seed, "pendingRole", json_object_new_null());
+        json_object_object_add(seed, "roleCleanup", json_object_new_null());
         json_object_object_add(seed, "password_hash", json_object_new_string(make_hash("admin123").c_str()));
         json_object_object_add(seed, "password_change_required", json_object_new_boolean(1));
         set_kv(db_, "node", json_object_to_json_string(seed));
@@ -508,6 +509,8 @@ bool NodeStore::apply_pending_role() {
     json_object_object_add(node_, "role", json_object_get(pr));
     json_object_object_del(node_, "pendingRole");
     json_object_object_add(node_, "pendingRole", json_object_new_null());
+    json_object_object_del(node_, "roleCleanup");
+    json_object_object_add(node_, "roleCleanup", json_object_new_null());
     save_node();
     return true;
 }

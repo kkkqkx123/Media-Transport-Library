@@ -403,6 +403,84 @@ static void mark_wall_committed(const std::string& wall_id,
     g_store->put_doc("walls", wall_id, w);
     json_object_put(w);
 }
+// Role intent carried by register/heartbeat: mirrored verbatim so the
+// platform can tell whether a node sits in a role-switch transition.
+// Only overwrites when the field is present; absent means "unknown, keep".
+static void store_role_intent(json_object* cur, json_object* data) {
+    if (!cur || !data) return;
+    json_object* v = nullptr;
+    if (json_object_object_get_ex(data, "pendingRole", &v)) {
+        json_object_object_del(cur, "pendingRole");
+        json_object_object_add(cur, "pendingRole",
+                               v ? json_object_get(v) : json_object_new_null());
+    }
+    if (json_object_object_get_ex(data, "roleCleanup", &v)) {
+        json_object_object_del(cur, "roleCleanup");
+        json_object_object_add(cur, "roleCleanup",
+                               v ? json_object_get(v) : json_object_new_null());
+    }
+}
+// Offline bindings wait as pending and hold no port. When the node comes
+// back, re-run the write-path checks (wall alive, signal whitelisted,
+// output idle) and promote what still passes; conflicts stay pending.
+static void promote_pending_bindings(const std::string& node_id) {
+    if (node_id.empty() || !g_store) return;
+    for (auto& bid : g_store->list_ids("bindings")) {
+        json_object* b = g_store->get_doc("bindings", bid);
+        if (!b) continue;
+        if (binding_node_of(b) != node_id) { json_object_put(b); continue; }
+        std::string st = body_str(b, "status");
+        if (st != "pending" && st != "pending_offline") {
+            json_object_put(b);
+            continue;
+        }
+        std::string w = binding_wall_of(b);
+        std::string outp = binding_output_of(b);
+        std::string sig = binding_sig_of(b);
+        std::string why;
+        json_object* wall = g_store->get_doc("walls", w);
+        if (!wall || wall_is_deleted(wall)) why = "wall unknown or deleted";
+        if (wall) json_object_put(wall);
+        if (why.empty() && !sig.empty()) {
+            bool found = false;
+            for (auto& wid : g_store->list_ids("whitelist")) {
+                json_object* o = g_store->get_doc("whitelist", wid);
+                if (!o) continue;
+                std::string ws = body_str(o, "sig");
+                if (ws.empty()) ws = body_str(o, "id");
+                bool hit = (ws == sig);
+                json_object_put(o);
+                if (hit) { found = true; break; }
+            }
+            if (!found) why = "binding signal not in whitelist";
+        }
+        if (why.empty() && !outp.empty()) {
+            for (auto& obid : g_store->list_ids("bindings")) {
+                if (obid == bid) continue;
+                json_object* o = g_store->get_doc("bindings", obid);
+                if (!o) continue;
+                std::string ost = body_str(o, "status");
+                bool busy = (binding_node_of(o) == node_id &&
+                             binding_output_of(o) == outp &&
+                             ost != "pending" && ost != "pending_offline");
+                json_object_put(o);
+                if (busy) { why = "node output port already bound"; break; }
+            }
+        }
+        if (why.empty()) {
+            json_object_object_del(b, "status");
+            json_object_object_add(b, "status",
+                                   json_object_new_string("active"));
+            g_store->put_doc("bindings", bid, b);
+            json_object_put(b);
+            g_store->audit("{\"binding-promoted\":\"" + json_escape(bid) + "\"}");
+        } else {
+            json_object_put(b);
+            g_store->audit("{\"binding-still-pending\":\"" + json_escape(bid) +
+                           "\",\"reason\":\"" + json_escape(why) + "\"}");
+        }
+    }
+}
 // Generic docs CRUD mounted at /api/v1/<kind>[/<id>].
 // Stage 1: per-kind shape validation, uniqueness and reference checks.
 // Walls use soft delete; lists filter deleted docs.
@@ -555,6 +633,45 @@ bool route_docs(const std::string& kind, const HttpRequest& req, HttpResponse& r
                     json_object_put(o);
                     if (node_dup) { verr = "CONFLICT:node already bound to a wall"; break; }
                     if (cell_dup) { verr = "CONFLICT:cell already bound"; break; }
+                }
+            }
+            if (verr.empty()) {
+                // Port idle: the same node output feeds at most one active
+                // binding. Pending-offline bindings hold no port.
+                std::string outp = binding_output_of(b);
+                if (!outp.empty()) {
+                    for (auto& bid : g_store->list_ids("bindings")) {
+                        if (bid == id) continue;
+                        json_object* o = g_store->get_doc("bindings", bid);
+                        if (!o) continue;
+                        std::string st = body_str(o, "status");
+                        bool busy = (binding_node_of(o) == n &&
+                                     binding_output_of(o) == outp &&
+                                     st != "pending" && st != "pending_offline");
+                        json_object_put(o);
+                        if (busy) {
+                            verr = "CONFLICT:node output port already bound";
+                            break;
+                        }
+                    }
+                }
+            }
+            if (verr.empty()) {
+                // Binding constraint: a referenced signal must be whitelisted.
+                std::string sig = binding_sig_of(b);
+                if (!sig.empty()) {
+                    bool found = false;
+                    for (auto& wid : g_store->list_ids("whitelist")) {
+                        json_object* o = g_store->get_doc("whitelist", wid);
+                        if (!o) continue;
+                        std::string ws = body_str(o, "sig");
+                        if (ws.empty()) ws = body_str(o, "id");
+                        bool hit = (ws == sig);
+                        json_object_put(o);
+                        if (hit) { found = true; break; }
+                    }
+                    if (!found)
+                        verr = "NOT_FOUND:binding signal not in whitelist";
                 }
             }
             if (verr.empty()) {
@@ -911,6 +1028,7 @@ void apply_hello_doc(json_object* data) {
     g_store->put_doc("node", id, merged);
     json_object_put(merged);
     g_chan.set_transport(id, "ws");
+    promote_pending_bindings(id);
 }
 
 void apply_heartbeat_doc(const std::string& id, json_object* data) {
@@ -946,9 +1064,11 @@ void apply_heartbeat_doc(const std::string& id, json_object* data) {
         json_object_object_add(cur, "sipDigest", json_object_get(sipd));
     }
     store_ptp_playback(cur, data);
+    store_role_intent(cur, data);
     g_store->put_doc("node", id, cur);
     json_object_put(cur);
     g_chan.set_transport(id, "ws");
+    promote_pending_bindings(id);
 }
 
 std::string handle_barrier_ack(const std::string& opid, const std::string& node,
@@ -1447,6 +1567,7 @@ int main(int argc, char** argv) {
             g_store->put_doc("node", id, b);
             g_chan.set_transport(id, "short");
             g_store->audit("{\"register\":\"" + json_escape(id) + "\"}");
+            promote_pending_bindings(id);
             if (!has_base || !has_geo)
                 g_store->audit("{\"incomplete-register\":\"" + json_escape(id) + "\"}");
             json_object* d = g_store->get_doc("node", id);
@@ -1505,10 +1626,12 @@ int main(int argc, char** argv) {
                 json_object_object_add(cur, "sipDigest", json_object_get(sipd));
             }
             store_ptp_playback(cur, b);
+            store_role_intent(cur, b);
             json_object_object_add(cur, "transport", json_object_new_string("short"));
             g_store->put_doc("node", id, cur);
             g_chan.set_transport(id, "short");
             json_object_put(b);
+            promote_pending_bindings(id);
             json_object* d = json_object_new_object();
             json_object_object_add(d, "revision", json_object_new_int(1));
             send_json(res, ok_envelope(d, ""));
@@ -1580,9 +1703,11 @@ int main(int argc, char** argv) {
                     json_object_object_add(cur, "sipDigest", json_object_get(sipd));
                 }
                 store_ptp_playback(cur, body2);
+                store_role_intent(cur, body2);
                 g_store->put_doc("node", id, cur);
                 if (body2) json_object_put(body2);
                 json_object_put(cur);
+                promote_pending_bindings(id);
                 json_object* d = g_store->get_doc("node", id);
                 send_json(res, ok_envelope(d ? d : json_object_new_object(), "heartbeat received"));
                 return;
@@ -2230,8 +2355,11 @@ int main(int argc, char** argv) {
             return;
         }
         // Wallpaper sub-image descriptor: intersect wall canvas with node canvas.
+        // Exact "/base-image" suffix so "/base-image-version" below is not
+        // hijacked by this branch.
         if (req.method == "GET" && req.path.rfind("/api/v1/walls/", 0) == 0 &&
-            req.path.rfind("/base-image") != std::string::npos) {
+            req.path.size() >= 11 &&
+            req.path.rfind("/base-image") == req.path.size() - 11) {
             std::string mid = req.path.substr(strlen("/api/v1/walls/"));
             size_t sl = mid.find('/');
             std::string wid = (sl == std::string::npos) ? mid : mid.substr(0, sl);
@@ -2273,6 +2401,11 @@ int main(int argc, char** argv) {
             json_object_object_add(d, "nodeId", json_object_new_string(node_id.c_str()));
             json_object_object_add(d, "baseImageRevision",
                                    json_object_new_string(bver.c_str()));
+            json_object_object_add(d, "revision",
+                                   json_object_new_string(bver.c_str()));
+            std::string cache_key = wid + ":" + bver + ":" + node_id;
+            json_object_object_add(d, "cacheKey",
+                                   json_object_new_string(cache_key.c_str()));
             json_object_object_add(d, "wallW", json_object_new_int(ww));
             json_object_object_add(d, "wallH", json_object_new_int(hh));
             json_object* r = json_object_new_object();
@@ -2366,6 +2499,195 @@ int main(int argc, char** argv) {
                 send_json(res, ok_envelope(d ? d : json_object_new_object(), verb));
                 return;
             }
+        }
+        // Multicast pool allocation: caller supplies only the signal (and an
+        // optional pinned port); the server picks the first free pool pair
+        // and creates the whitelist entry. Idempotent by signal: a retry for
+        // an already-allocated signal returns the existing entry.
+        if (req.method == "POST" && req.path == "/api/v1/whitelist/allocate") {
+            json_object* b = json_tokener_parse(req.body.c_str());
+            if (!b) b = json_object_new_object();
+            std::string sig = body_str(b, "sig");
+            if (sig.empty()) sig = body_str(b, "id");
+            int want_port = 0;
+            json_object* pv = nullptr;
+            if (json_object_object_get_ex(b, "port", &pv) && pv)
+                want_port = json_object_get_int(pv);
+            if (want_port == 0 &&
+                json_object_object_get_ex(b, "mcast_port", &pv) && pv)
+                want_port = json_object_get_int(pv);
+            std::string want_addr = body_str(b, "address");
+            if (want_addr.empty()) want_addr = body_str(b, "mcast_ip");
+            if (!sig.empty()) {
+                json_object* hit = nullptr;
+                for (auto& wid : g_store->list_ids("whitelist")) {
+                    json_object* o = g_store->get_doc("whitelist", wid);
+                    if (!o) continue;
+                    std::string ws = body_str(o, "sig");
+                    if (ws.empty()) ws = body_str(o, "id");
+                    if (ws == sig) { hit = o; break; }
+                    json_object_put(o);
+                }
+                if (hit) {
+                    json_object_put(b);
+                    send_json(res, ok_envelope(hit, "already allocated"));
+                    return;
+                }
+            }
+            std::set<std::pair<std::string, int>> used;
+            for (auto& wid : g_store->list_ids("whitelist")) {
+                json_object* o = g_store->get_doc("whitelist", wid);
+                if (!o) continue;
+                std::string a;
+                int p = 0;
+                whitelist_addr_port(o, &a, &p);
+                if (p <= 0) p = 50010;
+                if (!a.empty()) used.insert({a, p});
+                json_object_put(o);
+            }
+            std::string addr;
+            int port = 0;
+            if (!want_addr.empty()) {
+                if (want_port <= 0) want_port = 50010;
+                if (want_port < 1 || want_port > 65535) {
+                    json_object_put(b);
+                    send_json(res, fail_envelope("INVALID_ARGUMENT", 400,
+                        "port must be 1..65535"));
+                    return;
+                }
+                if (used.count({want_addr, want_port}) != 0) {
+                    json_object_put(b);
+                    send_json(res, fail_envelope("CONFLICT", 409,
+                        "multicast address+port already used"));
+                    return;
+                }
+                addr = want_addr;
+                port = want_port;
+            } else {
+                if (!multicast_pool_next(used, want_port, &addr, &port)) {
+                    json_object_put(b);
+                    send_json(res, fail_envelope("RESOURCE_EXHAUSTED", 507,
+                        "multicast pool exhausted"));
+                    return;
+                }
+            }
+            std::string id = sig;
+            if (id.empty()) {
+                char nb[48];
+                snprintf(nb, sizeof(nb), "wl-%ld", (long)now_sec());
+                id = nb;
+                sig = id;
+            }
+            json_object* doc = json_object_new_object();
+            json_object_object_add(doc, "id", json_object_new_string(id.c_str()));
+            json_object_object_add(doc, "sig", json_object_new_string(sig.c_str()));
+            json_object_object_add(doc, "address", json_object_new_string(addr.c_str()));
+            json_object_object_add(doc, "port", json_object_new_int(port));
+            for (const char* k : {"codec", "width", "height", "fps",
+                                    "bitrateKbps", "bitrate", "keyFrameInterval",
+                                    "gop", "mode"}) {
+                json_object* kv = nullptr;
+                if (json_object_object_get_ex(b, k, &kv) && kv)
+                    json_object_object_add(doc, k, json_object_get(kv));
+            }
+            std::string verr = validate_whitelist_shape(doc);
+            if (!verr.empty()) {
+                json_object_put(doc);
+                json_object_put(b);
+                send_json(res, fail_envelope("INVALID_ARGUMENT", 400, verr.c_str()));
+                return;
+            }
+            json_object_object_add(doc, "status", json_object_new_string("active"));
+            json_object_put(b);
+            g_store->put_doc("whitelist", id, doc);
+            g_store->audit("{\"whitelist-allocate\":\"" + json_escape(id) + "\"}");
+            json_object* d = g_store->get_doc("whitelist", id);
+            json_object_put(doc);
+            send_json(res, ok_envelope(d ? d : json_object_new_object(), "allocated"));
+            return;
+        }
+        // Wallpaper upload: store the base-image record and stamp the wall.
+        if (req.method == "POST" && req.path.rfind("/api/v1/walls/", 0) == 0 &&
+            req.path.size() >= 11 &&
+            req.path.rfind("/base-image") == req.path.size() - 11) {
+            std::string wid = req.path.substr(strlen("/api/v1/walls/"));
+            wid = wid.substr(0, wid.size() - 11);
+            json_object* w = g_store->get_doc("walls", wid);
+            if (!w || wall_is_deleted(w)) {
+                if (w) json_object_put(w);
+                send_json(res, fail_envelope("NOT_FOUND", 404, "wall unknown or deleted"));
+                return;
+            }
+            json_object_put(w);
+            json_object* b = json_tokener_parse(req.body.c_str());
+            if (!b) b = json_object_new_object();
+            std::string rev = body_str(b, "revision");
+            if (rev.empty()) rev = body_str(b, "baseImageRevision");
+            int bw = 0, bh = 0;
+            json_object* v = nullptr;
+            if (json_object_object_get_ex(b, "width", &v) && v) bw = json_object_get_int(v);
+            if (json_object_object_get_ex(b, "height", &v) && v) bh = json_object_get_int(v);
+            std::string url = body_str(b, "url");
+            bool bad = rev.empty() || rev.size() > 64 ||
+                         (bw != 0 && (bw < 64 || bw > 7680)) ||
+                         (bh != 0 && (bh < 64 || bh > 4320)) || url.size() > 512;
+            if (bad) {
+                json_object_put(b);
+                send_json(res, fail_envelope("INVALID_ARGUMENT", 400,
+                    "need revision[1..64] + optional width/height/url in range"));
+                return;
+            }
+            json_object* doc = json_object_new_object();
+            json_object_object_add(doc, "id", json_object_new_string(wid.c_str()));
+            json_object_object_add(doc, "wallId", json_object_new_string(wid.c_str()));
+            json_object_object_add(doc, "revision", json_object_new_string(rev.c_str()));
+            if (bw > 0) json_object_object_add(doc, "width", json_object_new_int(bw));
+            if (bh > 0) json_object_object_add(doc, "height", json_object_new_int(bh));
+            if (!url.empty())
+                json_object_object_add(doc, "url", json_object_new_string(url.c_str()));
+            json_object_object_add(doc, "updatedAt",
+                                   json_object_new_string(now_iso().c_str()));
+            json_object_put(b);
+            g_store->put_doc("base-images", wid, doc);
+            json_object_put(doc);
+            json_object* cur = g_store->get_doc("walls", wid);
+            if (cur) {
+                json_object_object_del(cur, "baseImageRevision");
+                json_object_object_add(cur, "baseImageRevision",
+                                       json_object_new_string(rev.c_str()));
+                g_store->put_doc("walls", wid, cur);
+                json_object_put(cur);
+            }
+            g_store->audit("{\"base-image\":\"" + json_escape(wid) + "\"}");
+            json_object* d = g_store->get_doc("base-images", wid);
+            send_json(res, ok_envelope(d ? d : json_object_new_object(), "stored"));
+            return;
+        }
+        // Wallpaper version query for node pull (startup / settings change).
+        if (req.method == "GET" && req.path.rfind("/api/v1/walls/", 0) == 0 &&
+            req.path.size() >= 19 &&
+            req.path.rfind("/base-image-version") == req.path.size() - 19) {
+            std::string wid = req.path.substr(strlen("/api/v1/walls/"));
+            wid = wid.substr(0, wid.size() - 19);
+            json_object* w = g_store->get_doc("walls", wid);
+            if (!w || wall_is_deleted(w)) {
+                if (w) json_object_put(w);
+                send_json(res, fail_envelope("NOT_FOUND", 404, "wall unknown or deleted"));
+                return;
+            }
+            json_object_put(w);
+            json_object* d = g_store->get_doc("base-images", wid);
+            if (!d) {
+                send_json(res, fail_envelope("NOT_FOUND", 404, "no base image"));
+                return;
+            }
+            std::string rev = body_str(d, "revision");
+            json_object_object_add(d, "wallId",
+                                   json_object_new_string(wid.c_str()));
+            json_object_object_add(d, "cacheKey",
+                                   json_object_new_string((wid + ":" + rev).c_str()));
+            send_json(res, ok_envelope(d, "base-image-version"));
+            return;
         }
         const char* kinds[] = {"groups", "walls", "scenes", "bindings",
                                "whitelist", "playback-tasks"};
@@ -2475,6 +2797,7 @@ int main(int argc, char** argv) {
                     json_object_put(w);
                     if (gone) {
                         g_store->del_doc("walls", wid);
+                        g_store->del_doc("base-images", wid);
                         g_store->audit("{\"wall-gc\":\"" + json_escape(wid) + "\"}");
                     }
                 }

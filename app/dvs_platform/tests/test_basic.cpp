@@ -712,6 +712,85 @@ static void test_business_rules() {
     }
 }
 
+static void test_p2_business_rules() {
+    // Binding output dimension + signal reference (P2-1).
+    {
+        json_object* b = json_object_new_object();
+        json_object_object_add(b, "wallId", json_object_new_string("w1"));
+        json_object_object_add(b, "nodeId", json_object_new_string("n1"));
+        assert(validate_binding_shape(b).empty());
+        assert(binding_output_of(b).empty());
+        assert(binding_sig_of(b).empty());
+        json_object_object_add(b, "output", json_object_new_string("HDMI-1"));
+        assert(validate_binding_shape(b).empty());
+        assert(binding_output_of(b) == "HDMI-1");
+        json_object_object_add(b, "outputPort", json_object_new_string("other"));
+        assert(!validate_binding_shape(b).empty());
+        json_object_object_del(b, "outputPort");
+        json_object_object_add(b, "port", json_object_new_int(3));
+        assert(!validate_binding_shape(b).empty());  // string vs int disagree
+        json_object_object_del(b, "output");
+        json_object_object_add(b, "port", json_object_new_int(3));
+        assert(validate_binding_shape(b).empty());
+        assert(binding_output_of(b) == "3");
+        json_object_object_add(b, "port", json_object_new_int(70000));
+        assert(!validate_binding_shape(b).empty());
+        json_object_object_add(b, "port", json_object_new_int(3));
+        json_object_object_add(b, "sig", json_object_new_string("s1"));
+        assert(validate_binding_shape(b).empty());
+        assert(binding_sig_of(b) == "s1");
+        json_object_put(b);
+        json_object* bad = json_object_new_object();
+        json_object_object_add(bad, "wallId", json_object_new_string("w1"));
+        json_object_object_add(bad, "nodeId", json_object_new_string("n1"));
+        json_object_object_add(bad, "output", json_object_new_int(-2));
+        assert(!validate_binding_shape(bad).empty());
+        json_object_put(bad);
+    }
+    // Whitelist encoding ceiling (P2-3).
+    {
+        json_object* w = json_object_new_object();
+        json_object_object_add(w, "sig", json_object_new_string("s1"));
+        json_object_object_add(w, "address", json_object_new_string("239.0.0.1"));
+        assert(validate_whitelist_shape(w).empty());
+        json_object_object_add(w, "fps", json_object_new_int(60));
+        json_object_object_add(w, "bitrateKbps", json_object_new_int(8000));
+        json_object_object_add(w, "keyFrameInterval", json_object_new_int(60));
+        assert(validate_whitelist_shape(w).empty());
+        json_object_object_add(w, "fps", json_object_new_int(240));
+        assert(!validate_whitelist_shape(w).empty());
+        json_object_object_add(w, "fps", json_object_new_int(60));
+        json_object_object_add(w, "bitrateKbps", json_object_new_int(0));
+        assert(!validate_whitelist_shape(w).empty());
+        json_object_object_add(w, "bitrateKbps", json_object_new_int(8000));
+        json_object_object_add(w, "gop", json_object_new_int(0));
+        assert(!validate_whitelist_shape(w).empty());
+        json_object_put(w);
+    }
+    // Multicast pool allocation (P2-2).
+    {
+        std::set<std::pair<std::string, int>> used;
+        std::string addr;
+        int port = 0;
+        assert(multicast_pool_next(used, 0, &addr, &port));
+        assert(addr == "239.100.0.1" && port == 50010);
+        used.insert({addr, port});
+        assert(multicast_pool_next(used, 0, &addr, &port));
+        assert(addr == "239.100.0.2" && port == 50010);
+        assert(multicast_pool_next(used, 6000, &addr, &port));
+        assert(addr == "239.100.0.1" && port == 6000);
+        assert(!multicast_pool_next(used, 99999, &addr, &port));
+        assert(multicast_pool_next(used, 0, nullptr, nullptr));
+        std::set<std::pair<std::string, int>> full;
+        for (int i = 1; i <= 254; i++) {
+            char a[32];
+            snprintf(a, sizeof(a), "239.100.0.%d", i);
+            full.insert({a, 50010});
+        }
+        assert(!multicast_pool_next(full, 0, &addr, &port));
+    }
+}
+
 static void test_wall_ops() {
     OpCoordinator c;
     c.begin_with_deadline("op-w1", 3, {"a"}, 100, 200);
@@ -746,6 +825,7 @@ int main() {
     test_contract();
     test_ws_codec();
     test_business_rules();
+    test_p2_business_rules();
     test_wall_ops();
     test_common();
 

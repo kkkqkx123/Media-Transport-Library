@@ -146,6 +146,25 @@ int dvs_session_admit(const char* mcast_ip, uint16_t port, int* lane_out) {
     return 0;
 }
 
+int dvs_session_reserve_batch(char ips[][DVS_SESSION_KEY_LEN],
+                              const uint16_t* ports, int n, int* lanes_out) {
+    ensure_init();
+    if (n < 0 || n > DVS_MAX_SESSIONS) return -1;
+    if (n > 0 && (!ips || !ports)) return -1;
+    for (int i = 0; i < n; i++) {
+        if (!ips[i][0]) return -1;
+        if (!dvs_session_whitelist_check(ips[i], ports[i])) return -1;
+    }
+    for (int i = 0; i < n; i++) {
+        int lane = 0;
+        /* Cannot fail: every entry passed the whitelist check above and
+         * dvs_session_admit only rejects on whitelist mismatch. */
+        if (dvs_session_admit(ips[i], ports[i], &lane) != 0) return -1;
+        if (lanes_out) lanes_out[i] = lane;
+    }
+    return 0;
+}
+
 void dvs_session_release(const char* mcast_ip, uint16_t port) {
     ensure_init();
     char key[DVS_SESSION_KEY_LEN];

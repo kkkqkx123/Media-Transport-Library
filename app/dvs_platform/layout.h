@@ -1,7 +1,9 @@
 #pragma once
 #include <json-c/json.h>
 #include <cstdint>
+#include <set>
 #include <string>
+#include <utility>
 
 // Pixel layout math. The platform owns all rounding: node never rounds.
 // Convention: left/top edges round down, right/bottom edges round up.
@@ -27,6 +29,16 @@ std::string validate_wall_shape(json_object* doc);
 std::string validate_scene_shape(json_object* doc, int wall_w, int wall_h);
 std::string validate_binding_shape(json_object* doc);
 std::string validate_whitelist_shape(json_object* doc);
+// Optional binding dimensions: output port name (string) or numeric port.
+// Empty means "no port dimension" — such bindings never collide on ports.
+std::string binding_output_of(json_object* doc);
+// Optional binding signal reference (sig/signalId). Empty when absent.
+std::string binding_sig_of(json_object* doc);
+// First free (address, port) in the platform multicast pool, skipping the
+// used pairs. want_port > 0 pins the port, 0 selects the default port.
+// Returns false when the pool is exhausted or the port is out of range.
+bool multicast_pool_next(const std::set<std::pair<std::string, int>>& used,
+                         int want_port, std::string* addr_out, int* port_out);
 std::string validate_playback_shape(json_object* doc);
 // Canonical hash of the windows array for idempotency and receipt matching.
 std::string layout_windows_hash(json_object* windows);

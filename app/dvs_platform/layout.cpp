@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 
 #include "sha256.h"
@@ -193,6 +194,40 @@ std::string validate_scene_shape(json_object* doc, int wall_w, int wall_h) {
     return "";
 }
 
+std::string binding_output_of(json_object* doc) {
+    if (!doc) return "";
+    json_object* v = nullptr;
+    if (json_object_object_get_ex(doc, "output", &v) && v) {
+        if (json_object_is_type(v, json_type_string)) return jstr(doc, "output");
+        if (json_object_is_type(v, json_type_int)) {
+            int p = json_object_get_int(v);
+            if (p > 0) return std::to_string(p);
+            return "";
+        }
+    }
+    if (json_object_object_get_ex(doc, "outputPort", &v) && v) {
+        if (json_object_is_type(v, json_type_string)) return jstr(doc, "outputPort");
+        if (json_object_is_type(v, json_type_int)) {
+            int p = json_object_get_int(v);
+            if (p > 0) return std::to_string(p);
+            return "";
+        }
+    }
+    if (json_object_object_get_ex(doc, "port", &v) && v &&
+        json_object_is_type(v, json_type_int)) {
+        int p = json_object_get_int(v);
+        if (p > 0) return std::to_string(p);
+    }
+    return "";
+}
+
+std::string binding_sig_of(json_object* doc) {
+    if (!doc) return "";
+    std::string s = jstr(doc, "sig");
+    if (s.empty()) s = jstr(doc, "signalId");
+    return s;
+}
+
 std::string validate_binding_shape(json_object* doc) {
     if (!doc || !json_object_is_type(doc, json_type_object))
         return "INVALID_ARGUMENT:binding must be object";
@@ -203,6 +238,62 @@ std::string validate_binding_shape(json_object* doc) {
     if (node.empty()) node = jstr(doc, "node_id");
     if (wall.empty()) return "INVALID_ARGUMENT:binding missing wallId";
     if (node.empty()) return "INVALID_ARGUMENT:binding missing nodeId";
+    // Optional output dimension: string port name or numeric port 1..65535.
+    // A binding carrying both spellings must agree; disagreement rejects.
+    std::string out_s;
+    bool has_out_s = false;
+    int out_p = 0;
+    bool has_out_p = false;
+    json_object* v = nullptr;
+    if (json_object_object_get_ex(doc, "output", &v) && v) {
+        if (json_object_is_type(v, json_type_string)) {
+            out_s = json_object_get_string(v);
+            has_out_s = true;
+        } else if (json_object_is_type(v, json_type_int)) {
+            out_p = json_object_get_int(v);
+            has_out_p = true;
+        } else {
+            return "INVALID_ARGUMENT:binding output must be string or int";
+        }
+    }
+    if (json_object_object_get_ex(doc, "outputPort", &v) && v) {
+        if (json_object_is_type(v, json_type_string)) {
+            std::string s = json_object_get_string(v);
+            if (has_out_s && s != out_s)
+                return "INVALID_ARGUMENT:binding output/outputPort disagree";
+            out_s = s;
+            has_out_s = true;
+        } else if (json_object_is_type(v, json_type_int)) {
+            int p = json_object_get_int(v);
+            if (has_out_p && p != out_p)
+                return "INVALID_ARGUMENT:binding output/outputPort disagree";
+            out_p = p;
+            has_out_p = true;
+        } else {
+            return "INVALID_ARGUMENT:binding outputPort must be string or int";
+        }
+    }
+    if (json_object_object_get_ex(doc, "port", &v) && v) {
+        if (!json_object_is_type(v, json_type_int))
+            return "INVALID_ARGUMENT:binding port must be int";
+        int p = json_object_get_int(v);
+        if (has_out_p && p != out_p)
+            return "INVALID_ARGUMENT:binding port/outputPort disagree";
+        out_p = p;
+        has_out_p = true;
+    }
+    // String port name and numeric port are two spellings of the same
+    // dimension: carrying both rejects so the idle check stays unambiguous.
+    if (has_out_s && has_out_p)
+        return "INVALID_ARGUMENT:binding output/port disagree";
+    if (has_out_s && (out_s.empty() || out_s.size() > 64))
+        return "INVALID_ARGUMENT:binding output must be 1..64 chars";
+    if (has_out_p && (out_p < 1 || out_p > 65535))
+        return "INVALID_ARGUMENT:binding port must be 1..65535";
+    // Optional signal reference: validated for existence by the caller.
+    std::string sig = binding_sig_of(doc);
+    if (!sig.empty() && sig.size() > 128)
+        return "INVALID_ARGUMENT:binding sig too long";
     return "";
 }
 
@@ -235,7 +326,57 @@ std::string validate_whitelist_shape(json_object* doc) {
                 return std::string("INVALID_ARGUMENT:whitelist ") + k + " must be positive";
         }
     }
+    // Encoding ceiling: optional fields are range-checked when present so an
+    // impossible encode fails at save time instead of at first TX start.
+    json_object* fpsv = nullptr;
+    if (json_object_object_get_ex(doc, "fps", &fpsv) && fpsv) {
+        double f = 0;
+        if (json_object_is_type(fpsv, json_type_int))
+            f = (double)json_object_get_int(fpsv);
+        else if (json_object_is_type(fpsv, json_type_double))
+            f = json_object_get_double(fpsv);
+        else
+            return "INVALID_ARGUMENT:whitelist fps must be numeric";
+        if (f < 1.0 || f > 120.0)
+            return "INVALID_ARGUMENT:whitelist fps must be 1..120";
+    }
+    for (const char* k : {"bitrateKbps", "bitrate"}) {
+        json_object* bv = nullptr;
+        if (json_object_object_get_ex(doc, k, &bv) && bv) {
+            if (!json_object_is_type(bv, json_type_int) ||
+                json_object_get_int(bv) <= 0 || json_object_get_int(bv) > 100000)
+                return std::string("INVALID_ARGUMENT:whitelist ") + k +
+                       " must be 1..100000";
+        }
+    }
+    for (const char* k : {"keyFrameInterval", "gop"}) {
+        json_object* gv = nullptr;
+        if (json_object_object_get_ex(doc, k, &gv) && gv) {
+            if (!json_object_is_type(gv, json_type_int) ||
+                json_object_get_int(gv) <= 0 || json_object_get_int(gv) > 600)
+                return std::string("INVALID_ARGUMENT:whitelist ") + k +
+                       " must be 1..600";
+        }
+    }
     return "";
+}
+
+bool multicast_pool_next(const std::set<std::pair<std::string, int>>& used,
+                         int want_port, std::string* addr_out, int* port_out) {
+    int port = (want_port > 0) ? want_port : 50010;
+    if (port < 1 || port > 65535) return false;
+    // Platform pool: 239.100.0.1/24 at the selected port. Addresses are
+    // scanned in ascending order so allocation is deterministic.
+    for (int lo = 1; lo <= 254; lo++) {
+        char a[32];
+        snprintf(a, sizeof(a), "239.100.0.%d", lo);
+        if (used.count({a, port}) == 0) {
+            if (addr_out) *addr_out = a;
+            if (port_out) *port_out = port;
+            return true;
+        }
+    }
+    return false;
 }
 
 std::string validate_playback_shape(json_object* doc) {

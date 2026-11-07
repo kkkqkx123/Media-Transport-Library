@@ -23,6 +23,14 @@ int dvs_session_whitelist_check(const char* mcast_ip, uint16_t port);
  * the least-recently-used active session when the table is full. */
 int dvs_session_admit(const char* mcast_ip, uint16_t port, int* lane_out);
 
+/* Batch reservation for the prepare phase: all-or-nothing admission of n
+ * sources. Every entry is whitelist-checked first; any rejection (or a NULL
+ * entry, or n out of range) leaves the table untouched and returns -1.
+ * On success all entries are admitted (hits refresh LRU, misses may evict
+ * LRU) and lanes_out[i] carries each lane when lanes_out is non-NULL. */
+int dvs_session_reserve_batch(char ips[][DVS_SESSION_KEY_LEN],
+                              const uint16_t* ports, int n, int* lanes_out);
+
 /* Release a previously admitted source. */
 void dvs_session_release(const char* mcast_ip, uint16_t port);
 

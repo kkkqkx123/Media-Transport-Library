@@ -5,6 +5,7 @@
 
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int g_fail = 0;
@@ -64,9 +65,72 @@ static void test_admit_and_lru(void) {
     CHECK(dvs_session_count() == DVS_MAX_SESSIONS - 1);
 }
 
+/* Batch reservation (P2-6): all-or-nothing admission at prepare time. */
+static void test_reserve_batch(void) {
+    dvs_session_whitelist_set(NULL); /* allow all */
+    /* drain any leftovers from the previous test */
+    {
+        char keys[DVS_MAX_SESSIONS][DVS_SESSION_KEY_LEN];
+        int lanes[DVS_MAX_SESSIONS];
+        int n = dvs_session_snapshot(keys, lanes, DVS_MAX_SESSIONS);
+        for (int i = 0; i < n; i++) {
+            char* colon = strrchr(keys[i], ':');
+            if (!colon) continue;
+            *colon = '\0';
+            dvs_session_release(keys[i], (uint16_t)atoi(colon + 1));
+        }
+    }
+    CHECK(dvs_session_count() == 0);
+
+    /* empty batch is a no-op success */
+    CHECK(dvs_session_reserve_batch(NULL, NULL, 0, NULL) == 0);
+    CHECK(dvs_session_count() == 0);
+
+    /* happy path: two sources admitted, lanes reported */
+    char ips[2][DVS_SESSION_KEY_LEN];
+    snprintf(ips[0], sizeof(ips[0]), "239.10.0.1");
+    snprintf(ips[1], sizeof(ips[1]), "239.10.0.2");
+    uint16_t ports[2] = {5000, 5000};
+    int lanes[2] = {-1, -1};
+    CHECK(dvs_session_reserve_batch(ips, ports, 2, lanes) == 0);
+    CHECK(lanes[0] >= 0 && lanes[1] >= 0 && lanes[0] != lanes[1]);
+    CHECK(dvs_session_count() == 2);
+
+    /* re-reserve is idempotent: same lanes, count unchanged */
+    int again[2] = {-1, -1};
+    CHECK(dvs_session_reserve_batch(ips, ports, 2, again) == 0);
+    CHECK(again[0] == lanes[0] && again[1] == lanes[1]);
+    CHECK(dvs_session_count() == 2);
+
+    /* one rejected entry rejects the whole batch and admits nothing */
+    dvs_session_whitelist_set("239.10.0.1:5000");
+    char bad[2][DVS_SESSION_KEY_LEN];
+    snprintf(bad[0], sizeof(bad[0]), "239.10.0.1");
+    snprintf(bad[1], sizeof(bad[1]), "239.10.0.9");
+    uint16_t bp[2] = {5000, 5000};
+    int before = dvs_session_count();
+    CHECK(dvs_session_reserve_batch(bad, bp, 2, NULL) == -1);
+    CHECK(dvs_session_count() == before);
+
+    /* bad inputs never touch the table */
+    CHECK(dvs_session_reserve_batch(NULL, ports, 1, NULL) == -1);
+    CHECK(dvs_session_reserve_batch(ips, NULL, 1, NULL) == -1);
+    CHECK(dvs_session_reserve_batch(ips, ports, -1, NULL) == -1);
+    CHECK(dvs_session_reserve_batch(ips, ports, DVS_MAX_SESSIONS + 1, NULL) == -1);
+    CHECK(dvs_session_count() == before);
+    char empty_ip[1][DVS_SESSION_KEY_LEN];
+    empty_ip[0][0] = '\0';
+    uint16_t ep[1] = {5000};
+    CHECK(dvs_session_reserve_batch(empty_ip, ep, 1, NULL) == -1);
+    CHECK(dvs_session_count() == before);
+
+    dvs_session_whitelist_set(NULL);
+}
+
 int main(void) {
     test_whitelist();
     test_admit_and_lru();
+    test_reserve_batch();
     if (g_fail) {
         printf("%d check(s) FAILED\n", g_fail);
         return 1;

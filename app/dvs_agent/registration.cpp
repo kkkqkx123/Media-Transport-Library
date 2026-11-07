@@ -463,6 +463,12 @@ json_object* Registration::build_register() {
         json_object_object_add(o, "pendingRole", json_object_new_string(json_object_get_string(prv)));
     else
         json_object_object_add(o, "pendingRole", json_object_new_null());
+    json_object* rcv = nullptr;
+    if (json_object_object_get_ex(node, "roleCleanup", &rcv) && rcv &&
+        !json_object_is_type(rcv, json_type_null))
+        json_object_object_add(o, "roleCleanup", json_object_new_string(json_object_get_string(rcv)));
+    else
+        json_object_object_add(o, "roleCleanup", json_object_new_null());
     /* Advertise this agent's reachable base URL and its canvas geometry
      * in the global wall so the platform can fan out per-node sub-layouts. */
     if (!agent_base_.empty())
@@ -513,6 +519,12 @@ json_object* Registration::build_heartbeat() {
         json_object_object_add(o, "pendingRole", json_object_new_string(json_object_get_string(phb)));
     else
         json_object_object_add(o, "pendingRole", json_object_new_null());
+    json_object* rcb = nullptr;
+    if (json_object_object_get_ex(node, "roleCleanup", &rcb) && rcb &&
+        !json_object_is_type(rcb, json_type_null))
+        json_object_object_add(o, "roleCleanup", json_object_new_string(json_object_get_string(rcb)));
+    else
+        json_object_object_add(o, "roleCleanup", json_object_new_null());
     json_object_object_add(o, "firmware", json_object_new_string(str_of(node, "fw", "V1.0.0").c_str()));
 
     /* appliedRevision: max applied across the six scopes */

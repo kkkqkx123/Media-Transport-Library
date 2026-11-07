@@ -280,6 +280,23 @@ static int hook_prepare(struct json_object* req, char* err, size_t errlen) {
                     return -1;
                 }
             }
+            /* Prepare-time resource reservation: admit every staged source
+             * now so an over-budget or rejected layout fails fast in the
+             * prepare worker (blocked barrier) instead of at commit time.
+             * The batch is all-or-nothing; commit re-admits idempotently
+             * and abort releases what was reserved here. */
+            {
+                char ips[MP4_PIP_MAX_LANES][DVS_SESSION_KEY_LEN];
+                uint16_t ports[MP4_PIP_MAX_LANES];
+                for (int i = 0; i < vn; i++) {
+                    snprintf(ips[i], sizeof(ips[i]), "%s", vs[i].sip);
+                    ports[i] = vs[i].udp_port;
+                }
+                if (dvs_session_reserve_batch(ips, ports, vn, NULL) != 0) {
+                    snprintf(err, errlen, "prepare admission failed");
+                    return -1;
+                }
+            }
             /* Stage via the layout executor so applyAtNs/audioOwner routing
              * stay in the pending shadow; commit applies them atomically. */
             if (dvs_layout_prepare_from_json(req) != 0) {

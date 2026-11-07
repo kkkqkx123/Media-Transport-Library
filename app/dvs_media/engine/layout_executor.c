@@ -1,4 +1,5 @@
 #include "engine_ctx.h"
+#include "engine/session_admit.h"
 #include "display_layout.h" /* MP4_PIP_MAX_LANES */
 
 #include <json-c/json.h>
@@ -41,7 +42,11 @@ int dvs_layout_from_json(struct json_object* req, file_playout_pip_stream* out,
     if (!json_object_is_type(arr, json_type_array)) return -1;
 
     int n = json_object_array_length(arr);
-    if (n > MP4_PIP_MAX_LANES) n = MP4_PIP_MAX_LANES;
+    /* Over-budget layouts fail loudly instead of being silently truncated:
+     * the platform barrier already caps windows per node, so reaching here
+     * means a conversion bug that must surface as a 400, never as a
+     * partial wall. */
+    if (n > MP4_PIP_MAX_LANES) return -1;
     int any_lane = 0;
     for (int i = 0; i < n; i++) {
         struct json_object* s = json_object_array_get_idx(arr, i);
@@ -187,6 +192,9 @@ int dvs_layout_commit(dvs_engine* e) {
 }
 
 void dvs_layout_clear(dvs_engine* e) {
+    /* Clear-screen keeps the platform backdrop layer: media planes go to
+     * zero windows while any decoded base image stays cached by its
+     * wall:version:node key and is repainted alone on replay. */
     dvs_engine_apply_layout(e, NULL, 0);
     pthread_mutex_lock(&g_pending_mu);
     g_pending_count = 0;
@@ -198,11 +206,24 @@ void dvs_layout_clear(dvs_engine* e) {
 }
 
 void dvs_layout_abort(void) {
+    /* Release what this prepare reserved so an aborted prepare leaves the
+     * admission table as it found it. Live layouts re-admit on their next
+     * commit; entries shared with the live picture are simply re-added. */
+    file_playout_pip_stream staged[MP4_PIP_MAX_LANES];
+    int n = 0;
     pthread_mutex_lock(&g_pending_mu);
+    n = g_pending_count;
+    if (n < 0) n = 0;
+    if (n > MP4_PIP_MAX_LANES) n = MP4_PIP_MAX_LANES;
+    if (n > 0) memcpy(staged, g_pending, (size_t)n * sizeof(*staged));
     g_pending_count = 0;
     g_pending_apply_at_ns = 0;
     g_pending_valid = 0;
     g_pending_audio_owner[0] = '\0';
     g_pending_audio_volume = 0;
     pthread_mutex_unlock(&g_pending_mu);
+    for (int i = 0; i < n; i++) {
+        if (staged[i].sip[0])
+            dvs_session_release(staged[i].sip, staged[i].udp_port);
+    }
 }

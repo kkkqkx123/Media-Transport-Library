@@ -64,6 +64,23 @@ void dvs_capability_refresh_backend(dvs_capability* cap, const char* tx_port,
 void dvs_capability_refresh_ptp(dvs_capability* cap, void* mtl_handle,
                                 int ptp_mode);
 
+/* Override the MPP decode-session ceiling (RK3588 bring-up default 4).
+ * n <= 0 restores the default. The static ceiling takes the minimum of
+ * the plane limit, the compositor lane limit and this value; the
+ * DVS_MAX_DECODE_SESSIONS environment override still wins. */
+void dvs_capability_set_mpp_ceiling(int n);
+
+/* Backend name for one MTL port string. Never NULL: "dpdk" | "af_xdp" |
+ * "kernel" | "unknown". Shared by the capability refresh and the IPC
+ * bridge so both paths report the same name. */
+const char* dvs_capability_backend_name(const char* port);
+
+/* PTP state math without clock reads (unit-testable). tai_valid == 0
+ * (unsynced handle or monotonic mode) reports unknown with zero offset;
+ * otherwise synced with delta_us clamped into the int range. */
+void dvs_ptp_state_from_delta(char* state, size_t n, int* offset_us,
+                              int tai_valid, long long delta_us);
+
 /* Release dynamically allocated arrays inside cap. */
 void dvs_capability_free(dvs_capability* cap);
 

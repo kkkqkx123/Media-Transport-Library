@@ -86,6 +86,49 @@ int dvs_tx_validate(const dvs_tx_params_t* p, char* err, size_t errlen) {
     return 0;
 }
 
+int dvs_tx_validate_against_capability(const dvs_tx_params_t* p,
+                                       const dvs_tx_cap_t* cap,
+                                       char* err, size_t errlen) {
+    if (!p) {
+        if (err && errlen > 0) snprintf(err, errlen, "missing tx params");
+        return -1;
+    }
+    if (!cap) return 0;
+    if (cap->codecs[0]) {
+        char tmp[16];
+        snprintf(tmp, sizeof(tmp), "%s", cap->codecs);
+        int ok = 0;
+        for (char* tok = strtok(tmp, ","); tok; tok = strtok(NULL, ",")) {
+            while (*tok == ' ') tok++;
+            if (strcmp(tok, p->codec) == 0) {
+                ok = 1;
+                break;
+            }
+        }
+        if (!ok) {
+            if (err && errlen > 0)
+                snprintf(err, errlen, "codec %s not in capability", p->codec);
+            return -1;
+        }
+    }
+    if ((cap->max_w > 0 && p->width > cap->max_w) ||
+        (cap->max_h > 0 && p->height > cap->max_h)) {
+        if (err && errlen > 0)
+            snprintf(err, errlen, "resolution exceeds capability");
+        return -1;
+    }
+    if (cap->max_fps > 0 && p->fps > cap->max_fps) {
+        if (err && errlen > 0) snprintf(err, errlen, "fps exceeds capability");
+        return -1;
+    }
+    if (cap->max_br_kbps > 0 && p->bitrate_kbps > cap->max_br_kbps) {
+        if (err && errlen > 0)
+            snprintf(err, errlen, "bitrate exceeds capability");
+        return -1;
+    }
+    return 0;
+}
+
 int dvs_tx_start(dvs_tx_session_t* s, const dvs_tx_params_t* p,
                  const char* role, char* err, size_t errlen) {
     if (!s || !p) {

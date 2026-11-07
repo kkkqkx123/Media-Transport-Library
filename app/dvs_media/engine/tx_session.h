@@ -70,6 +70,23 @@ void dvs_tx_set_backend(dvs_tx_session_t* s, dvs_tx_backend_fn fn);
 /* Validate ranges only (no role check, no state change). */
 int dvs_tx_validate(const dvs_tx_params_t* p, char* err, size_t errlen);
 
+/* Explicit capability ceiling for TX parameter gating. A NULL ceiling
+ * disables the gate (frozen SoC ranges from dvs_tx_validate still apply).
+ * An empty codecs list accepts any known codec. */
+typedef struct {
+    int  max_w;
+    int  max_h;
+    int  max_fps;
+    int  max_br_kbps;
+    char codecs[16]; /* comma list, e.g. "h264,h265" */
+} dvs_tx_cap_t;
+
+/* Gate already range-validated params against the reported capability.
+ * Returns 0 when the params fit, -1 with err set otherwise. */
+int dvs_tx_validate_against_capability(const dvs_tx_params_t* p,
+                                       const dvs_tx_cap_t* cap,
+                                       char* err, size_t errlen);
+
 /* Start TX. Requires role "input" (else TX_ROLE_MISMATCH); validates params;
  * on backend absence reports configured+pending, on backend success running,
  * on backend failure failed. Never claims running without backend success. */

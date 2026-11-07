@@ -451,8 +451,26 @@ int dvs_engine_set_output(dvs_engine* e, const char* connector, int width,
     return 0;
 }
 
+const char* dvs_engine_role(const dvs_engine* e) {
+    if (!e || !e->role[0]) return "";
+    return e->role;
+}
+
+int dvs_engine_media_idle(dvs_engine* e) {
+    if (!e) return 1;
+    pthread_mutex_lock(&e->mu);
+    int idle = (e->comp == NULL) && (e->cfg.pip_stream_count == 0) &&
+               (e->tx.state == DVS_TX_IDLE);
+    pthread_mutex_unlock(&e->mu);
+    return idle;
+}
+
 int dvs_engine_set_role(dvs_engine* e, const char* role) {
     if (!e || !role) return -1;
+    if (strcmp(role, "input") != 0 && strcmp(role, "output") != 0) return -1;
+    /* Same-role switches are no-ops so repeated calls never disturb a
+     * running TX chain or tear down an already idle RX side. */
+    if (strcmp(e->role, role) == 0) return 0;
     if (strcmp(role, "input") == 0) {
         pthread_mutex_lock(&e->mu);
         snprintf(e->role, sizeof(e->role), "input");
@@ -476,17 +494,14 @@ int dvs_engine_set_role(dvs_engine* e, const char* role) {
         pthread_mutex_unlock(&e->mu);
         return 0;
     }
-    if (strcmp(role, "output") == 0) {
-        snprintf(e->role, sizeof(e->role), "output");
-        pthread_mutex_lock(&e->mu);
+    snprintf(e->role, sizeof(e->role), "output");
+    pthread_mutex_lock(&e->mu);
 #ifdef HAVE_TX_BACKEND
-        dvs_tx_backend_stop();
+    dvs_tx_backend_stop();
 #endif
-        dvs_tx_stop(&e->tx);
-        pthread_mutex_unlock(&e->mu);
-        return 0;
-    }
-    return -1;
+    dvs_tx_stop(&e->tx);
+    pthread_mutex_unlock(&e->mu);
+    return 0;
 }
 
 int dvs_engine_tx_start(dvs_engine* e, const dvs_tx_params_t* params,
@@ -679,8 +694,9 @@ struct json_object* dvs_engine_lane_stats(dvs_engine* e) {
             json_object_object_add(o, "lane", json_object_new_int(st->lane));
             json_object_object_add(o, "sip", json_object_new_string(st->sip));
             json_object_object_add(o, "udp_port", json_object_new_int(st->udp_port));
-            json_object_object_add(o, "ready",
-                                  json_object_new_boolean(rx_compositor_lane_ready(comp, i)));
+            int ready = rx_compositor_lane_ready(comp, i);
+            json_object_object_add(o, "ready", json_object_new_boolean(ready));
+            json_object_object_add(o, "decoding", json_object_new_boolean(ready));
             json_object_object_add(o, "lostFrames",
                                   json_object_new_int64(rx_compositor_lane_lost_frames(comp, i)));
             json_object_object_add(o, "lastPtsNs",
@@ -710,6 +726,7 @@ struct json_object* dvs_engine_lane_stats(dvs_engine* e) {
         json_object_object_add(o, "sip", json_object_new_string(sip));
         json_object_object_add(o, "udp_port", json_object_new_int(port));
         json_object_object_add(o, "ready", json_object_new_boolean(0));
+        json_object_object_add(o, "decoding", json_object_new_boolean(0));
         json_object_object_add(o, "lostFrames", json_object_new_int64(0));
         json_object_object_add(o, "lastPtsNs", json_object_new_int64(0));
         json_object_array_add(arr, o);

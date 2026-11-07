@@ -9,6 +9,8 @@
 #include "engine/layout_executor.h"
 #include "engine/session_mgr.h"
 #include "engine/session_admit.h"
+#include "engine/stream_validate.h"
+#include "engine/capability.h"
 #include "display_layout.h"
 #include <time.h>
 #include <mtl_api.h>
@@ -262,6 +264,16 @@ static int hook_prepare(struct json_object* req, char* err, size_t errlen) {
                     snprintf(err, errlen, "bad stream %d", i);
                     return -1;
                 }
+                {
+                    char cerr[128] = {0};
+                    if (dvs_stream_crop_valid(vs[i].width, vs[i].height,
+                                              vs[i].src_x, vs[i].src_y,
+                                              vs[i].src_w, vs[i].src_h,
+                                              cerr, sizeof(cerr)) != 0) {
+                        snprintf(err, errlen, "stream %d: %s", i, cerr);
+                        return -1;
+                    }
+                }
                 if (!dvs_session_whitelist_check(vs[i].sip, vs[i].udp_port)) {
                     snprintf(err, errlen, "source %s:%u not whitelisted",
                              vs[i].sip, (unsigned)vs[i].udp_port);
@@ -303,28 +315,23 @@ static void hook_counts(int* rx_sessions, int* decoding, int* layers) {
 static void hook_ptp_state(char* state, size_t n, int* offset_us) {
     if (!s_eng || !s_eng->st) return;
     if (s_eng->cfg.ptp_mode == FILE_PLAYOUT_PTP_MONOTONIC) {
-        if (state && n > 0) snprintf(state, n, "unknown");
-        if (offset_us) *offset_us = 0;
+        dvs_ptp_state_from_delta(state, n, offset_us, 0, 0);
         return;
     }
     uint64_t t = mtl_ptp_read_time(s_eng->st);
     if (t == 0) {
-        if (state && n > 0) snprintf(state, n, "unknown");
-        if (offset_us) *offset_us = 0;
+        dvs_ptp_state_from_delta(state, n, offset_us, 0, 0);
         return;
     }
-    if (state && n > 0) snprintf(state, n, "synced");
-    if (offset_us) {
-        struct timespec ts;
+    struct timespec ts;
 #ifdef CLOCK_TAI
-        clock_gettime(CLOCK_TAI, &ts);
+    clock_gettime(CLOCK_TAI, &ts);
 #else
-        clock_gettime(CLOCK_REALTIME, &ts);
+    clock_gettime(CLOCK_REALTIME, &ts);
 #endif
-        uint64_t tai = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
-        int64_t d = (int64_t)(t - tai);
-        *offset_us = (int)(d / 1000);
-    }
+    uint64_t tai = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+    int64_t d = (int64_t)(t - tai);
+    dvs_ptp_state_from_delta(state, n, offset_us, 1, (long long)d);
 }
 
 /* Per-lane readiness snapshot. Empty array means zero admitted sessions;
@@ -398,25 +405,16 @@ static const char* hook_mtl_version(void) {
 }
 
 static const char* hook_backend(void) {
-    static char buf[16];
     if (!s_eng) return "unknown";
     const char* tx = s_eng->cfg.tx_port[0] ? s_eng->cfg.tx_port : NULL;
     const char* rx = s_eng->cfg.rx_port[0] ? s_eng->cfg.rx_port : NULL;
-    const char* pick = tx ? tx : rx;
     if (tx && rx && strcmp(tx, rx) != 0) {
         /* Dual ports with different prefixes cannot be one backend string. */
         return "unknown";
     }
+    const char* pick = tx ? tx : rx;
     if (!pick) return "unknown";
-    if (strncmp(pick, "kernel:", 7) == 0) return "kernel";
-    if (strncmp(pick, "native_af_xdp:", 14) == 0) return "af_xdp";
-    if (strncmp(pick, "dpdk_af_xdp:", 12) == 0) return "af_xdp";
-    if (strncmp(pick, "dpdk_af_packet:", 15) == 0) return "af_xdp";
-    if (pick[0]) {
-        snprintf(buf, sizeof(buf), "dpdk");
-        return buf;
-    }
-    return "unknown";
+    return dvs_capability_backend_name(pick);
 }
 
 static json_object* hook_audio_status(void) {

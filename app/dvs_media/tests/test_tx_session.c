@@ -145,6 +145,38 @@ int main(void) {
           "status json null session is idle");
     json_object_put(st);
 
+    /* capability gate: NULL ceiling disables the gate */
+    good_params(&p);
+    CHECK(dvs_tx_validate_against_capability(&p, NULL, err, sizeof(err)) == 0,
+          "capability gate passes with NULL ceiling");
+    dvs_tx_cap_t cap;
+    memset(&cap, 0, sizeof(cap));
+    snprintf(cap.codecs, sizeof(cap.codecs), "h264,h265");
+    cap.max_w = 1920;
+    cap.max_h = 1080;
+    cap.max_fps = 30;
+    cap.max_br_kbps = 8000;
+    good_params(&p);
+    CHECK(dvs_tx_validate_against_capability(&p, &cap, err, sizeof(err)) == 0,
+          "capability gate passes fitting params");
+    good_params(&p);
+    p.width = 3840;
+    CHECK(dvs_tx_validate_against_capability(&p, &cap, err, sizeof(err)) != 0,
+          "capability gate rejects over-width params");
+    good_params(&p);
+    p.fps = 60;
+    CHECK(dvs_tx_validate_against_capability(&p, &cap, err, sizeof(err)) != 0,
+          "capability gate rejects over-fps params");
+    good_params(&p);
+    p.bitrate_kbps = 12000;
+    CHECK(dvs_tx_validate_against_capability(&p, &cap, err, sizeof(err)) != 0,
+          "capability gate rejects over-bitrate params");
+    good_params(&p);
+    snprintf(p.codec, sizeof(p.codec), "h265");
+    snprintf(cap.codecs, sizeof(cap.codecs), "h264");
+    CHECK(dvs_tx_validate_against_capability(&p, &cap, err, sizeof(err)) != 0,
+          "capability gate rejects unlisted codec");
+
     printf("%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);
     return failures ? 1 : 0;
 }

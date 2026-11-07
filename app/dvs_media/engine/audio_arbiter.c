@@ -155,6 +155,11 @@ void dvs_audio_set(dvs_engine* e, const char* owner, int volume) {
     if (!e->comp || dvs_audio_resolve(e, want, sip, sizeof(sip), &aport) != 0) {
         fprintf(stderr, "dvs_audio: owner '%s' matches no lane audio port\n",
                 want);
+        /* A failed owner must not keep the previous lane audible while the
+         * query reports not-applied: fall back to mute. */
+        if (e->comp)
+            rx_compositor_audio_select(e->comp, NULL, 0);
+        apply_volume(play_device(e), 0);
         snprintf(e->audio_applied_owner, sizeof(e->audio_applied_owner), "%.63s",
                  want);
         e->audio_applied_sip[0] = '\0';

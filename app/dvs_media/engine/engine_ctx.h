@@ -89,6 +89,14 @@ int dvs_engine_set_output(dvs_engine* e, const char* connector, int width,
  * session; switching to input stops the RX compositor. */
 int dvs_engine_set_role(dvs_engine* e, const char* role);
 
+/* Current node role ("input" | "output"). Never NULL. */
+const char* dvs_engine_role(const dvs_engine* e);
+
+/* Non-zero when nothing is running: no compositor, no TX session and no
+ * residual layout. Round-trip and maintenance checks use this as the
+ * no-leak assertion. */
+int dvs_engine_media_idle(dvs_engine* e);
+
 /* TX orchestration (input role only). Params must be complete; on builds
  * without the data-plane backend the session reports configured,
  * never running. */

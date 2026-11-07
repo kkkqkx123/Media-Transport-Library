@@ -193,9 +193,42 @@ static void probe_input(dvs_capability* cap) {
     cap->input_port_count = m;
 }
 
+static int g_mpp_ceiling = 4;
+
+void dvs_capability_set_mpp_ceiling(int n) {
+    g_mpp_ceiling = (n > 0) ? n : 4;
+}
+
+const char* dvs_capability_backend_name(const char* port) {
+    if (!port || !port[0]) return "unknown";
+    if (strncmp(port, "kernel:", 7) == 0) return "kernel";
+    if (strncmp(port, "native_af_xdp:", 14) == 0) return "af_xdp";
+    if (strncmp(port, "dpdk_af_xdp:", 12) == 0) return "af_xdp";
+    if (strncmp(port, "dpdk_af_packet:", 15) == 0) return "af_xdp";
+    if (port[0]) return "dpdk";
+    return "unknown";
+}
+
+void dvs_ptp_state_from_delta(char* state, size_t n, int* offset_us,
+                              int tai_valid, long long delta_us) {
+    if (!tai_valid) {
+        if (state && n > 0) snprintf(state, n, "unknown");
+        if (offset_us) *offset_us = 0;
+        return;
+    }
+    if (state && n > 0) snprintf(state, n, "synced");
+    if (offset_us) {
+        long long v = delta_us / 1000;
+        if (v > 2147483647LL) v = 2147483647LL;
+        if (v < -2147483648LL) v = -2147483648LL;
+        *offset_us = (int)v;
+    }
+}
+
 int dvs_capability_static_ceiling(const dvs_capability* cap) {
     int planes = (cap && cap->max_layers > 0) ? cap->max_layers : 4;
     int ceiling = planes < MP4_PIP_V1_NV12_LANES ? planes : MP4_PIP_V1_NV12_LANES;
+    if (g_mpp_ceiling > 0 && ceiling > g_mpp_ceiling) ceiling = g_mpp_ceiling;
     const char* m = getenv("DVS_MAX_DECODE_SESSIONS");
     if (m) {
         int v = atoi(m);
@@ -213,12 +246,9 @@ int dvs_capability_available(const dvs_capability* cap) {
 }
 
 static const char* cap_backend_from_port(const char* port) {
-    if (!port || !port[0]) return NULL;
-    if (strncmp(port, "kernel:", 7) == 0) return "kernel";
-    if (strncmp(port, "native_af_xdp:", 14) == 0) return "af_xdp";
-    if (strncmp(port, "dpdk_af_xdp:", 12) == 0) return "af_xdp";
-    if (strncmp(port, "dpdk_af_packet:", 15) == 0) return "af_xdp";
-    return "dpdk";
+    const char* b = dvs_capability_backend_name(port);
+    if (!b || strcmp(b, "unknown") == 0) return NULL;
+    return b;
 }
 
 void dvs_capability_refresh_backend(dvs_capability* cap, const char* tx_port,

@@ -32,8 +32,9 @@ mkdir -p ~/code/mtl/perf ~/code/mtl/streams ~/code/mtl/bin
 # 环境基线（每轮必跑）
 python3 tests/perf/common/env_probe.py --out ~/code/mtl/perf/env.json
 
-# 预置流（无 HDMI 或回归对比时）
+# 预置流（无 HDMI 或回归对比时；--4k 按需追加 4K 时钟流 60 帧 @30fps）
 bash tests/perf/gen_test_stream.sh --out ~/code/mtl/streams
+bash tests/perf/gen_test_stream.sh --out ~/code/mtl/streams --4k
 
 # 发送侧画像（HDMI 真实源，需 live_ingest 已编译）
 python3 tests/perf/tx_capture_encode_perf.py --duration 30 --out ~/code/mtl/perf/tx
@@ -41,6 +42,12 @@ python3 tests/perf/tx_capture_encode_perf.py --duration 30 --out ~/code/mtl/perf
 # 接收侧画像（离线预置流；或 --mode mtl 接真实组播）
 python3 tests/perf/rx_decode_perf.py --mode offline \
   --input ~/code/mtl/streams/clock_1920x1080.h264 --out ~/code/mtl/perf/rx
+
+# 接收侧 4K 画像（优先走 mpp_dec_latency 探针，含分位与阈值判定）
+python3 tests/perf/rx_decode_perf.py --mode offline \
+  --input ~/code/mtl/streams/clock_3840x2160.h264 \
+  --dec-binary ~/code/mtl/bin/mpp_dec_latency \
+  --width 3840 --height 2160 --fps 30 --out ~/code/mtl/perf/rx4k
 
 # 端到端预算（单板回环）
 python3 tests/perf/e2e_latency_budget.py --duration 60 --out ~/code/mtl/perf/e2e

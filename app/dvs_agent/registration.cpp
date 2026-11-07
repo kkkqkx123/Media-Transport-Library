@@ -456,7 +456,13 @@ json_object* Registration::build_register() {
     json_object_object_add(o, "model", json_object_new_string(str_of(node, "model", "DVS-NODE-R1").c_str()));
     json_object_object_add(o, "firmware", json_object_new_string(str_of(node, "fw", "V1.0.0").c_str()));
     json_object_object_add(o, "role", json_object_new_string(str_of(node, "role", "output").c_str()));
-
+    /* Pending role lets the platform clean bindings/whitelist before reboot. */
+    json_object* prv = nullptr;
+    if (json_object_object_get_ex(node, "pendingRole", &prv) && prv &&
+        !json_object_is_type(prv, json_type_null))
+        json_object_object_add(o, "pendingRole", json_object_new_string(json_object_get_string(prv)));
+    else
+        json_object_object_add(o, "pendingRole", json_object_new_null());
     /* Advertise this agent's reachable base URL and its canvas geometry
      * in the global wall so the platform can fan out per-node sub-layouts. */
     if (!agent_base_.empty())
@@ -501,6 +507,12 @@ json_object* Registration::build_heartbeat() {
     json_object_object_add(o, "nodeId", json_object_new_string(nid.c_str()));
     json_object_object_add(o, "uptimeSec", json_object_new_int((int)(time(nullptr) - start_time_)));
     json_object_object_add(o, "role", json_object_new_string(str_of(node, "role", "output").c_str()));
+    json_object* phb = nullptr;
+    if (json_object_object_get_ex(node, "pendingRole", &phb) && phb &&
+        !json_object_is_type(phb, json_type_null))
+        json_object_object_add(o, "pendingRole", json_object_new_string(json_object_get_string(phb)));
+    else
+        json_object_object_add(o, "pendingRole", json_object_new_null());
     json_object_object_add(o, "firmware", json_object_new_string(str_of(node, "fw", "V1.0.0").c_str()));
 
     /* appliedRevision: max applied across the six scopes */

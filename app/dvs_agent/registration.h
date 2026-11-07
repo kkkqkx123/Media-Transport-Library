@@ -40,6 +40,9 @@ public:
 
     void set_downlink_handler(DownlinkHandler h);
 
+    json_object* build_heartbeat();
+    json_object* build_register();
+
     // 上行回执：优先 WS，WS 不可用时回退短连接。返回 true 表示已送达传输层。
     bool uplink_barrier_ack(const std::string& opid, const std::string& node,
                             const std::string& status, json_object* lanes);
@@ -52,8 +55,6 @@ private:
     void loop();
     bool register_once();
     bool heartbeat_once();
-    json_object* build_heartbeat();
-    json_object* build_register();
 
     // WS 路径
     bool ws_loop_once();  // 一次建链 + 会话直至断开；返回是否曾注册成功

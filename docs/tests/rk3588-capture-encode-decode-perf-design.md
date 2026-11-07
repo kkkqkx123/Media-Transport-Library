@@ -124,7 +124,16 @@ STREAMON 之后源抖动致驱动停流（环境问题，重试）；S_FMT 已�
 
 合成图案的选择沿用 zlmediakit 的经验：时钟条纹做编码基线（P 帧高效，
 最接近真实场景），噪点叠加运动块做上限压力（帧间差异大）。
-4K 不在本次范围内，RK3588 本次只验证 1080p 与 720p 两档。
+
+4K 档（3840x2160，本方案新增）：只生成时钟条纹一种图案，60 帧 @30fps
+（NV12 约 746MB），H264 优先用板上 `mpp_enc_latency --out` 硬编码产出
+（比板上 libx264 软编码快一个数量级，且与生产编码器同源）；
+`gen_test_stream.sh --4k` 按需生成，默认 1080p/720p 流程不受影响。
+4K 编码主测 30fps（CBR 40M，对齐 `live_ingest` 默认码率），60fps 作上限摸高；
+4K 解码输入即上一步产出的 H264，`--max-au` 按实际 AU 数截断。
+生产编码器 `h264:level` 固定 42 只够 1080p60（MaxFS 8192 MBs），
+4K 需 51（≤30fps）/ 52（>30fps）：探针按分辨率自动选择，
+生产侧跟进改为同规则（见 §8）。
 
 ### 3.3 MTL 网络流（收流测试输入，可替换为预置数据）
 
@@ -168,11 +177,15 @@ STREAMON 之后源抖动致驱动停流（环境问题，重试）；S_FMT 已�
 - 环境基线：每次必跑，记录板型、内核、MPP 与 librga 版本、V4L2 时序、
   CPU governor。版本不同则上限不可比。
 - 硬件单点上限：`mpi_enc_test` 编码压测（1080p/720p）、
-  `mpp_dec_frame_latency` 解码压测（预置 H264）、`rga_blit_latency`
-  转换压测。输出 fps 与单帧耗时，判定触顶形态。
-- 管线负载画像：发送端跑码率矩阵（4M/8M/20M/40M）与 GOP 矩阵，
+  `mpp_enc_frame_latency` 编码探针（1080p CBR8M；4K CBR40M，level 自动 51/52）、
+  `mpp_dec_frame_latency` 解码压测（预置 H264，1080p 与 4K 各一版）、
+  `rga_blit_latency` 转换压测（1080p 自拷贝/缩至 720p；4K 自拷贝、
+  4K→1080p 下缩放、BGR3→NV12 生产路径）。输出 fps 与单帧耗时，判定触顶形态。
+- 管线负载画像：发送端跑码率矩阵（1080p：4M/8M/20M/40M；4K：20M/40M）与 GOP 矩阵，
   每档稳定后采样窗口，记录编码 cost、p99、丢帧、rkvenc 负载；
-  接收端跑预置流解码矩阵，记录解码 cost 与产出比。
+  接收端跑预置流解码矩阵（1080p 与 4K 各一版），记录解码 cost 与产出比。
+  4K 管线画像需 `live_ingest` 交叉编译产物到位后跑文件源
+  （`--source file --mp4 <4K_MP4>`，HDMI 4K 信号暂无），本轮先跑单点探针。
 - 端到端预算：单板回环跑 TX+RX，采集预算表；双板跑 TX→网络→RX，
   在 PTP 就绪时采 E2E-C。输出预算表与余量结论。
 
@@ -184,6 +197,16 @@ STREAMON 之后源抖动致驱动停流（环境问题，重试）；S_FMT 已�
 - 收流：各级产出比 99% 以上，pb_underrun 零增长。
 - 解码：frames_out 与输入 AU 比 99% 以上，put_fail 零增长。
 - 端到端：E2E-C avg 落在预算表内，skew_reject 为零。
+
+4K 通过标准（CBR40M，GOP 60，阈值见 `thresholds.json` 中 `*_4k` 段）：
+
+- 编码：60 帧窗口 encode_fps 达目标 95% 以上；p99 不超过两帧间隔
+  （30fps 档 66666us，60fps 档 33333us）；rkvenc max 低于 90%。
+- 解码：put_fail 为零；无输出 AU（no_output）≤12（SPS/PPS/SEI 非帧 AU +
+  解码器 priming，不按 MTL 管线产出比判定）；p99 不超过两帧间隔
+  （同上按 fps 取档）。4K 解码首帧 cost 偏高为 priming 现象，计入 p99 但不单独判定。
+- RGA：200 次循环 fail 为零；p99 初值自拷贝/下缩放 12000us、
+  BGR 转换 15000us 以内（三轮收敛后按实测收紧）。
 
 ## 6 执行流程
 
@@ -197,6 +220,13 @@ ssh board 'cd <repo> && python3 tests/perf/common/env_probe.py --out ~/code/mtl/
 ssh board 'cd <repo> && python3 tests/perf/tx_capture_encode_perf.py --duration 30 --out ~/code/mtl/perf/tx'
 ssh board 'cd <repo> && python3 tests/perf/rx_decode_perf.py --mode offline --input ~/code/mtl/streams/clock_1920x1080.h264 --out ~/code/mtl/perf/rx'
 ssh board 'cd <repo> && python3 tests/perf/e2e_latency_budget.py --duration 60 --out ~/code/mtl/perf/e2e'
+# 4K 单点（采集跳过，见 §8）：预置流按需生成，编码硬产出 H264，解码走探针判定，RGA 三组
+ssh board 'cd <repo> && bash tests/perf/gen_test_stream.sh --out ~/code/mtl/streams --4k'
+ssh board '~/code/mtl/bin/mpp_enc_latency --input ~/code/mtl/streams/clock_3840x2160.nv12 --w 3840 --h 2160 --frames 60 --fps 30 --bps 40000000 --out ~/code/mtl/streams/clock_3840x2160.h264 --csv ~/code/mtl/perf/enc_4k_cost.csv'
+ssh board 'cd <repo> && python3 tests/perf/rx_decode_perf.py --mode offline --input ~/code/mtl/streams/clock_3840x2160.h264 --dec-binary ~/code/mtl/bin/mpp_dec_latency --width 3840 --height 2160 --fps 30 --out ~/code/mtl/perf/rx4k'
+ssh board '~/code/mtl/bin/rga_blit_latency --w 3840 --h 2160 --loop 200 --csv ~/code/mtl/perf/rga_4k_cost.csv'
+ssh board '~/code/mtl/bin/rga_blit_latency --w 3840 --h 2160 --dw 1920 --dh 1080 --loop 200 --csv ~/code/mtl/perf/rga_4k_scale.csv'
+ssh board '~/code/mtl/bin/rga_blit_latency --w 3840 --h 2160 --srcfmt bgr3 --loop 200 --csv ~/code/mtl/perf/rga_4k_bgr.csv'
 ```
 
 每轮输出 JSON 原始结果与 Markdown 报告到 `--out` 目录（板上 `~/code/mtl/perf`），
@@ -213,13 +243,24 @@ MTL 模式产出比 99% 以上且 `pb_underrun` 零增长；E2E 的 `E2E-C avg` 
 
 - `debug/`：板端最小复现程序，gcc 单文件直编，不经 meson。
   采集耗时、编码单帧、解码单帧、RGA 单次各一个，外加本目录说明。
-- `tests/perf/`：板端编排脚本，common 放环境探测、负载采样、报告生成与阈值；
-  发送、接收、端到端各一个驱动脚本；`gen_test_stream.sh` 合成预置流。
+  4K 由参数指定：编码 `--w/--h/--fps/--bps/--level`（level 留空自动 51/52），
+  RGA `--srcfmt bgr3` 覆盖生产路径，解码输入为 4K H264。
+- `tests/perf/`：板端编排脚本，common 放环境探测、负载采样、报告生成与阈值
+  （`thresholds.json` 含 `tx_encode_4k` / `rx_decode_4k` / `rga_4k` 三段）；
+  发送、接收、端到端各一个驱动脚本（接收侧 `--dec-binary` 切探针取分位）；
+  `gen_test_stream.sh --4k` 按需合成 4K 时钟流（60 帧 @30fps）。
 - 本目录：本方案文档。后续结论报告按轮次新增归档到 `docs/archive/perf/`，不改写本方案。
 
 ## 8 风险与后续
 
 - HDMI 源格式变化（BGR3/NV12/DV 时序）会改变 RGA 路径，首轮先记录协商结果。
+  当前采集链路存在源抖动导致的 STREAMON 后停流（见归档 round1 问题 1），
+  本轮 4K 验证跳过采集性能测试，只跑编码/解码/RGA 三项。
+- 生产编码器 `h264:level` 固定 42 为 1080p 遗留：4K（>2073600 像素）需按
+  fps 切 51/52，否则 MPP 可能拒配或码控失真。探针已按此规则自动选择，
+  生产侧 `app/rk3588_live_tx/codec/mpp_encoder.c` 需跟进同规则修改后复测 4K 管线。
+- 4K 文件体积大（NV12 60 帧约 746MB）且板上 libx264 软编码慢：H264 以
+  `mpp_enc_latency --out` 硬编码产出为准，`gen_test_stream.sh` 只负责 NV12 合成。
 - PTP 未就绪时双板 E2E 不可采信，先保证单板回环结论。
 - 音频链路不在本次预算内，视频结论先行。
-- 多路并发与 4 路合成压力为后续扩展，本次矩阵只覆盖单路 1080p/720p。
+- 多路并发与 4 路合成压力为后续扩展，本次 4K 矩阵只覆盖单路 4K30 主测 + 4K60 摸高。

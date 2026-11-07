@@ -6,13 +6,19 @@ set -u
 OUT="$HOME/code/mtl/streams"
 FPS=60
 N=120
+GEN4K=0
+N4K=60
+FPS4K=30
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) OUT="$2"; shift 2 ;;
     --fps) FPS="$2"; shift 2 ;;
     --frames) N="$2"; shift 2 ;;
-    *) echo "usage: $0 [--out DIR] [--fps FPS] [--frames N]"; exit 1 ;;
+    --4k) GEN4K=1; shift ;;
+    --frames4k) N4K="$2"; shift 2 ;;
+    --fps4k) FPS4K="$2"; shift 2 ;;
+    *) echo "usage: $0 [--out DIR] [--fps FPS] [--frames N] [--4k] [--frames4k N] [--fps4k FPS]"; exit 1 ;;
   esac
 done
 mkdir -p "$OUT"
@@ -37,5 +43,15 @@ gen bars "smptehdbars" 1920 1080
 gen motion "testsrc2" 1920 1080
 # 720p 一档：预算对比
 gen clock720 "testsrc" 1280 720
+
+# 4K 一档（opt-in：文件大、libx264 慢，默认不生成）：
+# 只生成时钟条纹 60 帧 @30fps，NV12 约 746MB，H264 由 ffmpeg 软编码生成。
+# 更快的 H264 获取方式见 README：用 mpp_enc_latency 硬编码 NV12 得到。
+if [ "$GEN4K" = 1 ]; then
+  SAV_FPS="$FPS"; SAV_N="$N"
+  FPS="$FPS4K"; N="$N4K"
+  gen clock "testsrc" 3840 2160
+  FPS="$SAV_FPS"; N="$SAV_N"
+fi
 
 echo "[gen] done -> $OUT"

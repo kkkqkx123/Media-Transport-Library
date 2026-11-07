@@ -417,6 +417,58 @@ static void test_tx_config() {
   json_object_put(pl);
 }
 
+static void test_role_pending_projection() {
+  std::string db = "/tmp/dvs_agent_test_role.db";
+  std::remove(db.c_str());
+  NodeStore store(db);
+  /* pendingRole mirror converges: different role sets pending, same clears. */
+  json_object* cur = store.node();
+  json_object* rv = nullptr;
+  std::string role = "output";
+  json_object* rv0 = nullptr;
+  if (cur && json_object_object_get_ex(cur, "role", &rv0) && rv0) role = json_object_get_string(rv0);
+  CHECK(role == "output", "seed role is output");
+  json_object* pp = json_object_new_object();
+  json_object_object_add(pp, "pendingRole", json_object_new_string("input"));
+  store.update_node(pp);
+  json_object_put(pp);
+  json_object* n1 = store.node();
+  json_object* pr = nullptr;
+  CHECK(n1 && json_object_object_get_ex(n1, "pendingRole", &pr) && pr &&
+        !json_object_is_type(pr, json_type_null) &&
+        std::string(json_object_get_string(pr)) == "input", "pendingRole stored");
+  CHECK(store.apply_pending_role(), "reboot promotes pending role");
+  json_object* n2 = store.node();
+  json_object* r2 = nullptr;
+  json_object_object_get_ex(n2, "role", &r2);
+  CHECK(r2 && std::string(json_object_get_string(r2)) == "input", "role promoted to input");
+  /* registration payloads carry the pending intent for platform cleanup. */
+  MediaIpcClient media("");
+  Registration reg(&store, &media, "");
+  json_object* hb = reg.build_heartbeat();
+  json_object* phb = nullptr;
+  CHECK(hb && json_object_object_get_ex(hb, "pendingRole", &phb), "heartbeat carries pendingRole");
+  json_object* rg = reg.build_register();
+  json_object* prg = nullptr;
+  CHECK(rg && json_object_object_get_ex(rg, "pendingRole", &prg), "register carries pendingRole");
+  if (hb) json_object_put(hb);
+  if (rg) json_object_put(rg);
+  (void)rv;
+  /* playback projection lands on the node object for /info. */
+  json_object* pb = json_object_new_object();
+  json_object* cur2 = json_object_new_object();
+  json_object_object_add(cur2, "status", json_object_new_string("playing"));
+  json_object_object_add(cur2, "lanesReady", json_object_new_int(2));
+  json_object_object_add(pb, "currentPlayback", cur2);
+  store.update_node(pb);
+  json_object_put(pb);
+  json_object* n3 = store.node();
+  json_object* cpb = nullptr;
+  CHECK(n3 && json_object_object_get_ex(n3, "currentPlayback", &cpb) && cpb &&
+        !json_object_is_type(cpb, json_type_null), "currentPlayback projected");
+  std::remove(db.c_str());
+}
+
 int main() {
   test_sha256();
   test_pbkdf2_deterministic();
@@ -431,6 +483,7 @@ int main() {
   test_network_apply_parsers();
   test_network_render_and_gate();
   test_tx_config();
+  test_role_pending_projection();
 
   if (g_failures == 0) {
     printf("\nALL TESTS PASSED\n");

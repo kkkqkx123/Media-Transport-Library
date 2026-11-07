@@ -47,6 +47,7 @@ int main(int argc, char** argv) {
   const char* csv = NULL;
   const char* infmt = "nv12";
   const char* outpath = NULL;
+  int level = 0; /* 0 = auto by resolution (42 for <=1080p, 51/52 for 4K) */
   FILE* outf = NULL;
 
   static struct option opts[] = {
@@ -59,10 +60,11 @@ int main(int argc, char** argv) {
     {"csv", required_argument, 0, 'c'},
     {"infmt", required_argument, 0, 'F'},
     {"out", required_argument, 0, 'o'},
+    {"level", required_argument, 0, 'L'},
     {0, 0, 0, 0},
   };
   int o;
-  while ((o = getopt_long(argc, argv, "i:w:H:n:b:f:c:F:o:", opts, NULL)) != -1) {
+  while ((o = getopt_long(argc, argv, "i:w:H:n:b:f:c:F:o:L:", opts, NULL)) != -1) {
     switch (o) {
       case 'i': input = optarg; break;
       case 'w': w = atoi(optarg); break;
@@ -73,8 +75,9 @@ int main(int argc, char** argv) {
       case 'c': csv = optarg; break;
       case 'F': infmt = optarg; break;
       case 'o': outpath = optarg; break;
+      case 'L': level = atoi(optarg); break;
       default:
-        fprintf(stderr, "usage: %s --input FILE --w W --h H [--frames N] [--bps B] [--fps F] [--csv FILE] [--infmt nv12|bgr3]\n", argv[0]);
+        fprintf(stderr, "usage: %s --input FILE --w W --h H [--frames N] [--bps B] [--fps F] [--csv FILE] [--infmt nv12|bgr3] [--level N]\n", argv[0]);
         return 1;
     }
   }
@@ -127,6 +130,16 @@ int main(int argc, char** argv) {
   mpp_enc_cfg_set_s32(cfg, "rc:qp_max", 38);
   mpp_enc_cfg_set_s32(cfg, "rc:gop", 60);
   mpp_enc_cfg_set_s32(cfg, "h264:profile", 66);
+  /* level 42 caps at 1080p60 (MaxFS 8192 MBs); 4K needs 5.1/5.2.
+   * Auto: <=1080p -> 42 (matches production), 4K -> 51 (<=30fps) / 52 (>30fps). */
+  if (level == 0) {
+    long pixels = (long)w * (long)h;
+    if (pixels > 2073600L)
+      level = (fps > 30) ? 52 : 51;
+    else
+      level = 42;
+  }
+  mpp_enc_cfg_set_s32(cfg, "h264:level", level);
   mpp_enc_cfg_set_s32(cfg, "h264:stream_type", 0);
   if (api->control(ctx, MPP_ENC_SET_CFG, cfg)) {
     fprintf(stderr, "SET_CFG failed\n");
@@ -194,8 +207,8 @@ int main(int argc, char** argv) {
     qsort(s, (size_t)done, sizeof(uint32_t), cmp_u32);
     uint64_t sum = 0;
     for (int i = 0; i < done; i++) sum += cost[i];
-    printf("frames=%d mean_us=%.1f p50=%u p90=%u p99=%u out_kbps=%.0f\n",
-           done, (double)sum / done,
+    printf("frames=%d %dx%d@%dfps level=%d mean_us=%.1f p50=%u p90=%u p99=%u out_kbps=%.0f\n",
+           done, w, h, fps, level, (double)sum / done,
            pct_u32(s, done, 50), pct_u32(s, done, 90), pct_u32(s, done, 99),
            (double)total_out * 8 / 1000);
     free(s);

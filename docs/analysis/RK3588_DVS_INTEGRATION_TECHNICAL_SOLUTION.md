@@ -30,7 +30,7 @@
 
 当前 `dvs_media` 通过 in-tree 编译复用 `rk3588_playout_rx` 的 RX 数据面与 `rk3588_live_tx` 的 TX 数据面，output 角色复用 file_playout RX 数据面，input 角色通过 `rk3588_live_tx` 提供 capture/encode/TX 能力。这种复用方式属于开发与过渡形态，用于加速 bring-up 与验证。
 
-平台与节点代理当前通过 HTTP REST over TCP 交互；WS/gRPC 是目标架构，不是当前实现。单板回环通过分别启动发送/接收进程完成，不作为生产交付；`both` 自环模式已移除。
+平台与节点代理当前以 WebSocket 长连接为主通道（同端口 `/api/v1/channel/ws`），HTTP 短连接作为回退与本地自治模式；gRPC 不在当前实现范围内。单板回环通过分别启动发送/接收进程完成，不作为生产交付；`both` 自环模式已移除。
 
 ---
 
@@ -40,7 +40,7 @@
 
 ```text
 平台控制面 (dvs_platform)
-  -> 节点网关 (目标: WS/gRPC over TLS；当前: HTTP REST over TCP)
+  -> 节点网关 (WS 长连接优先，HTTP 短连接回退；TLS 为部署目标)
      -> 节点代理 (dvs_agent)
         -> IPC (Unix socket)
            -> 节点媒体引擎 (dvs_media)
@@ -63,7 +63,7 @@
 
 最终节点使用单一 `dvs_media` 包，运行时选择 input 或 output 角色。角色互斥：一个节点同一时刻只运行采集/编码/TX 或接收/解码/合成/显示中的一组数据面。MTL 在进程内初始化一次，同时持有 RX 与 TX 端口，供角色切换复用。
 
-共享基础设施通过正式库依赖提供。生产构建不采用源码目录级 in-tree 复用作为最终方式。rk3588 app 保留为验证与回归入口，不作为生产交付物。
+共享基础设施的最终目标是通过正式库依赖提供；当前代码仍以 in-tree 编译复用 donor 源码加速 bring-up，生产构建不应把源码目录级复用作为最终方式。rk3588 app 保留为验证与回归入口，不作为生产交付物。
 
 单屏可合成显示的路数由 MPP 解码能力、DRM plane 数量与内存决定；物理 HDMI 输出口数量只决定多屏输出能力，不等同于单屏合成路数。
 
@@ -77,11 +77,11 @@ MTL RX → 码流重组 → MPP 解码 → 播放缓冲 → RGA 裁剪 → DRM �
 
 ### 4.2 Input 角色
 
-V4L2 采集 → RGA 转换 → MPP 编码 → MTL ST2110-22 TX。生产实现应作为媒体引擎内部数据面模块，复用共享采集/编码/传输组件，而不是依赖独立 rk3588 app。
+V4L2 采集 → RGA 转换 → MPP 编码 → MTL ST2110-22 TX。当前已作为 `dvs_media` 内部 TX 数据面接入（`engine/tx_backend_live_ingest.c`），复用 `rk3588_live_tx` 的捕获/编码/发送链路；donor 应用仍保留为验证与回归入口，不作为生产交付物。
 
 ### 4.3 角色切换
 
-角色切换必须完整释放旧数据面资源，再启动新数据面。MTL 实例保持可用，避免重复初始化。能力不足时拒绝切换并返回明确错误。
+角色切换必须完整释放旧数据面资源，再启动新数据面。MTL 实例保持可用，避免重复初始化。能力不足时拒绝切换并返回明确错误。当前实现已具备角色互斥与 TX 编排状态机，完整 teardown、能力门控与往返切换验证仍待补齐。
 
 ---
 
@@ -89,9 +89,9 @@ V4L2 采集 → RGA 转换 → MPP 编码 → MTL ST2110-22 TX。生产实现应
 
 ### 5.1 IPC 协议
 
-Unix domain socket + JSON，消息带 `protocolVersion`、`messageId`、`nodeId`、`timestampTaiNs`。核心消息：`configure`、`prepare`、`commit`、`abort`、`clear`、`query_state`、`set_sources`，以及节点主动事件。
+Unix domain socket + JSON 行协议，消息带 `type`、`requestId`，业务字段位于顶层或 `payload`。核心消息：`hello`、`configure`、`set_sources`、`prepare`、`commit`、`abort`、`clear`、`query_state`、`capability`、`tx_start`、`tx_stop`、`event`，以及 `media.prepare.result`、`media.layout_applied`、`media.state_changed` 等节点主动事件。版本契约通过 `hello` 握手中的 `ipcVersion`/`bundleVersion` 比对。
 
-要求长连接、`messageId` 幂等、prepare 异步返回 202 + 事件、事件广播、write mutex。状态机支持 stale revision、commit-before-prepare、并发拒绝、幂等 replay。
+要求长连接、`requestId` 幂等、prepare 异步返回 202 + 事件、事件广播、write mutex。状态机支持 stale revision、commit-before-prepare、并发拒绝、幂等 replay。`commit`/`clear` 走单槽串行执行器，peer uid 必须与引擎进程一致。
 
 ### 5.2 平台 operation
 
@@ -109,15 +109,15 @@ Unix domain socket + JSON，消息带 `protocolVersion`、`messageId`、`nodeId`
 
 ### 6.1 全局坐标拆分
 
-建墙时固化格位矩阵 `cell[r][c] = {x,y,w,h}`。节点绑定格位集合，本地画布原点取包围盒左上角。窗口按交集生成 plane 的 dst/src 矩形，使用半开区间，左/上向下取整、右/下向上取整，源裁剪限制在 `[0, source]`。
+建墙时固化格位矩阵 `cell[r][c] = {x,y,w,h}`。节点绑定格位集合，本地画布原点取包围盒左上角。窗口按交集生成 plane 的 dst/src 矩形，使用半开区间，左/上向下取整、右/下向上取整，源裁剪限制在 `[0, source]`。当前拆分数学与 lane 字段已实现，但 DRM 渲染侧尚未真正使用源裁剪起点，跨格源裁剪仍待落地。
 
 ### 6.2 同帧机制
 
 - 全网一个 PTP 域，节点读取 `CLOCK_TAI`。
 - 定义 epoch 与 fps，全局帧号 `frame(t)=floor((t-epoch)*fps)`。
-- prepare 阶段：加入组播、创建 RX 会话与解码器、等待首帧、预分配 DRM plane 与影子布局。
-- commit 阶段：把 apply_at 映射到目标帧号，在帧边界原子提交，新布局在帧 N 生效。
-- 时钟资格：PTP synced、偏差 ≤2ms、帧号一致、解码就绪、节点在线；不满足则 blocked。
+- prepare 阶段：当前主要做校验、白名单准入与影子布局暂存，并带短暂模拟等待；组播加入、RX 会话、首帧解码、plane 预分配等真实资源预留仍待实现。
+- commit 阶段：把 apply_at 映射到目标帧号，在帧边界提交，新布局生效；帧边界原子 plane 切换与失败回滚仍待实现。
+- 时钟资格：目标为 PTP synced、偏差 ≤2ms、帧号一致、解码就绪、节点在线；不满足则 blocked。当前仅有 PTP 读取与固定偏移，平台侧整墙拦截逻辑仍待实现。
 
 ### 6.3 影子副本与 rollback
 
@@ -161,7 +161,7 @@ commit 前保留旧布局影子副本。commit 后若任一节点未完成，平
 | P3 同帧与跨格 | 2×2 墙 1000 次切换 | 偏差 ≤1 帧，离线整墙 blocked，失败 rollback |
 | P4 运维与规模化 | 128 节点/4×4 墙 | NFR 达标，24h 稳定 |
 
-输入角色接入在 P1/P2 之间完成：先 MTL 双端口初始化与数据面模块接入，再 backend glue 与 teardown，最后单板冒烟。
+输入角色接入在 P1/P2 之间完成：先 MTL 双端口初始化与数据面模块接入，再 backend glue 与 teardown，最后单板冒烟。当前代码已具备双口 MTL 初始化、TX 数据面接入、IPC 两阶段与 barrier 聚合；剩余主要是单板硬件验证、真实资源预留、原子切换与业务规则校验。
 
 ---
 
@@ -191,7 +191,7 @@ commit 前保留旧布局影子副本。commit 后若任一节点未完成，平
 - 任一节点离线整墙阻止、画面不变；commit 失败自动 rollback。
 - 媒体引擎重启 30 秒内恢复最后布局；断控制网络 30 分钟内画面不黑。
 - 输入与输出角色均可运行，角色切换具备资源释放与能力门控。
-- 能力上报为真实枚举值，`query_state` 返回真实计数。
+- 能力上报字段已具备，`query_state` 的 lane/TX/PTP 等快照已接真引擎；配额、解码健康与丢包仍部分为布局回显或固定值，待单板实测与真实化。
 
 ---
 
@@ -206,7 +206,7 @@ commit 前保留旧布局影子副本。commit 后若任一节点未完成，平
 | PTP 来源 | 统一时基来源，影响同帧精度与部署复杂度。 | 外部 linuxptp + CLOCK_TAI |
 | 合成方式 | DRM plane 高效但受硬件数量限制；GPU/RGA 可兜底更多窗口。 | DRM plane 优先，GPU/RGA 兜底 |
 | 节点代理语言 | 影响开发效率、镜像体积与团队技能要求。 | C++（已落地） |
-| 控制通道 | HTTP REST 易调试；WS/gRPC 支持长连接与推送。 | WS + JSON（目标）/ HTTP REST（当前） |
+| 控制通道 | HTTP REST 易调试；WS 支持长连接与推送。 | WS + JSON（当前主路径，HTTP 短连接回退） |
 | MTL 维护方式 | fork + 固定 tag + 补丁可控但需自行维护；跟踪上游升级快但风险高。 | fork + 固定 tag + 补丁 |
 | 单节点多输出口 | 多输出口支持多显示，但增加绑定与能力校验复杂度。 | V1.0 单口优先 |
 
@@ -214,6 +214,6 @@ commit 前保留旧布局影子副本。commit 后若任一节点未完成，平
 
 ## 12. 结论
 
-- 当前阶段：`dvs_media` 已具备 output 角色并接入 input TX 数据面；rk3588 app 独立存在，用于验证与回归。
-- 最终架构：单一 `dvs_media` 包运行时选角色，MTL 一次初始化长期持有双端口；共享组件通过正式库依赖提供；rk3588 app 不合并，仅作验证入口。
-- 下一步：优先补齐角色切换 teardown、能力门控与切换验证，按 P1→P3 推进，保持数据面与控制面进程分离。
+- 当前阶段：`dvs_media` 已具备 output 角色并接入 input TX 数据面；IPC 两阶段、barrier 聚合、WS/HTTP 传输、能力与状态查询已落地；rk3588 app 独立存在，用于验证与回归。真实资源预留、原子切换、业务规则校验与单板验证仍待补齐。
+- 最终架构：单一 `dvs_media` 包运行时选角色，MTL 一次初始化长期持有双端口；共享组件当前仍 in-tree 复用，最终通过正式库依赖提供；rk3588 app 不合并，仅作验证入口。
+- 下一步：优先补齐真实资源预留、原子切换、源裁剪渲染与音频归属，按 P1→P3 推进，保持数据面与控制面进程分离。

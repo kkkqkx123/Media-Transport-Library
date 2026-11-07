@@ -65,6 +65,7 @@ static int heap_alloc(const char* heap, size_t len) {
 int main(int argc, char** argv) {
   int w = 1920, h = 1080, loop = 200, dw = 0, dh = 0;
   const char* csv = NULL;
+  const char* srcfmt = "nv12"; /* nv12 | bgr3 (production capture path) */
 
   static struct option opts[] = {
     {"w", required_argument, 0, 'w'},
@@ -73,10 +74,11 @@ int main(int argc, char** argv) {
     {"dw", required_argument, 0, 'x'},
     {"dh", required_argument, 0, 'y'},
     {"csv", required_argument, 0, 'c'},
+    {"srcfmt", required_argument, 0, 'F'},
     {0, 0, 0, 0},
   };
   int o;
-  while ((o = getopt_long(argc, argv, "w:H:n:x:y:c:", opts, NULL)) != -1) {
+  while ((o = getopt_long(argc, argv, "w:H:n:x:y:c:F:", opts, NULL)) != -1) {
     switch (o) {
       case 'w': w = atoi(optarg); break;
       case 'H': h = atoi(optarg); break;
@@ -84,15 +86,24 @@ int main(int argc, char** argv) {
       case 'x': dw = atoi(optarg); break;
       case 'y': dh = atoi(optarg); break;
       case 'c': csv = optarg; break;
+      case 'F': srcfmt = optarg; break;
       default:
-        fprintf(stderr, "usage: %s [--w W] [--h H] [--loop N] [--dw W --dh H] [--csv FILE]\n", argv[0]);
+        fprintf(stderr, "usage: %s [--w W] [--h H] [--loop N] [--dw W --dh H] [--csv FILE] [--srcfmt nv12|bgr3]\n", argv[0]);
         return 1;
     }
   }
   if (dw <= 0) dw = w;
   if (dh <= 0) dh = h;
 
+  int src_fmt = RK_FORMAT_YCbCr_420_SP;
   size_t src_len = (size_t)w * (size_t)h * 3 / 2;
+  if (strcmp(srcfmt, "bgr3") == 0) {
+    src_fmt = RK_FORMAT_BGR_888;
+    src_len = (size_t)w * (size_t)h * 3;
+  } else if (strcmp(srcfmt, "nv12") != 0) {
+    fprintf(stderr, "unknown --srcfmt %s\n", srcfmt);
+    return 1;
+  }
   size_t dst_len = (size_t)dw * (size_t)dh * 3 / 2;
   int src_fd = heap_alloc("/dev/dma_heap/system-dma32", src_len);
   int dst_fd = heap_alloc("/dev/dma_heap/system-dma32", dst_len);
@@ -111,7 +122,7 @@ int main(int argc, char** argv) {
     src.fd = src_fd;
     src.virAddr = NULL;
     src.mmuFlag = 1;
-    rga_set_rect(&src.rect, 0, 0, w, h, w, h, RK_FORMAT_YCbCr_420_SP);
+    rga_set_rect(&src.rect, 0, 0, w, h, w, h, src_fmt);
     dst.fd = dst_fd;
     dst.virAddr = NULL;
     dst.mmuFlag = 1;
@@ -137,8 +148,8 @@ int main(int argc, char** argv) {
       sum += cost[i];
     }
     qsort(s, (size_t)k, sizeof(uint32_t), cmp_u32);
-    printf("blit %dx%d->%dx%d ok=%d fail=%d mean_us=%.1f p50=%u p90=%u p99=%u\n",
-           w, h, dw, dh, ok, fails, (double)sum / k,
+    printf("blit %s %dx%d->%dx%d ok=%d fail=%d mean_us=%.1f p50=%u p90=%u p99=%u\n",
+           srcfmt, w, h, dw, dh, ok, fails, (double)sum / k,
            pct_u32(s, k, 50), pct_u32(s, k, 90), pct_u32(s, k, 99));
     free(s);
     if (csv) {

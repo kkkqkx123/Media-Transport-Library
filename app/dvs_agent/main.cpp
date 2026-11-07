@@ -260,6 +260,106 @@ static std::string iso_now() {
     return std::string(buf);
 }
 
+/* Bounded in-memory audit ring (AG-7): config/network/maintenance/engine-link
+ * outcomes stay queryable via /media/logs and /audit-events. No persistence;
+ * reboot clears it and that is honest (volatile operational log). */
+struct AuditEntry {
+    std::string at;
+    std::string scope;
+    std::string action;
+    std::string result;
+    std::string detail;
+};
+static std::mutex g_audit_mu;
+static std::vector<AuditEntry> g_audit_ring;
+static const size_t kAuditCap = 200;
+static void agent_audit(const std::string& scope, const std::string& action,
+                        const std::string& result, const std::string& detail) {
+    AuditEntry e{iso_now(), scope, action, result, detail};
+    std::lock_guard<std::mutex> lk(g_audit_mu);
+    g_audit_ring.push_back(e);
+    if (g_audit_ring.size() > kAuditCap)
+        g_audit_ring.erase(g_audit_ring.begin(),
+                           g_audit_ring.begin() + (g_audit_ring.size() - kAuditCap));
+}
+static json_object* agent_audit_json_locked(size_t limit) {
+    json_object* arr = json_object_new_array();
+    size_t n = g_audit_ring.size();
+    size_t start = (limit == 0 || limit >= n) ? 0 : n - limit;
+    for (size_t i = start; i < n; i++) {
+        const AuditEntry& e = g_audit_ring[i];
+        json_object* o = json_object_new_object();
+        json_object_object_add(o, "at", json_object_new_string(e.at.c_str()));
+        json_object_object_add(o, "scope", json_object_new_string(e.scope.c_str()));
+        json_object_object_add(o, "action", json_object_new_string(e.action.c_str()));
+        json_object_object_add(o, "result", json_object_new_string(e.result.c_str()));
+        json_object_object_add(o, "detail", json_object_new_string(e.detail.c_str()));
+        json_object_array_add(arr, o);
+    }
+    return arr;
+}
+
+/* Single role-intent rule shared by the local scope save, the platform sync
+ * and the WS downlink: persist the desired value was done by the caller,
+ * here only the pendingRole mirror is converged (clear when already active).
+ * Returns the stored pending text (empty when cleared). */
+static std::string get_str(json_object* o, const char* key);
+
+static std::string sync_pending_role(const std::string& want) {
+    if (want != "input" && want != "output") return "";
+    std::string cur = get_str(g_store->node(), "role");
+    json_object* pp = json_object_new_object();
+    std::string out;
+    if (want == cur) {
+        json_object_object_add(pp, "pendingRole", json_object_new_null());
+    } else {
+        json_object_object_add(pp, "pendingRole",
+                               json_object_new_string(want.c_str()));
+        out = want;
+    }
+    g_store->update_node(pp);
+    json_object_put(pp);
+    return out;
+}
+
+/* Fold an engine query_state data object into the node playback projection.
+ * Ready lanes mean playing, otherwise idle. Stored so /info and heartbeat
+ * report the same truth without re-querying the engine. */
+static void project_playback_from_data(json_object* data) {
+    if (!g_store || !data) return;
+    int ready = 0, total = 0;
+    json_object* lanes = nullptr;
+    if (json_object_object_get_ex(data, "lanes", &lanes) && lanes &&
+        json_object_is_type(lanes, json_type_array)) {
+        total = (int)json_object_array_length(lanes);
+        for (int i = 0; i < total; i++) {
+            json_object* e = json_object_array_get_idx(lanes, i);
+            json_object* rv = nullptr;
+            if (e && json_object_object_get_ex(e, "ready", &rv) && rv &&
+                json_object_get_boolean(rv))
+                ready++;
+        }
+    } else {
+        json_object* dec = nullptr;
+        if (json_object_object_get_ex(data, "decoding", &dec) && dec)
+            ready = json_object_get_int(dec);
+    }
+    json_object* patch = json_object_new_object();
+    if (ready > 0) {
+        json_object* cur = json_object_new_object();
+        json_object_object_add(cur, "status", json_object_new_string("playing"));
+        json_object_object_add(cur, "lanesReady", json_object_new_int(ready));
+        json_object_object_add(cur, "lanesTotal", json_object_new_int(total));
+        json_object_object_add(cur, "updatedAt",
+                               json_object_new_string(iso_now().c_str()));
+        json_object_object_add(patch, "currentPlayback", cur);
+    } else {
+        json_object_object_add(patch, "currentPlayback", json_object_new_null());
+    }
+    g_store->update_node(patch);
+    json_object_put(patch);
+}
+
 /* System network apply is systemd-networkd single-style (see network_apply).
  * Without the full execution gate (env + confirm + operationId) the call
  * persists the intent for audit and returns success; applied in the config
@@ -570,9 +670,13 @@ static void apply_media_config_outcome(const std::string& scope,
                              msg.empty() ? "media engine refused config" : msg.c_str());
         fprintf(stderr, "dvs-agent: media configure (%s) failed code=%s msg=%s\n",
                 scope.c_str(), code.c_str(), msg.c_str());
+        agent_audit(scope, "media-configure", "failed",
+                    (code.empty() ? "MEDIA_CONFIGURE_FAILED" : code) + ": " +
+                    (msg.empty() ? "media engine refused config" : msg));
     } else {
         g_store->mark_applied(scope, 0);
         fprintf(stderr, "dvs-agent: media configure (%s) ok\n", scope.c_str());
+        agent_audit(scope, "media-configure", "applied", "engine accepted");
     }
 }
 
@@ -602,6 +706,73 @@ static std::string engine_link_state() {
 
 static long long g_cap_ok_ms = 0;
 static const long long kCapStaleMs = 30000;
+static std::string g_cap_ports_sig;
+
+/* Port-set signature for hotplug change detection. Empty means unknown. */
+static std::string caps_ports_signature(json_object* caps) {
+    if (!caps) return "";
+    json_object* ip = nullptr;
+    json_object* op = nullptr;
+    json_object_object_get_ex(caps, "inputPorts", &ip);
+    json_object_object_get_ex(caps, "outputPorts", &op);
+    const char* a = ip ? json_object_to_json_string(ip) : "[]";
+    const char* b = op ? json_object_to_json_string(op) : "[]";
+    return std::string(a ? a : "[]") + "|" + std::string(b ? b : "[]");
+}
+
+/* Revalidate the saved output selection against fresh caps. Out-of-range
+ * after a hotplug change fails the scope loudly instead of staying
+ * applied on a phantom mode. */
+static void revalidate_output_locked(json_object* caps) {
+    json_object* out = nullptr;
+    json_object_object_get_ex(g_store->node(), "output", &out);
+    if (!out || json_object_is_type(out, json_type_null)) return;
+    json_object* wv = nullptr;
+    json_object* hv = nullptr;
+    json_object* zv = nullptr;
+    int w = 0, h = 0, z = 0;
+    if (json_object_object_get_ex(out, "width", &wv) && wv) w = json_object_get_int(wv);
+    if (json_object_object_get_ex(out, "height", &hv) && hv) h = json_object_get_int(hv);
+    if (json_object_object_get_ex(out, "refreshHz", &zv) && zv) z = json_object_get_int(zv);
+    if (w <= 0 || h <= 0 || z <= 0) return;
+    std::string conn;
+    json_object* cc = nullptr;
+    if (json_object_object_get_ex(out, "connector", &cc) && cc) conn = json_object_get_string(cc);
+    int lim_w = 7680, lim_h = 4320, lim_z = 60;
+    bool known = false;
+    json_object* arr = nullptr;
+    if (caps && json_object_object_get_ex(caps, "outputPorts", &arr) && arr &&
+        json_object_is_type(arr, json_type_array)) {
+        for (size_t i = 0; i < (size_t)json_object_array_length(arr); i++) {
+            json_object* e = json_object_array_get_idx(arr, (int)i);
+            json_object* idv = nullptr;
+            if (!e || !json_object_object_get_ex(e, "id", &idv) || !idv) continue;
+            if (!conn.empty() && conn != json_object_get_string(idv)) continue;
+            known = true;
+            json_object* q = nullptr;
+            if (json_object_object_get_ex(e, "maxWidth", &q) && q) lim_w = json_object_get_int(q);
+            if (json_object_object_get_ex(e, "maxHeight", &q) && q) lim_h = json_object_get_int(q);
+            if (json_object_object_get_ex(e, "maxRefreshHz", &q) && q) lim_z = json_object_get_int(q);
+            break;
+        }
+        if (!conn.empty() && !known) {
+            g_store->mark_failed("output", "HOTPLUG_CHANGED", "output connector gone after hotplug");
+            json_object* ep = json_object_new_object();
+            json_object_object_add(ep, "code", json_object_new_string("HOTPLUG_CHANGED"));
+            json_object_object_add(ep, "reason", json_object_new_string("output connector gone after hotplug"));
+            json_object* xp = json_object_new_object();
+            json_object_object_add(xp, "exception", ep);
+            g_store->update_node(xp);
+            json_object_put(xp);
+            agent_audit("output", "hotplug", "failed", "connector gone");
+            return;
+        }
+        if (w > lim_w || h > lim_h || z > lim_z) {
+            g_store->mark_failed("output", "HOTPLUG_CHANGED", "saved mode exceeds new output caps");
+            agent_audit("output", "hotplug", "failed", "saved mode out of range");
+        }
+    }
+}
 
 /* Pull engine capability once and merge into node.capabilities. Engine
  * unreachable keeps the stored value; an engine that clearly reports an
@@ -632,6 +803,50 @@ static void refresh_capability_from_media() {
         fprintf(stderr, "dvs-agent: startup capability pull returned error\n");
     }
     json_object_put(co);
+}
+
+/* Background hotplug poll (AG-3): refresh engine capability on a slow
+ * tick, merge on change, and revalidate the saved output. Unreachable
+ * keeps the old value and only ages the freshness stamp. */
+static void hotplug_poll_once() {
+    if (!g_media_q || !g_store) return;
+    std::string cr = g_media_q->request("capability", nullptr);
+    json_object* co = json_tokener_parse(cr.c_str());
+    if (!co) return;
+    json_object* okv = nullptr;
+    json_object* data = nullptr;
+    if (!(json_object_object_get_ex(co, "ok", &okv) && okv && json_object_get_boolean(okv) &&
+          json_object_object_get_ex(co, "data", &data) && data)) {
+        json_object_put(co);
+        return;
+    }
+    json_object* caps = nullptr;
+    json_object_object_get_ex(g_store->node(), "capabilities", &caps);
+    json_object* merged = caps ? json_object_get(caps) : json_object_new_object();
+    json_object_object_foreach(data, k, v) {
+        json_object_object_add(merged, k, json_object_get(v));
+    }
+    std::string sig = caps_ports_signature(merged);
+    if (g_cap_ports_sig.empty()) g_cap_ports_sig = caps_ports_signature(caps);
+    json_object* patch = json_object_new_object();
+    json_object_object_add(patch, "capabilities", merged);
+    g_store->update_node(patch);
+    json_object_put(patch);
+    g_cap_ok_ms = agent_now_ms();
+    if (!g_cap_ports_sig.empty() && sig != g_cap_ports_sig) {
+        g_cap_ports_sig = sig;
+        revalidate_output_locked(merged);
+        agent_audit("output", "hotplug", "reprobed", "port set changed");
+        fprintf(stderr, "dvs-agent: hotplug port set changed\n");
+    }
+    json_object_put(co);
+}
+
+static void hotplug_loop() {
+    for (;;) {
+        std::this_thread::sleep_for(std::chrono::seconds(15));
+        hotplug_poll_once();
+    }
 }
 
 static bool tcp_reachable(const std::string& host, int port, int timeout_ms) {
@@ -974,14 +1189,23 @@ int main(int argc, char** argv) {
             g_store->update_node(patch2);
             json_object_put(patch2);
             if (role_val) {
+                std::string want;
                 if (json_object_is_type(role_val, json_type_string)) {
-                    std::string r = json_object_get_string(role_val);
+                    want = json_object_get_string(role_val);
                     json_object* rv2 = json_object_new_object();
-                    json_object_object_add(rv2, "role", json_object_new_string(r.c_str()));
+                    json_object_object_add(rv2, "role", json_object_new_string(want.c_str()));
                     g_store->set_desired("role", rv2, nullptr);
                     json_object_put(rv2);
                 } else {
+                    json_object* rv = nullptr;
+                    if (json_object_object_get_ex(role_val, "role", &rv) && rv)
+                        want = json_object_get_string(rv);
                     g_store->set_desired("role", json_object_get(role_val), nullptr);
+                }
+                if (want == "input" || want == "output") {
+                    std::string pend = sync_pending_role(want);
+                    agent_audit("role", "platform-ws", pend.empty() ? "applied" : "pending",
+                                pend.empty() ? "already active" : ("pending " + pend));
                 }
             }
             std::string nodeId = get_str(g_store->node(), "id");
@@ -1028,6 +1252,12 @@ int main(int argc, char** argv) {
 
     // Merge the live engine capability at startup so MTL and PTP stay fresh.
     refresh_capability_from_media();
+    {
+        json_object* caps0 = nullptr;
+        json_object_object_get_ex(g_store->node(), "capabilities", &caps0);
+        g_cap_ports_sig = caps_ports_signature(caps0);
+    }
+    std::thread([]() { hotplug_loop(); }).detach();
 
     // sync configStates into node at startup
     json_object* cs = g_store->all_states();
@@ -1112,7 +1342,39 @@ int main(int argc, char** argv) {
         }
 
         if (req.method == "GET" && req.path == "/api/v1/node/info") {
-            send_json(res, envelope_ok(json_object_get(g_store->node()), ""));
+            json_object* base = json_object_get(g_store->node());
+            /* Read-time merge: live capacity and engine link ride along for
+             * display only; the stored snapshot is untouched. */
+            json_object* cap = node_capacity_json();
+            json_object* metrics = json_object_new_object();
+            json_object* v = nullptr;
+            if (json_object_object_get_ex(cap, "cpuBusyPercent", &v) && v)
+                json_object_object_add(metrics, "cpuBusyPercent", json_object_get(v));
+            if (json_object_object_get_ex(cap, "memUsedPercent", &v) && v)
+                json_object_object_add(metrics, "memUsedPercent", json_object_get(v));
+            if (json_object_object_get_ex(cap, "memTotalKB", &v) && v)
+                json_object_object_add(metrics, "memTotalKB", json_object_get(v));
+            if (json_object_object_get_ex(cap, "memAvailableKB", &v) && v)
+                json_object_object_add(metrics, "memAvailableKB", json_object_get(v));
+            if (json_object_object_get_ex(cap, "load1", &v) && v)
+                json_object_object_add(metrics, "load1", json_object_get(v));
+            long temp = 0;
+            {
+                std::ifstream tf("/sys/class/thermal/thermal_zone0/temp");
+                if (tf) tf >> temp;
+            }
+            if (temp > 0) {
+                char tbuf[32];
+                snprintf(tbuf, sizeof(tbuf), "%.1fC", temp / 1000.0);
+                json_object_object_add(metrics, "temperature", json_object_new_string(tbuf));
+            }
+            json_object_object_add(base, "metrics", metrics);
+            json_object_put(cap);
+            json_object* link = json_object_new_object();
+            json_object_object_add(link, "state",
+                                  json_object_new_string(engine_link_state().c_str()));
+            json_object_object_add(base, "engineLink", link);
+            send_json(res, envelope_ok(base, ""));
             return;
         }
         if (req.method == "GET" && req.path == "/api/v1/node/role") {
@@ -1182,17 +1444,11 @@ int main(int argc, char** argv) {
                         if (want != "input" && want != "output") {
                             fail_code = "INVALID_ARGUMENT";
                             fail_reason = "角色取值非法";
-                        } else if (want == cur_role) {
-                            json_object_object_add(node_patch, "pendingRole", json_object_new_null());
-                            g_store->update_node(node_patch);
-                            json_object_put(node_patch);
-                            node_patch = json_object_new_object();
-                            g_store->mark_applied(scope, 0);
                         } else {
-                            json_object_object_add(node_patch, "pendingRole", json_object_new_string(want.c_str()));
-                            g_store->update_node(node_patch);
-                            json_object_put(node_patch);
-                            node_patch = json_object_new_object();
+                            std::string pend = sync_pending_role(want);
+                            if (pend.empty()) g_store->mark_applied(scope, 0);
+                            agent_audit(scope, "save", fail_code.empty() ? (pend.empty() ? "applied" : "pending") : "failed",
+                                        pend.empty() ? "already active" : ("pending " + pend));
                         }
                     } else if (scope == "input") {
                         json_object* pv = nullptr;
@@ -1499,6 +1755,7 @@ int main(int argc, char** argv) {
                             json_object* sip = json_object_new_object();
                             json_object_object_add(sip, "enabled", json_object_new_boolean(0));
                             json_object_object_add(sip, "state", json_object_new_string("disabled"));
+                            json_object_object_add(sip, "mode", json_object_new_string("connectivity-probe"));
                             json_object_object_add(node_patch, "sip", sip);
                             g_store->update_node(node_patch);
                             json_object_put(node_patch);
@@ -1521,6 +1778,7 @@ int main(int argc, char** argv) {
                                 json_object* sip_probe = json_object_new_object();
                                 json_object_object_add(sip_probe, "enabled", json_object_new_boolean(1));
                                 json_object_object_add(sip_probe, "state", json_object_new_string("probing"));
+                                json_object_object_add(sip_probe, "mode", json_object_new_string("connectivity-probe"));
                                 json_object_object_add(sip_probe, "server", json_object_new_string(srv.c_str()));
                                 json_object_object_add(sip_probe, "port", json_object_new_int(port));
                                 json_object_object_add(probing, "sip", sip_probe);
@@ -1530,6 +1788,7 @@ int main(int argc, char** argv) {
                                 json_object* sip = json_object_new_object();
                                 json_object_object_add(sip, "enabled", json_object_new_boolean(1));
                                 json_object_object_add(sip, "state", json_object_new_string("failed"));
+                                json_object_object_add(sip, "mode", json_object_new_string("connectivity-probe"));
                                 json_object_object_add(sip, "server", json_object_new_string(srv.c_str()));
                                 json_object_object_add(sip, "port", json_object_new_int(port));
                                 json_object_object_add(node_patch, "sip", sip);
@@ -1541,6 +1800,7 @@ int main(int argc, char** argv) {
                                 json_object* sip = json_object_new_object();
                                 json_object_object_add(sip, "enabled", json_object_new_boolean(1));
                                 json_object_object_add(sip, "state", json_object_new_string("connected"));
+                                json_object_object_add(sip, "mode", json_object_new_string("connectivity-probe"));
                                 json_object_object_add(sip, "server", json_object_new_string(srv.c_str()));
                                 json_object_object_add(sip, "port", json_object_new_int(port));
                                 json_object_object_add(node_patch, "sip", sip);
@@ -1552,7 +1812,15 @@ int main(int argc, char** argv) {
                             }
                         }
                     }
-                    if (!fail_code.empty()) g_store->mark_failed(scope, fail_code.c_str(), fail_reason.c_str());
+                    if (!fail_code.empty()) {
+                        g_store->mark_failed(scope, fail_code.c_str(), fail_reason.c_str());
+                        if (scope != "role")
+                            agent_audit(scope, "save", "failed", fail_code + ": " + fail_reason);
+                    } else if (!forward_media) {
+                        if (scope != "role")
+                            agent_audit(scope, "save", "applied",
+                                        scope_ok_msg.empty() ? "saved" : scope_ok_msg);
+                    }
                     // Media forward decides the final config state. Input is
                     // synchronous so an engine refusal is visible at once.
                     // Output stays pending and a background thread flips the
@@ -1753,6 +2021,12 @@ int main(int argc, char** argv) {
             std::string r = media_query("query_state", nullptr);
             json_object* o = json_tokener_parse(r.c_str());
             if (!o) o = json_object_new_object();
+            json_object* okv = nullptr;
+            json_object* data = nullptr;
+            if (json_object_object_get_ex(o, "ok", &okv) && okv &&
+                json_object_get_boolean(okv) &&
+                json_object_object_get_ex(o, "data", &data) && data)
+                project_playback_from_data(data);
             send_json(res, o); // already a full envelope from the media engine
             return;
         }
@@ -1894,12 +2168,61 @@ int main(int argc, char** argv) {
             return;
         }
         if (req.method == "GET" && req.path == "/api/v1/node/media/sources") {
-            send_json(res, envelope_ok(json_object_new_object(), ""));
+            std::string r = media_query("query_state", nullptr);
+            json_object* o = json_tokener_parse(r.c_str());
+            json_object* d = json_object_new_object();
+            json_object* lanes = json_object_new_array();
+            bool engine_ok = false;
+            if (o) {
+                json_object* okv = nullptr;
+                json_object* data = nullptr;
+                if (json_object_object_get_ex(o, "ok", &okv) && okv &&
+                    json_object_get_boolean(okv) &&
+                    json_object_object_get_ex(o, "data", &data) && data) {
+                    engine_ok = true;
+                    json_object* lj = nullptr;
+                    if (json_object_object_get_ex(data, "lanes", &lj) && lj)
+                        lanes = json_object_get(lj);
+                    project_playback_from_data(data);
+                }
+                json_object_put(o);
+            }
+            json_object_object_add(d, "lanes", lanes);
+            json_object* inp = nullptr;
+            json_object_object_get_ex(g_store->node(), "input", &inp);
+            json_object_object_add(d, "input", inp ? json_object_get(inp) : json_object_new_object());
+            json_object* caps = nullptr;
+            json_object_object_get_ex(g_store->node(), "capabilities", &caps);
+            json_object* iparr = nullptr;
+            if (caps && json_object_object_get_ex(caps, "inputPorts", &iparr) && iparr)
+                json_object_object_add(d, "inputPorts", json_object_get(iparr));
+            else
+                json_object_object_add(d, "inputPorts", json_object_new_array());
+            if (!engine_ok) {
+                json_object* eo = json_object_new_object();
+                json_object_object_add(eo, "engineUnreachable", json_object_new_boolean(1));
+                json_object_object_add(d, "engine", eo);
+            }
+            send_json(res, envelope_ok(d, engine_ok ? "" : "engine unreachable, input intent only"));
             return;
         }
         if (req.method == "GET" && req.path == "/api/v1/node/media/logs") {
             json_object* d = json_object_new_object();
-            json_object_object_add(d, "items", json_object_new_array());
+            json_object* items = nullptr;
+            {
+                std::lock_guard<std::mutex> lk(g_audit_mu);
+                items = agent_audit_json_locked(50);
+            }
+            json_object_object_add(d, "items", items);
+            json_object* link = json_object_new_object();
+            json_object_object_add(link, "state",
+                                  json_object_new_string(engine_link_state().c_str()));
+            json_object_object_add(link, "failStreak",
+                                  json_object_new_int(g_media_q ? g_media_q->fail_streak() : 0));
+            json_object_object_add(d, "engineLink", link);
+            long long age = (g_cap_ok_ms > 0) ? agent_now_ms() - g_cap_ok_ms : -1;
+            json_object_object_add(d, "capAgeMs", json_object_new_int64(age));
+            json_object_object_add(d, "capStale", json_object_new_boolean((age < 0 || age > kCapStaleMs) ? 1 : 0));
             send_json(res, envelope_ok(d, ""));
             return;
         }
@@ -1928,21 +2251,14 @@ int main(int argc, char** argv) {
                         json_object_object_add(patch, "geometry", json_object_get(val));
                     } else if (k == "role") {
                         g_store->set_desired("role", json_object_get(val), nullptr);
+                        std::string want;
                         json_object* rv = nullptr;
                         if (json_object_is_type(val, json_type_object) &&
-                            json_object_object_get_ex(val, "role", &rv) && rv) {
-                            json_object* pr = json_object_new_string(json_object_get_string(rv));
-                            json_object* pp = json_object_new_object();
-                            json_object_object_add(pp, "pendingRole", pr);
-                            g_store->update_node(pp);
-                            json_object_put(pp);
-                        } else if (json_object_is_type(val, json_type_string)) {
-                            json_object* pr = json_object_new_string(json_object_get_string(val));
-                            json_object* pp = json_object_new_object();
-                            json_object_object_add(pp, "pendingRole", pr);
-                            g_store->update_node(pp);
-                            json_object_put(pp);
-                        }
+                            json_object_object_get_ex(val, "role", &rv) && rv)
+                            want = json_object_get_string(rv);
+                        else if (json_object_is_type(val, json_type_string))
+                            want = json_object_get_string(val);
+                        if (want == "input" || want == "output") sync_pending_role(want);
                     } else {
                         json_object_array_add(ignored, json_object_new_string(k.c_str()));
                     }
@@ -1996,6 +2312,8 @@ int main(int argc, char** argv) {
         }
         if (req.method == "POST" && req.path == "/api/v1/node/register") {
             bool ok = g_reg ? g_reg->trigger_once() : false;
+            agent_audit("registration", "manual-register", ok ? "applied" : "failed",
+                        ok ? "registered" : "trigger failed");
             json_object* d = json_object_new_object();
             json_object_object_add(d, "registerState", json_object_new_string(ok ? "registered" : "failed"));
             json_object_object_add(d, "online", json_object_new_boolean(g_reg && g_reg->online() ? 1 : 0));
@@ -2078,10 +2396,12 @@ int main(int argc, char** argv) {
 
         // maintenance
         if (req.method == "POST" && req.path == "/api/v1/node/reboot") {
+            agent_audit("maintenance", "reboot", "applied", "reboot requested");
             send_json(res, envelope_ok(g_maint->reboot(), ""));
             return;
         }
         if (req.method == "POST" && req.path == "/api/v1/node/factory-reset") {
+            agent_audit("maintenance", "factory-reset", "applied", "reset requested");
             send_json(res, envelope_ok(g_maint->factory_reset(), ""));
             return;
         }
@@ -2091,16 +2411,47 @@ int main(int argc, char** argv) {
             if (fn.empty()) fn = "fw.bin";
             std::string sha = body ? get_str(body, "sha256") : std::string();
             if (body) json_object_put(body);
-            send_json(res, envelope_ok(g_maint->upgrade(fn, sha), ""));
+            json_object* ur = g_maint->upgrade(fn, sha);
+            bool uok = false;
+            if (ur) {
+                json_object* okv = nullptr;
+                if (json_object_object_get_ex(ur, "ok", &okv) && okv)
+                    uok = json_object_get_boolean(okv) != 0;
+            }
+            agent_audit("maintenance", "upgrade", uok ? "applied" : "failed", fn);
+            send_json(res, envelope_ok(ur, ""));
             return;
         }
 
         if (req.method == "GET" && req.path == "/api/v1/audit-events") {
+            int page = 1, pageSize = 100;
+            auto itp = req.query.find("page");
+            if (itp != req.query.end()) page = std::max(1, atoi(itp->second.c_str()));
+            auto itp2 = req.query.find("pageSize");
+            if (itp2 != req.query.end()) pageSize = std::min(200, std::max(1, atoi(itp2->second.c_str())));
             json_object* d = json_object_new_object();
-            json_object_object_add(d, "items", json_object_new_array());
-            json_object_object_add(d, "page", json_object_new_int(1));
-            json_object_object_add(d, "pageSize", json_object_new_int(100));
-            json_object_object_add(d, "total", json_object_new_int(0));
+            json_object* items = json_object_new_array();
+            size_t total = 0;
+            {
+                std::lock_guard<std::mutex> lk(g_audit_mu);
+                total = g_audit_ring.size();
+                size_t end = total > (size_t)((page - 1) * pageSize) ? total - (size_t)((page - 1) * pageSize) : 0;
+                size_t start = end > (size_t)pageSize ? end - (size_t)pageSize : 0;
+                for (size_t i = start; i < end; i++) {
+                    const AuditEntry& e = g_audit_ring[i];
+                    json_object* o = json_object_new_object();
+                    json_object_object_add(o, "at", json_object_new_string(e.at.c_str()));
+                    json_object_object_add(o, "scope", json_object_new_string(e.scope.c_str()));
+                    json_object_object_add(o, "action", json_object_new_string(e.action.c_str()));
+                    json_object_object_add(o, "result", json_object_new_string(e.result.c_str()));
+                    json_object_object_add(o, "detail", json_object_new_string(e.detail.c_str()));
+                    json_object_array_add(items, o);
+                }
+            }
+            json_object_object_add(d, "items", items);
+            json_object_object_add(d, "page", json_object_new_int(page));
+            json_object_object_add(d, "pageSize", json_object_new_int(pageSize));
+            json_object_object_add(d, "total", json_object_new_int((int)total));
             send_json(res, envelope_ok(d, ""));
             return;
         }

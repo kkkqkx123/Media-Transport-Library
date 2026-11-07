@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 #include <string>
 #include <unistd.h>
@@ -19,6 +20,14 @@ static std::string slurp_file(const std::string& path) {
     if (!f) return "";
     return std::string((std::istreambuf_iterator<char>(f)),
                        std::istreambuf_iterator<char>());
+}
+
+static std::string now_iso_str() {
+    char buf[64];
+    time_t t = time(nullptr);
+    struct tm* tm = gmtime(&t);
+    strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", tm);
+    return std::string(buf);
 }
 
 static std::string file_sha256(const std::string& path) {
@@ -109,7 +118,10 @@ json_object* Maintenance::factory_reset() {
     json_object* sip = json_object_new_object();
     json_object_object_add(sip, "enabled", json_object_new_boolean(0));
     json_object_object_add(sip, "state", json_object_new_string("disabled"));
+    json_object_object_add(sip, "mode", json_object_new_string("connectivity-probe"));
     json_object_object_add(patch, "sip", sip);
+    json_object_object_add(patch, "currentPlayback", json_object_new_null());
+    json_object_object_add(patch, "exception", json_object_new_null());
     if (net) json_object_object_add(patch, "network", json_object_get(net));
     json_object* rs = nullptr;
     if (node && json_object_object_get_ex(node, "registerState", &rs) && rs)
@@ -208,6 +220,16 @@ json_object* Maintenance::upgrade(const std::string& filename,
     if (!std::getenv("DVS_ALLOW_UPGRADE_SWITCH")) {
         fprintf(stderr, "dvs-agent: firmware staged (switch gated): %s version %s\n",
                 staged.c_str(), ver.c_str());
+        json_object* lp = json_object_new_object();
+        json_object* lu = json_object_new_object();
+        json_object_object_add(lu, "filename", json_object_new_string(path.c_str()));
+        json_object_object_add(lu, "version", json_object_new_string(ver.c_str()));
+        json_object_object_add(lu, "sha256", json_object_new_string(actual.c_str()));
+        json_object_object_add(lu, "status", json_object_new_string("staged"));
+        json_object_object_add(lu, "at", json_object_new_string(now_iso_str().c_str()));
+        json_object_object_add(lp, "lastUpgrade", lu);
+        store_->update_node(lp);
+        json_object_put(lp);
         json_object_object_add(o, "ok", json_object_new_boolean(1));
         json_object_object_add(o, "status", json_object_new_string("staged"));
         json_object_object_add(o, "filename", json_object_new_string(path.c_str()));
@@ -220,6 +242,13 @@ json_object* Maintenance::upgrade(const std::string& filename,
 
     json_object* patch = json_object_new_object();
     json_object_object_add(patch, "fw", json_object_new_string(ver.c_str()));
+    json_object* lu2 = json_object_new_object();
+    json_object_object_add(lu2, "filename", json_object_new_string(path.c_str()));
+    json_object_object_add(lu2, "version", json_object_new_string(ver.c_str()));
+    json_object_object_add(lu2, "sha256", json_object_new_string(actual.c_str()));
+    json_object_object_add(lu2, "status", json_object_new_string("applied"));
+    json_object_object_add(lu2, "at", json_object_new_string(now_iso_str().c_str()));
+    json_object_object_add(patch, "lastUpgrade", lu2);
     store_->update_node(patch);
     json_object_put(patch);
 

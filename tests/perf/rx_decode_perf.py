@@ -57,6 +57,46 @@ def parse_rx_log(text):
     return periods, totals, e2es
 
 
+def load_thresholds_4k():
+    try:
+        with open(os.path.join(_HERE, "common", "thresholds.json")) as f:
+            return json.load(f).get("rx_decode_4k", {})
+    except Exception:
+        return {}
+
+
+_MPP_DEC_RE = re.compile(
+    r"au_fed=(\d+) framed=(\d+) no_output=(\d+) put_fail=(\d+)\s+"
+    r"mean_us=([\d.]+) p50=(\d+) p90=(\d+) p99=(\d+)"
+)
+
+
+def run_offline_mpp(dec_binary, h264, max_au, duration_hint):
+    """用 mpp_dec_latency 探针直测送入到取出耗时（含分位）。"""
+    cmd = [dec_binary, "--input", h264]
+    if max_au:
+        cmd += ["--max-au", str(max_au)]
+    print("run: " + " ".join(cmd))
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=duration_hint + 120)
+    except Exception as ex:
+        return {"error": str(ex)}
+    text = r.stdout + r.stderr
+    m = _MPP_DEC_RE.search(text)
+    if not m:
+        return {"error": "mpp_dec_latency 输出未解析", "tail": text[-500:]}
+    au, framed, no_out, put_fail = (int(m.group(1)), int(m.group(2)),
+                                    int(m.group(3)), int(m.group(4)))
+    return {
+        "au_fed": au, "frames": framed, "no_output": no_out,
+        "put_fail": put_fail, "mean_us": float(m.group(5)),
+        "p50": int(m.group(6)), "p90": int(m.group(7)),
+        "p99": int(m.group(8)), "probe": "mpp_dec_latency",
+        "raw_tail": text[-300:],
+    }
+
+
 def run_offline(h264, duration_hint):
     """用 mpi_dec_test 回放预置流，取解码 fps。"""
     cmd = ["mpi_dec_test", "-t", "7", "-i", h264, "-n", "0"]
@@ -96,6 +136,10 @@ def main():
     ap.add_argument("--height", type=int, default=1080)
     ap.add_argument("--fps", type=float, default=60.0)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--dec-binary", default=None,
+                      help="mpp_dec_latency 探针路径；指定则优先用探针取分位")
+    ap.add_argument("--max-au", type=int, default=0,
+                      help="offline 探针模式的最大 AU 数（0=探针默认）")
     args = ap.parse_args()
     th = load_thresholds()
 
@@ -104,12 +148,48 @@ def main():
         if not args.input:
             print("[FAIL] offline 模式需要 --input H264")
             return 1
-        result.update(run_offline(args.input, args.duration))
-        if "error" in result:
-            print("[FAIL] " + result["error"])
-            return 1
-        result["verdict"] = "PASS"
-        result["notes"] = ["离线解码 fps={}".format(result["fps"])]
+        # 4K 输入（文件名或宽高任一命中）走 4K 阈值
+        is_4k = (args.width > 1920 or args.height > 1080
+                 or "3840" in args.input or "4k" in args.input.lower())
+        if is_4k:
+            th = {**th, **load_thresholds_4k()}
+            p99_key = ("dec_p99_max_us_30fps" if args.fps <= 32
+                         else "dec_p99_max_us_60fps")
+            th["dec_p99_max_us"] = th.get(p99_key, th.get("dec_p99_max_us", 66666))
+            result["resolution"] = "4k"
+        if args.dec_binary and os.path.exists(args.dec_binary):
+            result.update(run_offline_mpp(args.dec_binary, args.input,
+                                          args.max_au, args.duration))
+            if "error" in result:
+                print("[FAIL] " + result["error"])
+                return 1
+            verdict, notes = "PASS", []
+            y = result["frames"] / result["au_fed"] if result["au_fed"] else 0
+            result["yield"] = round(y, 4)
+            # 探针按 start code 切 AU：SPS/PPS/SEI 等非帧 AU 永无输出，
+            # 加上解码器 priming，前 ~10 个 no_output 属正常现象，不按 MTL 管线
+            # 产出比判定。仅当反压 (put_fail) 或大量丢帧时才 FAIL。
+            no_out = result.get("no_output", 0)
+            if result["put_fail"] > th.get("put_fail_allowed", 0):
+                verdict = "FAIL"
+                notes.append("解码反压 put_fail={}".format(result["put_fail"]))
+            elif no_out > 12:
+                verdict = "FAIL"
+                notes.append("无输出 AU {} 过多（priming  allowance 12）".format(no_out))
+            if result["p99"] > th.get("dec_p99_max_us", 66666):
+                verdict = "FAIL" if verdict == "FAIL" else "WARN"
+                notes.append("解码 p99 {}us 超过阈值".format(result["p99"]))
+            if not notes:
+                notes = ["离线解码 mean={}us p99={}us yield={:.1%}".format(
+                    result["mean_us"], result["p99"], y)]
+            result["verdict"], result["notes"] = verdict, notes
+        else:
+            result.update(run_offline(args.input, args.duration))
+            if "error" in result:
+                print("[FAIL] " + result["error"])
+                return 1
+            result["verdict"] = "PASS"
+            result["notes"] = ["离线解码 fps={}".format(result["fps"])]
     else:
         r = run_mtl(args.binary, args.duration, args.udp, args.sip,
                     args.width, args.height, args.fps)
@@ -145,8 +225,15 @@ def main():
         with open(os.path.join(args.out, "rx_decode.json"), "w") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
         if args.mode == "offline":
-            rows = [[result.get("frames"), result.get("fps")]]
-            hdr = ["frames", "fps"]
+            if result.get("probe") == "mpp_dec_latency":
+                rows = [[result.get("au_fed"), result.get("frames"),
+                           result.get("mean_us"), result.get("p50"),
+                           result.get("p90"), result.get("p99"),
+                           result.get("yield")]]
+                hdr = ["au", "framed", "mean(us)", "p50", "p90", "p99", "yield"]
+            else:
+                rows = [[result.get("frames"), result.get("fps")]]
+                hdr = ["frames", "fps"]
         else:
             rows = [[result.get("pkt"), result.get("dec"), result.get("render"),
                      result.get("yield"), result.get("pb_underrun"),

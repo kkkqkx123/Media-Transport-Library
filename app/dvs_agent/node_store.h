@@ -42,8 +42,7 @@ private:
     void load();
     void save_config();
     /* PBKDF2-HMAC-SHA256(password) with a random per-user salt, stored as
-     * "pbkdf2$<salthex>$<iter>$<hashhex>". Backward-compatible with the legacy
-     * std::hash format used by early dev DBs. */
+     * "pbkdf2$<salthex>$<iter>$<hashhex>". Anything else never verifies. */
     std::string make_hash(const std::string& p);
     bool check_hash(const std::string& stored, const std::string& p);
     sqlite3* db_;

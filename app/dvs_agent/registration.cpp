@@ -31,6 +31,13 @@ static int int_of(json_object* o, const char* key, int def = 0) {
 
 static std::string control_token();
 
+static std::string iso_now() {
+    char buf[32];
+    time_t t = time(nullptr);
+    strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", gmtime(&t));
+    return buf;
+}
+
 /* Read a single integer from a sysfs/proc file. Returns def on any failure. */
 static long read_long_file(const char* path, long def) {
     std::ifstream f(path);
@@ -89,7 +96,7 @@ void Registration::loop() {
         while (running_) {
             std::this_thread::sleep_for(std::chrono::seconds(3));
             json_object* patch = json_object_new_object();
-            json_object_object_add(patch, "lastHeartbeat", json_object_new_string("now"));
+            json_object_object_add(patch, "lastHeartbeat", json_object_new_string(iso_now().c_str()));
             store_->update_node(patch);
             json_object_put(patch);
         }
@@ -383,7 +390,7 @@ bool Registration::register_once() {
     json_object* data = nullptr;
     if (json_object_object_get_ex(ack, "data", &data) && data) {
         json_object* nid = nullptr;
-        if (json_object_object_get_ex(data, "nodeId", &nid) && nid)
+        if (json_object_object_get_ex(data, "id", &nid) && nid)
             store_->set_node_id(json_object_get_string(nid));
         json_object* iv = nullptr;
         if (json_object_object_get_ex(data, "heartbeatIntervalMs", &iv) && iv) {
@@ -442,7 +449,7 @@ bool Registration::heartbeat_once() {
     /* Reflect appliedRevision from ack if present; keep it simple and just
      * update lastHeartbeat locally. */
     json_object* patch = json_object_new_object();
-    json_object_object_add(patch, "lastHeartbeat", json_object_new_string("now"));
+    json_object_object_add(patch, "lastHeartbeat", json_object_new_string(iso_now().c_str()));
     store_->update_node(patch);
     json_object_put(patch);
     return true;
@@ -451,6 +458,9 @@ bool Registration::heartbeat_once() {
 json_object* Registration::build_register() {
     json_object* node = store_->node();
     json_object* o = json_object_new_object();
+    /* Identity is the operator-assigned node id; sn stays as hardware info
+     * merged into the platform node doc, never as an identity fallback. */
+    json_object_object_add(o, "id", json_object_new_string(str_of(node, "id", "local-node").c_str()));
     json_object_object_add(o, "sn", json_object_new_string(str_of(node, "sn", "RK3588-LOCAL").c_str()));
     json_object_object_add(o, "mac", json_object_new_string(str_of(node, "mac").c_str()));
     json_object_object_add(o, "model", json_object_new_string(str_of(node, "model", "DVS-NODE-R1").c_str()));
@@ -510,7 +520,6 @@ json_object* Registration::build_heartbeat() {
     json_object* o = json_object_new_object();
     std::string nid = str_of(node, "id", "local-node");
     json_object_object_add(o, "id", json_object_new_string(nid.c_str()));
-    json_object_object_add(o, "nodeId", json_object_new_string(nid.c_str()));
     json_object_object_add(o, "uptimeSec", json_object_new_int((int)(time(nullptr) - start_time_)));
     json_object_object_add(o, "role", json_object_new_string(str_of(node, "role", "output").c_str()));
     json_object* phb = nullptr;

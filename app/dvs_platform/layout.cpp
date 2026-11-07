@@ -227,7 +227,6 @@ std::string validate_scene_shape(json_object* doc, int wall_w, int wall_h) {
     }
     json_object* wins = nullptr;
     if (json_object_object_get_ex(doc, "windows", &v) && v) wins = v;
-    if (json_object_object_get_ex(doc, "layout", &v) && v && !wins) wins = v;
     if (!wins) return "";
     if (!json_object_is_type(wins, json_type_array))
         return "INVALID_ARGUMENT:scene windows must be array";
@@ -236,9 +235,7 @@ std::string validate_scene_shape(json_object* doc, int wall_w, int wall_h) {
         if (!w || !json_object_is_type(w, json_type_object))
             return "INVALID_ARGUMENT:scene window must be object";
         std::string id = jstr(w, "id");
-        if (id.empty()) id = jstr(w, "windowId");
         std::string sig = jstr(w, "sig");
-        if (sig.empty()) sig = jstr(w, "signalId");
         if (id.empty()) return "INVALID_ARGUMENT:scene window missing id";
         if (sig.empty()) return "INVALID_ARGUMENT:scene window missing signal";
         int x = rect_int(w, "x"), y = rect_int(w, "y");
@@ -255,14 +252,6 @@ std::string validate_scene_shape(json_object* doc, int wall_w, int wall_h) {
 std::string binding_output_of(json_object* doc) {
     if (!doc) return "";
     json_object* v = nullptr;
-    if (json_object_object_get_ex(doc, "output", &v) && v) {
-        if (json_object_is_type(v, json_type_string)) return jstr(doc, "output");
-        if (json_object_is_type(v, json_type_int)) {
-            int p = json_object_get_int(v);
-            if (p > 0) return std::to_string(p);
-            return "";
-        }
-    }
     if (json_object_object_get_ex(doc, "outputPort", &v) && v) {
         if (json_object_is_type(v, json_type_string)) return jstr(doc, "outputPort");
         if (json_object_is_type(v, json_type_int)) {
@@ -271,39 +260,29 @@ std::string binding_output_of(json_object* doc) {
             return "";
         }
     }
-    if (json_object_object_get_ex(doc, "port", &v) && v &&
-        json_object_is_type(v, json_type_int)) {
-        int p = json_object_get_int(v);
-        if (p > 0) return std::to_string(p);
-    }
     return "";
 }
 
 std::string binding_sig_of(json_object* doc) {
     if (!doc) return "";
-    std::string s = jstr(doc, "sig");
-    if (s.empty()) s = jstr(doc, "signalId");
-    return s;
+    return jstr(doc, "sig");
 }
 
 std::string validate_binding_shape(json_object* doc) {
     if (!doc || !json_object_is_type(doc, json_type_object))
         return "INVALID_ARGUMENT:binding must be object";
     std::string wall = jstr(doc, "wallId");
-    if (wall.empty()) wall = jstr(doc, "wall");
     std::string node = jstr(doc, "nodeId");
-    if (node.empty()) node = jstr(doc, "node");
-    if (node.empty()) node = jstr(doc, "node_id");
     if (wall.empty()) return "INVALID_ARGUMENT:binding missing wallId";
     if (node.empty()) return "INVALID_ARGUMENT:binding missing nodeId";
-    // Optional output dimension: string port name or numeric port 1..65535.
-    // A binding carrying both spellings must agree; disagreement rejects.
+    // Optional output dimension: string port name or numeric port 1..65535
+    // under the single outputPort key.
     std::string out_s;
     bool has_out_s = false;
     int out_p = 0;
     bool has_out_p = false;
     json_object* v = nullptr;
-    if (json_object_object_get_ex(doc, "output", &v) && v) {
+    if (json_object_object_get_ex(doc, "outputPort", &v) && v) {
         if (json_object_is_type(v, json_type_string)) {
             out_s = json_object_get_string(v);
             has_out_s = true;
@@ -311,43 +290,13 @@ std::string validate_binding_shape(json_object* doc) {
             out_p = json_object_get_int(v);
             has_out_p = true;
         } else {
-            return "INVALID_ARGUMENT:binding output must be string or int";
-        }
-    }
-    if (json_object_object_get_ex(doc, "outputPort", &v) && v) {
-        if (json_object_is_type(v, json_type_string)) {
-            std::string s = json_object_get_string(v);
-            if (has_out_s && s != out_s)
-                return "INVALID_ARGUMENT:binding output/outputPort disagree";
-            out_s = s;
-            has_out_s = true;
-        } else if (json_object_is_type(v, json_type_int)) {
-            int p = json_object_get_int(v);
-            if (has_out_p && p != out_p)
-                return "INVALID_ARGUMENT:binding output/outputPort disagree";
-            out_p = p;
-            has_out_p = true;
-        } else {
             return "INVALID_ARGUMENT:binding outputPort must be string or int";
         }
     }
-    if (json_object_object_get_ex(doc, "port", &v) && v) {
-        if (!json_object_is_type(v, json_type_int))
-            return "INVALID_ARGUMENT:binding port must be int";
-        int p = json_object_get_int(v);
-        if (has_out_p && p != out_p)
-            return "INVALID_ARGUMENT:binding port/outputPort disagree";
-        out_p = p;
-        has_out_p = true;
-    }
-    // String port name and numeric port are two spellings of the same
-    // dimension: carrying both rejects so the idle check stays unambiguous.
-    if (has_out_s && has_out_p)
-        return "INVALID_ARGUMENT:binding output/port disagree";
     if (has_out_s && (out_s.empty() || out_s.size() > 64))
-        return "INVALID_ARGUMENT:binding output must be 1..64 chars";
+        return "INVALID_ARGUMENT:binding outputPort must be 1..64 chars";
     if (has_out_p && (out_p < 1 || out_p > 65535))
-        return "INVALID_ARGUMENT:binding port must be 1..65535";
+        return "INVALID_ARGUMENT:binding outputPort must be 1..65535";
     // Optional signal reference: validated for existence by the caller.
     std::string sig = binding_sig_of(doc);
     if (!sig.empty() && sig.size() > 128)
@@ -359,18 +308,25 @@ std::string validate_whitelist_shape(json_object* doc) {
     if (!doc || !json_object_is_type(doc, json_type_object))
         return "INVALID_ARGUMENT:whitelist must be object";
     std::string sig = jstr(doc, "sig");
-    if (sig.empty()) sig = jstr(doc, "id");
     if (sig.empty()) return "INVALID_ARGUMENT:whitelist missing sig";
     std::string addr = jstr(doc, "address");
-    if (addr.empty()) addr = jstr(doc, "mcast_ip");
     if (addr.empty()) return "INVALID_ARGUMENT:whitelist missing address";
     int port = 0;
     json_object* v = nullptr;
     if (json_object_object_get_ex(doc, "port", &v) && v) port = json_object_get_int(v);
-    if (json_object_object_get_ex(doc, "mcast_port", &v) && v)
-        port = json_object_get_int(v);
     if (port != 0 && (port < 1 || port > 65535))
         return "INVALID_ARGUMENT:whitelist port must be 1..65535";
+    // Optional per-signal audio (ST 2110-30) port. Absent or zero means the
+    // signal carries no subscribable audio; the agent then omits audioUdpPort
+    // and the engine honestly reports the owner as not applied (mute).
+    json_object* apv = nullptr;
+    if (json_object_object_get_ex(doc, "audioPort", &apv) && apv) {
+        if (!json_object_is_type(apv, json_type_int))
+            return "INVALID_ARGUMENT:whitelist audioPort must be int";
+        int aport = json_object_get_int(apv);
+        if (aport < 1 || aport > 65535)
+            return "INVALID_ARGUMENT:whitelist audioPort must be 1..65535";
+    }
     if (json_object_object_get_ex(doc, "codec", &v) && v &&
         json_object_is_type(v, json_type_string)) {
         std::string c = docs_lower(json_object_get_string(v));
@@ -441,12 +397,8 @@ std::string validate_playback_shape(json_object* doc) {
     if (!doc || !json_object_is_type(doc, json_type_object))
         return "INVALID_ARGUMENT:playback-task must be object";
     std::string wall = jstr(doc, "wallId");
-    if (wall.empty()) wall = jstr(doc, "wall");
     std::string scene = jstr(doc, "sceneId");
-    if (scene.empty()) scene = jstr(doc, "scene");
     std::string node = jstr(doc, "targetNodeId");
-    if (node.empty()) node = jstr(doc, "nodeId");
-    if (node.empty()) node = jstr(doc, "node");
     if (wall.empty()) return "INVALID_ARGUMENT:playback-task missing wallId";
     if (scene.empty()) return "INVALID_ARGUMENT:playback-task missing sceneId";
     if (node.empty()) return "INVALID_ARGUMENT:playback-task missing targetNodeId";
@@ -582,17 +534,7 @@ bool node_clock_ok(json_object* node, std::string* reason) {
     std::string role = jstr(node, "role");
     if (!role.empty() && role != "output") return fail("role is not output");
     json_object* ptp = nullptr;
-    if (json_object_object_get_ex(node, "ptp", &ptp) && !ptp)
-        json_object_object_get_ex(node, "clock", &ptp);
-    if (!json_object_object_get_ex(node, "ptp", &ptp) || !ptp)
-        json_object_object_get_ex(node, "clock", &ptp);
-    // Heartbeat path stores the digest under metrics.ptp for additive
-    // compatibility; accept either location.
-    if (!ptp) {
-        json_object* m = nullptr;
-        if (json_object_object_get_ex(node, "metrics", &m) && m)
-            json_object_object_get_ex(m, "ptp", &ptp);
-    }
+    json_object_object_get_ex(node, "ptp", &ptp);
     if (!ptp || !json_object_is_type(ptp, json_type_object))
         return fail("clock unknown");
     std::string st = jstr(ptp, "state");

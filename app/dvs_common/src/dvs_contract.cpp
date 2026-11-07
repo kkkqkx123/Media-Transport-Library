@@ -59,12 +59,11 @@ bool rect_ok(json_object* o) {
     }
     return true;
 }
-// Optional ptp/clock summary: {state, offsetUs, domain}. Absent is unknown
+// Optional ptp summary: {state, offsetUs, domain}. Absent is unknown
 // and valid; present must be an object with a non-empty state string and an
 // integer offset. Frame clock and vsync stay additive and unchecked.
 std::string ptp_opt_err(json_object* o) {
     json_object* p = field(o, "ptp");
-    if (!p) p = field(o, "clock");
     if (!p) return "";
     if (!is_obj(p)) return "INVALID_ARGUMENT:ptp must be object";
     std::string st;
@@ -154,15 +153,11 @@ std::string extract_bearer(const std::map<std::string, std::string>& headers) {
 std::string validate_hello(json_object* data) {
     if (!is_obj(data)) return "INVALID_ARGUMENT:hello must be object";
     std::string id;
-    json_object* v = field(data, "id");
-    if (!v) v = field(data, "sn");
-    if (!v || !json_object_is_type(v, json_type_string) ||
-        json_object_get_string(v)[0] == '\0')
-        return "INVALID_ARGUMENT:hello missing id/sn";
+    if (!str_field(data, "id", id) || id.empty())
+        return "INVALID_ARGUMENT:hello missing id";
     json_object* geo = field(data, "geometry");
     if (!rect_ok(geo)) return "INVALID_ARGUMENT:hello geometry must be {x,y,w,h}";
     json_object* cap = field(data, "capability");
-    if (cap == nullptr) cap = field(data, "capabilities");
     if (cap && !is_obj(cap)) return "INVALID_ARGUMENT:hello capability must be object";
     json_object* net = field(data, "network");
     if (net && !is_obj(net)) return "INVALID_ARGUMENT:hello network must be object";
@@ -174,9 +169,8 @@ std::string validate_hello(json_object* data) {
 std::string validate_heartbeat(json_object* data) {
     if (!is_obj(data)) return "INVALID_ARGUMENT:heartbeat must be object";
     std::string id;
-    if (!str_field(data, "id", id) && !str_field(data, "nodeId", id))
+    if (!str_field(data, "id", id) || id.empty())
         return "INVALID_ARGUMENT:heartbeat missing id";
-    if (id.empty()) return "INVALID_ARGUMENT:heartbeat missing id";
     json_object* d = field(data, "lanesDigest");
     if (!is_obj(d)) return "INVALID_ARGUMENT:heartbeat missing lanesDigest";
     int ready = 0, total = 0;
@@ -202,6 +196,25 @@ std::string validate_layout_prepare(json_object* data) {
         return "INVALID_ARGUMENT:layout.prepare applyAtNs must be int";
     json_object* wins = field(data, "windows");
     if (!is_arr(wins)) return "INVALID_ARGUMENT:layout.prepare windows must be array";
+    // Per-fragment window shape (platform fragment_for_node output): each
+    // element names its window and signal and carries the node-local target
+    // rect plus the source crop. Key-level check so an untranslatable shape
+    // is refused at the gate instead of sailing through to the translator.
+    for (size_t i = 0; i < json_object_array_length(wins); i++) {
+        json_object* w = json_object_array_get_idx(wins, i);
+        if (!is_obj(w)) return "INVALID_ARGUMENT:layout.prepare window must be object";
+        std::string wid;
+        if (!str_field(w, "windowId", wid) || wid.empty())
+            return "INVALID_ARGUMENT:layout.prepare window missing windowId";
+        std::string sig;
+        if (!str_field(w, "sig", sig) || sig.empty())
+            return "INVALID_ARGUMENT:layout.prepare window missing sig";
+        if (!is_obj(field(w, "dst")) || !is_obj(field(w, "src")))
+            return "INVALID_ARGUMENT:layout.prepare window missing dst/src";
+    }
+    json_object* eps = field(data, "endpoints");
+    if (eps && !is_arr(eps))
+        return "INVALID_ARGUMENT:layout.prepare endpoints must be array";
     json_object* geo = field(data, "geometry");
     if (!rect_ok(geo)) return "INVALID_ARGUMENT:layout.prepare geometry must be {x,y,w,h}";
     return "";

@@ -42,8 +42,8 @@ struct TxCaps {
 TxCaps tx_caps_from_node(json_object* capabilities);
 
 /* Parse desiredValue {port, encode{codec,width,height,fps,bitrateKbps},
- * target{sip,udpPort}} with flat fallbacks. Missing encode fields take
- * defaults; a missing encode/target object means "not requested". */
+ * target{sip,udpPort}}. Missing encode fields take defaults; a missing
+ * encode/target object means "not requested". */
 bool tx_parse(json_object* val, TxParams& out, std::string& err);
 
 /* Range checks against caps (port presence is checked by the caller against

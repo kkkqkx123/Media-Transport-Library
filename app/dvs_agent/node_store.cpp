@@ -418,13 +418,7 @@ std::string NodeStore::make_hash(const std::string& p) {
 }
 
 bool NodeStore::check_hash(const std::string& stored, const std::string& p) {
-    /* Legacy dev DBs used a bare std::hash. Migrate on successful verify. */
-    if (stored.empty() || stored.rfind("pbkdf2$", 0) != 0) {
-        std::hash<std::string> h;
-        char buf[64];
-        snprintf(buf, sizeof(buf), "%zu", h("dvs-salt:" + p));
-        return stored == std::string(buf);
-    }
+    if (stored.empty() || stored.rfind("pbkdf2$", 0) != 0) return false;
     size_t p1 = stored.find('$', 7);          // after "pbkdf2$"
     size_t p2 = stored.find('$', p1 + 1);
     if (p1 == std::string::npos || p2 == std::string::npos) return false;
@@ -453,15 +447,7 @@ bool NodeStore::verify_password(const std::string& user, const std::string& pass
     json_object* ph = nullptr;
     json_object_object_get_ex(node_, "password_hash", &ph);
     std::string stored = ph ? json_object_get_string(ph) : "";
-    bool ok = check_hash(stored, pass);
-    /* Migrate legacy hash to pbkdf2 on first successful login. */
-    if (ok && stored.rfind("pbkdf2$", 0) != 0) {
-        json_object_object_del(node_, "password_hash");
-        json_object_object_add(node_, "password_hash",
-                               json_object_new_string(make_hash(pass).c_str()));
-        save_node();
-    }
-    return ok;
+    return check_hash(stored, pass);
 }
 
 void NodeStore::set_password(const std::string& pass) {

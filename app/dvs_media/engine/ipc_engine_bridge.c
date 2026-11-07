@@ -147,14 +147,13 @@ static int apply_whitelist(struct json_object* wv, char* err, size_t errlen) {
                 }
                 snprintf(tmp, sizeof(tmp), "%s", s);
             } else if (json_object_is_type(e, json_type_object)) {
+                /* Canonical object form: exactly {sip, udp_port?}. The same
+                 * spelling the engine emits in query_state lanes, so a lane
+                 * snapshot pastes back as a whitelist verbatim. */
                 const char* ip = json_str(e, "sip");
-                if (!ip) ip = json_str(e, "ip");
-                if (!ip) ip = json_str(e, "source");
                 struct json_object* pv = NULL;
                 int has_p = 0, port = 0;
-                if (json_object_object_get_ex(e, "udp_port", &pv) && pv) { port = json_object_get_int(pv); has_p = 1; }
-                else if (json_object_object_get_ex(e, "udpPort", &pv) && pv) { port = json_object_get_int(pv); has_p = 1; }
-                else if (json_object_object_get_ex(e, "port", &pv) && pv) {
+                if (json_object_object_get_ex(e, "udp_port", &pv) && pv) {
                     if (json_object_is_type(pv, json_type_string)) {
                         const char* ps = json_object_get_string(pv);
                         for (const char* q = ps; *q; q++) if (*q < '0' || *q > '9') {
@@ -182,13 +181,6 @@ static int apply_whitelist(struct json_object* wv, char* err, size_t errlen) {
         }
         csv[pos] = '\0';
     } else if (json_object_is_type(wv, json_type_object)) {
-        const char* port = json_str(wv, "port");
-        struct json_object* inner = NULL;
-        if (json_object_object_get_ex(wv, "whitelist", &inner) && inner)
-            return apply_whitelist(inner, err, errlen);
-        if (json_object_object_get_ex(wv, "sources", &inner) && inner)
-            return apply_whitelist(inner, err, errlen);
-        if (port) return 0;
         snprintf(err, errlen, "bad whitelist object");
         return -1;
     } else {
@@ -211,7 +203,6 @@ static int hook_prepare(struct json_object* req, char* err, size_t errlen) {
     req = effective_body(req);
     struct json_object* wv = NULL;
     if (req && json_object_object_get_ex(req, "whitelist", &wv)) return apply_whitelist(wv, err, errlen);
-    if (req && json_object_object_get_ex(req, "sources", &wv)) return apply_whitelist(wv, err, errlen);
     struct json_object* scopev = NULL;
     if (req && json_object_object_get_ex(req, "scope", &scopev) && scopev) {
         const char* scope = json_object_get_string(scopev);
@@ -250,8 +241,7 @@ static int hook_prepare(struct json_object* req, char* err, size_t errlen) {
      * never stages a layout the commit could only half-apply. */
     {
         struct json_object* t = NULL;
-        if (req && (json_object_object_get_ex(req, "streams", &t) ||
-                     json_object_object_get_ex(req, "layout", &t))) {
+        if (req && json_object_object_get_ex(req, "streams", &t)) {
             file_playout_pip_stream vs[MP4_PIP_MAX_LANES];
             int vn = 0;
             if (dvs_layout_from_json(req, vs, &vn) != 0) {
@@ -372,31 +362,21 @@ static int hook_tx_start(struct json_object* req, char* err, size_t errlen) {
     struct json_object* tgt = NULL;
     json_object_object_get_ex(req, "encode", &enc);
     json_object_object_get_ex(req, "target", &tgt);
-    const char* codec = enc ? json_str(enc, "codec") : json_str(req, "codec");
+    const char* codec = enc ? json_str(enc, "codec") : NULL;
     if (port) snprintf(p.port, sizeof(p.port), "%s", port);
     if (codec) snprintf(p.codec, sizeof(p.codec), "%s", codec);
     struct json_object* v = NULL;
     if (enc && json_object_object_get_ex(enc, "width", &v) && v)
         p.width = json_object_get_int(v);
-    else if (json_object_object_get_ex(req, "width", &v) && v)
-        p.width = json_object_get_int(v);
     if (enc && json_object_object_get_ex(enc, "height", &v) && v)
-        p.height = json_object_get_int(v);
-    else if (json_object_object_get_ex(req, "height", &v) && v)
         p.height = json_object_get_int(v);
     if (enc && json_object_object_get_ex(enc, "fps", &v) && v)
         p.fps = json_object_get_int(v);
-    else if (json_object_object_get_ex(req, "fps", &v) && v)
-        p.fps = json_object_get_int(v);
-    if ((enc && json_object_object_get_ex(enc, "bitrateKbps", &v) && v) ||
-        (json_object_object_get_ex(req, "bitrateKbps", &v) && v))
+    if (enc && json_object_object_get_ex(enc, "bitrateKbps", &v) && v)
         p.bitrate_kbps = json_object_get_int(v);
-    const char* sip = tgt ? json_str(tgt, "sip") : json_str(req, "targetSip");
-    if (!sip && tgt) sip = json_str(tgt, "targetSip");
+    const char* sip = tgt ? json_str(tgt, "sip") : NULL;
     if (sip) snprintf(p.target_sip, sizeof(p.target_sip), "%s", sip);
-    if ((tgt && json_object_object_get_ex(tgt, "udpPort", &v) && v) ||
-        (json_object_object_get_ex(req, "udpPort", &v) && v) ||
-        (json_object_object_get_ex(req, "targetPort", &v) && v))
+    if (tgt && json_object_object_get_ex(tgt, "udpPort", &v) && v)
         p.target_port = json_object_get_int(v);
     if (!p.port[0] || !p.codec[0] || !p.width || !p.height || !p.fps ||
         !p.bitrate_kbps || !p.target_sip[0] || !p.target_port) {

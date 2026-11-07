@@ -22,22 +22,23 @@
 static file_playout_pip_stream g_pending[MP4_PIP_MAX_LANES];
 static uint64_t g_pending_apply_at_ns = 0;
 static int g_pending_count = 0;
-/* Set only when a prepare actually staged a layout. A prepare that validated
- * nothing engine-side (e.g. the platform windows/geometry shape) leaves this
- * clear so commit keeps the running picture instead of clearing media. */
+/* Set only when a prepare actually staged a layout. A refused prepare (e.g.
+ * the pre-translation windows shape, rejected by hook_prepare since the agent
+ * translates to streams) stages nothing and leaves this clear, so commit
+ * keeps the running picture instead of clearing media. */
 static int g_pending_valid = 0;
 static char g_pending_audio_owner[64];
 static int g_pending_audio_volume = 0;
 static pthread_mutex_t g_pending_mu = PTHREAD_MUTEX_INITIALIZER;
 
-/* Parse a "streams" (or "layout") JSON array into pip_stream structs.
- * Accepts camelCase or snake_case keys. Returns 0 on success. */
+/* Parse a "streams" JSON array into pip_stream structs. Keys are the exact
+ * camelCase spellings the agent emits; anything else is rejected rather
+ * than guessed. Returns 0 on success. */
 int dvs_layout_from_json(struct json_object* req, file_playout_pip_stream* out,
                          int* count) {
     if (!req || !out || !count) return -1;
     struct json_object* arr = NULL;
-    if (!json_object_object_get_ex(req, "streams", &arr) &&
-        !json_object_object_get_ex(req, "layout", &arr))
+    if (!json_object_object_get_ex(req, "streams", &arr))
         return -1;
     if (!json_object_is_type(arr, json_type_array)) return -1;
 
@@ -62,11 +63,7 @@ int dvs_layout_from_json(struct json_object* req, file_playout_pip_stream* out,
             strncpy(p->sip, json_object_get_string(v), MP4_PIP_SIP_LEN - 1);
         if (json_object_object_get_ex(s, "udpPort", &v))
             p->udp_port = (uint16_t)json_object_get_int(v);
-        else if (json_object_object_get_ex(s, "udp_port", &v))
-            p->udp_port = (uint16_t)json_object_get_int(v);
         if (json_object_object_get_ex(s, "audioUdpPort", &v))
-            p->audio_udp_port = (uint16_t)json_object_get_int(v);
-        else if (json_object_object_get_ex(s, "audio_udp_port", &v))
             p->audio_udp_port = (uint16_t)json_object_get_int(v);
         if (json_object_object_get_ex(s, "width", &v)) p->width = json_object_get_int(v);
         if (json_object_object_get_ex(s, "height", &v)) p->height = json_object_get_int(v);
@@ -78,13 +75,9 @@ int dvs_layout_from_json(struct json_object* req, file_playout_pip_stream* out,
         /* Source crop (forward-compatible; see display_layout.h). Zero w/h
          * stays "full frame". */
         if (json_object_object_get_ex(s, "srcX", &v)) p->src_x = json_object_get_int(v);
-        else if (json_object_object_get_ex(s, "src_x", &v)) p->src_x = json_object_get_int(v);
         if (json_object_object_get_ex(s, "srcY", &v)) p->src_y = json_object_get_int(v);
-        else if (json_object_object_get_ex(s, "src_y", &v)) p->src_y = json_object_get_int(v);
         if (json_object_object_get_ex(s, "srcW", &v)) p->src_w = json_object_get_int(v);
-        else if (json_object_object_get_ex(s, "src_w", &v)) p->src_w = json_object_get_int(v);
         if (json_object_object_get_ex(s, "srcH", &v)) p->src_h = json_object_get_int(v);
-        else if (json_object_object_get_ex(s, "src_h", &v)) p->src_h = json_object_get_int(v);
         if (json_object_object_get_ex(s, "codestreamSize", &v))
             p->codestream_size = (size_t)json_object_get_int64(v);
     }
@@ -92,15 +85,6 @@ int dvs_layout_from_json(struct json_object* req, file_playout_pip_stream* out,
         for (int i = 0; i < n; i++) out[i].lane = i;
     }
     *count = n;
-    return 0;
-}
-
-static uint64_t json_u64(struct json_object* o, const char* a, const char* b) {
-    struct json_object* v = NULL;
-    if (o && json_object_object_get_ex(o, a, &v) && v)
-        return (uint64_t)json_object_get_int64(v);
-    if (o && b && json_object_object_get_ex(o, b, &v) && v)
-        return (uint64_t)json_object_get_int64(v);
     return 0;
 }
 
@@ -140,14 +124,11 @@ int dvs_layout_prepare_from_json(struct json_object* req) {
     pthread_mutex_lock(&g_pending_mu);
     memcpy(g_pending, buf, (size_t)n * sizeof(*buf));
     g_pending_count = n;
-    /* Platform and agent carry the switch time as applyAtNs; older callers
-     * use applyAt/apply_at. Prefer the namespaced key when present. */
+    /* The switch time travels as applyAtNs from platform through agent. */
     uint64_t apply_at = 0;
     struct json_object* atv = NULL;
     if (req && json_object_object_get_ex(req, "applyAtNs", &atv) && atv)
       apply_at = (uint64_t)json_object_get_int64(atv);
-    else
-      apply_at = json_u64(req, "applyAt", "apply_at");
     g_pending_apply_at_ns = apply_at;
     g_pending_valid = 1;
     strncpy(g_pending_audio_owner, owner, sizeof(g_pending_audio_owner) - 1);
@@ -174,8 +155,8 @@ int dvs_layout_commit(dvs_engine* e) {
     pthread_mutex_unlock(&g_pending_mu);
 
     if (!valid) {
-        /* no layout was staged (e.g. a windows/geometry prepare passed
-         * through without engine validation): keep the running picture */
+        /* no layout was staged (e.g. a refused windows-shape prepare staged
+         * nothing): keep the running picture */
         return 0;
     }
 

@@ -1,5 +1,7 @@
 # DVS 平台 windows 布局 → 引擎 pip_stream 映射方案（下一阶段）
 
+> 状态注记（2026-11-07）：本文已实施完毕，但其中两条结论被 `DVS_WINDOWS_TRANSLATION_GAPS_DESIGN.md` 修正后**以修正为准**：①下发形状不是本文 §2.1 的 `windows[{id,sig,x,y,w,h,z,muted}]+sources[{sig,sip,udpPort}]`，而是扁平分片 `windows[{windowId,sig,dst,src,fullW/fullH,partial,z,muted}]+endpoints[{sig,address,port,fps,audioPort,mode}]`（另见 2026-11-07 补的 `fps`/`audioPort` 端点表字段）；②音频归属不是本文 §3 的“非 muted 中 z 序最高者”，而是“最新未静音窗口”（req 03 §7.4），且线上钥为窗口标识、代理翻译为 `lane<N>`。③本文 §4.2 的 windows 放行兼容分支、§4.1-4 的“无 windows 字段纯操作帧”已作废（前者改显式拒绝，后者被契约 `windows` 必填取代）。按本文旧形状对接会整单被拒（查表全 miss），新对接方请以 GAPS 设计 §4 与本注记为准。
+
 > 前置：`docs/plan/dvs/DVS_IPC_ASYNC_AUDIT_AND_FIX_PLAN.md`（payload 解包、hook 放行、pending_valid 已落地）。
 > 对应代码：`app/dvs_agent/main.cpp`（/layout 转发）、`app/dvs_media/ipc/ipc_server.c`、`app/dvs_media/engine/{ipc_engine_bridge.c, layout_executor.c, engine_ctx.c}`。
 > 状态：方案，未实施。

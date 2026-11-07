@@ -246,37 +246,19 @@ static double wall_fps_of(json_object* wall) {
     return 60.0;
 }
 static std::string binding_wall_of(json_object* b) {
-    std::string w = body_str(b, "wallId");
-    if (w.empty()) w = body_str(b, "wall");
-    return w;
+    return body_str(b, "wallId");
 }
 static std::string binding_node_of(json_object* b) {
-    std::string n = body_str(b, "nodeId");
-    if (n.empty()) n = body_str(b, "node");
-    if (n.empty()) n = body_str(b, "node_id");
-    return n;
+    return body_str(b, "nodeId");
 }
 static std::string binding_cell_of(json_object* b) {
-    json_object* v = nullptr;
-    std::string c = body_str(b, "cellId");
-    if (!c.empty()) return c;
-    int r = -1, col = -1;
-    if (json_object_object_get_ex(b, "r", &v) && v) r = json_object_get_int(v);
-    if (json_object_object_get_ex(b, "row", &v) && v) r = json_object_get_int(v);
-    if (json_object_object_get_ex(b, "c", &v) && v) col = json_object_get_int(v);
-    if (json_object_object_get_ex(b, "col", &v) && v) col = json_object_get_int(v);
-    if (r >= 0 && col >= 0) return std::to_string(r) + ":" + std::to_string(col);
-    return body_str(b, "cell");
+    return body_str(b, "cellId");
 }
 static void whitelist_addr_port(json_object* w, std::string* addr, int* port) {
-    std::string a = body_str(w, "address");
-    if (a.empty()) a = body_str(w, "mcast_ip");
     int p = 0;
     json_object* v = nullptr;
     if (json_object_object_get_ex(w, "port", &v) && v) p = json_object_get_int(v);
-    if (json_object_object_get_ex(w, "mcast_port", &v) && v)
-        p = json_object_get_int(v);
-    if (addr) *addr = a;
+    if (addr) *addr = body_str(w, "address");
     if (port) *port = p;
 }
 static std::string playback_status_of(json_object* d) {
@@ -390,9 +372,7 @@ static void promote_pending_bindings(const std::string& node_id) {
             for (auto& wid : g_store->list_ids("whitelist")) {
                 json_object* o = g_store->get_doc("whitelist", wid);
                 if (!o) continue;
-                std::string ws = body_str(o, "sig");
-                if (ws.empty()) ws = body_str(o, "id");
-                bool hit = (ws == sig);
+                bool hit = (body_str(o, "sig") == sig);
                 json_object_put(o);
                 if (hit) { found = true; break; }
             }
@@ -545,7 +525,6 @@ bool route_docs(const std::string& kind, const HttpRequest& req, HttpResponse& r
         } else if (kind == "scenes") {
             int ww = 0, hh = 0;
             std::string wall_id = body_str(b, "wallId");
-            if (wall_id.empty()) wall_id = body_str(b, "wall");
             if (!wall_id.empty()) {
                 json_object* w = g_store->get_doc("walls", wall_id);
                 if (!w || wall_is_deleted(w)) {
@@ -608,9 +587,7 @@ bool route_docs(const std::string& kind, const HttpRequest& req, HttpResponse& r
                     for (auto& wid : g_store->list_ids("whitelist")) {
                         json_object* o = g_store->get_doc("whitelist", wid);
                         if (!o) continue;
-                        std::string ws = body_str(o, "sig");
-                        if (ws.empty()) ws = body_str(o, "id");
-                        bool hit = (ws == sig);
+                        bool hit = (body_str(o, "sig") == sig);
                         json_object_put(o);
                         if (hit) { found = true; break; }
                     }
@@ -675,15 +652,11 @@ bool route_docs(const std::string& kind, const HttpRequest& req, HttpResponse& r
                 verr = "CONFLICT:illegal playback transition";
             if (verr.empty() && playback_active_status(want_st)) {
                 std::string node = body_str(b, "targetNodeId");
-                if (node.empty()) node = body_str(b, "nodeId");
-                if (node.empty()) node = body_str(b, "node");
                 for (auto& tid : g_store->list_ids("playback-tasks")) {
                     if (tid == id) continue;
                     json_object* o = g_store->get_doc("playback-tasks", tid);
                     if (!o) continue;
                     std::string on = body_str(o, "targetNodeId");
-                    if (on.empty()) on = body_str(o, "nodeId");
-                    if (on.empty()) on = body_str(o, "node");
                     bool busy = (on == node && playback_active_status(playback_status_of(o)));
                     json_object_put(o);
                     if (busy) { verr = "CONFLICT:node already has an active playback"; break; }
@@ -804,9 +777,8 @@ bool route_docs(const std::string& kind, const HttpRequest& req, HttpResponse& r
             for (auto& tid : g_store->list_ids("playback-tasks")) {
                 json_object* t = g_store->get_doc("playback-tasks", tid);
                 if (!t) continue;
-                std::string tw = body_str(t, "wallId");
-                if (tw.empty()) tw = body_str(t, "wall");
-                bool busy = (tw == id && playback_active_status(playback_status_of(t)));
+                bool busy = (body_str(t, "wallId") == id &&
+                             playback_active_status(playback_status_of(t)));
                 json_object_put(t);
                 if (busy) {
                     send_json(res, fail_envelope("RESOURCE_IN_USE", 409,
@@ -848,7 +820,6 @@ bool route_docs(const std::string& kind, const HttpRequest& req, HttpResponse& r
             std::string wall_id;
             if (sc) {
                 wall_id = body_str(sc, "wallId");
-                if (wall_id.empty()) wall_id = body_str(sc, "wall");
                 json_object_put(sc);
             }
             if (!wall_id.empty()) {
@@ -872,7 +843,6 @@ bool route_docs(const std::string& kind, const HttpRequest& req, HttpResponse& r
             std::string sig;
             if (wl) {
                 sig = body_str(wl, "sig");
-                if (sig.empty()) sig = body_str(wl, "id");
                 json_object_put(wl);
             }
             if (sig.empty()) sig = id;
@@ -885,9 +855,7 @@ bool route_docs(const std::string& kind, const HttpRequest& req, HttpResponse& r
                     json_object_is_type(wins, json_type_array)) {
                     for (size_t i = 0; i < json_object_array_length(wins); i++) {
                         json_object* e = json_object_array_get_idx(wins, i);
-                        std::string s = body_str(e, "sig");
-                        if (s.empty()) s = body_str(e, "signalId");
-                        if (s == sig) { hit = true; break; }
+                        if (body_str(e, "sig") == sig) { hit = true; break; }
                     }
                 }
                 json_object_put(sc);
@@ -932,29 +900,9 @@ static void store_ptp_playback(json_object* cur, json_object* data) {
     if (json_object_object_get_ex(data, "ptp", &p) && p) {
         json_object_object_del(cur, "ptp");
         json_object_object_add(cur, "ptp", json_object_get(p));
-    } else if (json_object_object_get_ex(data, "clock", &p) && p) {
-        json_object_object_del(cur, "ptp");
-        json_object_object_add(cur, "ptp", json_object_get(p));
-    }
-    json_object* m = nullptr;
-    if (json_object_object_get_ex(data, "metrics", &m) && m &&
-        json_object_is_type(m, json_type_object)) {
-        json_object* mp = nullptr;
-        if (json_object_object_get_ex(m, "ptp", &mp) && mp) {
-            json_object* curm = nullptr;
-            if (!json_object_object_get_ex(cur, "metrics", &curm) || !curm) {
-                curm = json_object_new_object();
-                json_object_object_add(cur, "metrics", curm);
-            }
-            json_object_object_del(curm, "ptp");
-            json_object_object_add(curm, "ptp", json_object_get(mp));
-        }
     }
     json_object* pb = nullptr;
     if (json_object_object_get_ex(data, "currentPlayback", &pb) && pb) {
-        json_object_object_del(cur, "currentPlayback");
-        json_object_object_add(cur, "currentPlayback", json_object_get(pb));
-    } else if (json_object_object_get_ex(data, "playback", &pb) && pb) {
         json_object_object_del(cur, "currentPlayback");
         json_object_object_add(cur, "currentPlayback", json_object_get(pb));
     }
@@ -962,7 +910,6 @@ static void store_ptp_playback(json_object* cur, json_object* data) {
 
 void apply_hello_doc(json_object* data) {
     std::string id = body_str(data, "id");
-    if (id.empty()) id = body_str(data, "sn");
     if (id.empty()) return;
     json_object* merged = json_object_get(data);
     json_object_object_add(merged, "online", json_object_new_boolean(1));
@@ -1111,7 +1058,11 @@ static LayoutDelivery deliver_layout_prepare(const std::string& node_id,
     // Endpoint table: only the signals this node's windows reference. Entries
     // come from the whitelist docs; the port field is authoritative (added per
     // DVS_WINDOWS_TRANSLATION_GAPS_DESIGN.md), defaulting to the requirement
-    // example's port range when a legacy entry omits it.
+    // example's port range when an entry omits it. fps rides the same
+    // table (req 06 §1.2: fps is a whitelist encoding param; the engine
+    // rejects streams without one): whitelist fps when present, else the
+    // platform-wide 60 default shared with the commit guard computation.
+    // audioPort is optional (0/absent = no subscribable audio on this signal).
     std::set<std::string> sigs;
     int fn = json_object_array_length(frag);
     for (int i = 0; i < fn; i++)
@@ -1122,7 +1073,6 @@ static LayoutDelivery deliver_layout_prepare(const std::string& node_id,
             json_object* wl = g_store->get_doc("whitelist", wid);
             if (!wl) continue;
             std::string wsig = body_str(wl, "sig");
-            if (wsig.empty()) wsig = body_str(wl, "id");
             if (!sigs.count(wsig)) { json_object_put(wl); continue; }
             json_object* ep = json_object_new_object();
             json_object_object_add(ep, "sig", json_object_new_string(wsig.c_str()));
@@ -1133,6 +1083,19 @@ static LayoutDelivery deliver_layout_prepare(const std::string& node_id,
             if (json_object_object_get_ex(wl, "port", &pv)) port = json_object_get_int(pv);
             if (port <= 0) port = 50010;
             json_object_object_add(ep, "port", json_object_new_int(port));
+            json_object* fv = nullptr;
+            int fps = 0;
+            if (json_object_object_get_ex(wl, "fps", &fv) && fv)
+                fps = json_object_get_int(fv);
+            if (fps <= 0) fps = 60;
+            json_object_object_add(ep, "fps", json_object_new_int(fps));
+            json_object* apv = nullptr;
+            int aport = 0;
+            if (json_object_object_get_ex(wl, "audioPort", &apv) && apv)
+                aport = json_object_get_int(apv);
+            if (aport > 0)
+                json_object_object_add(ep, "audioPort",
+                                       json_object_new_int(aport));
             std::string mode = body_str(wl, "mode");
             json_object_object_add(ep, "mode",
                                    json_object_new_string(mode.empty() ? "multicast" : mode.c_str()));
@@ -1236,7 +1199,7 @@ static void fanout_layout_parallel(const std::set<std::string>& members,
                         g_store->audit("{\"rollback\":\"" + json_escape(opid) +
                                        "\",\"node\":\"" + json_escape(mid) +
                                        "\",\"executed\":0,\"reason\":\"" +
-                                       d.skip_reason + "\"}");
+                                       json_escape(d.skip_reason) + "\"}");
                     }
                 } else {
                     if (d.via_ws) {
@@ -1250,7 +1213,7 @@ static void fanout_layout_parallel(const std::set<std::string>& members,
                         g_chan.set_transport(mid, "short");
                     } else {
                         g_store->audit("{\"fanout-skip\":\"" + json_escape(mid) +
-                                       "\",\"reason\":\"" + d.skip_reason + "\"}");
+                                       "\",\"reason\":\"" + json_escape(d.skip_reason) + "\"}");
                     }
                 }
             }
@@ -1285,6 +1248,8 @@ static void execute_rollback(const std::string& rollback_op_id, int to_revision,
     std::string wall_c = snap->wall_id;
     std::string scene_c = snap->scene_id;
     std::string hash_c = snap->layout_hash;
+    int wall_w_c = snap->wall_w;
+    int wall_h_c = snap->wall_h;
     std::string token_c = g_api_token;
     {
         std::lock_guard<std::mutex> lk(g_ops_mu);
@@ -1295,6 +1260,8 @@ static void execute_rollback(const std::string& rollback_op_id, int to_revision,
         rb.wall_id = wall_c;
         rb.scene_id = scene_c;
         rb.layout_hash = hash_c;
+        rb.wall_w = wall_w_c;
+        rb.wall_h = wall_h_c;
         rb.created_ns = now_ns();
         g_ops.persist(opid_c);
     }
@@ -1306,18 +1273,7 @@ static void execute_rollback(const std::string& rollback_op_id, int to_revision,
 }
 
 static std::string ws_idem_key(const std::string& msg_id, const std::string& tp, json_object* data) {
-    std::string node;
-    if (data) {
-        json_object* v = nullptr;
-        if (json_object_object_get_ex(data, "node", &v) && v &&
-            json_object_is_type(v, json_type_string)) node = json_object_get_string(v);
-        else if (json_object_object_get_ex(data, "id", &v) && v &&
-                 json_object_is_type(v, json_type_string)) node = json_object_get_string(v);
-        else if (json_object_object_get_ex(data, "nodeId", &v) && v &&
-                 json_object_is_type(v, json_type_string)) node = json_object_get_string(v);
-        else if (json_object_object_get_ex(data, "sn", &v) && v &&
-                 json_object_is_type(v, json_type_string)) node = json_object_get_string(v);
-    }
+    std::string node = body_str(data, "id");
     return msg_id + "#" + tp + "#" + node;
 }
 
@@ -1363,7 +1319,6 @@ void ws_channel_loop(int fd, HttpRequest hs_req) {
     std::string verr = ct::validate_hello(data);
     bool auth = ct::bearer_ok(provided, g_api_token);
     std::string node_id = body_str(data, "id");
-    if (node_id.empty()) node_id = body_str(data, "sn");
     if (!verr.empty() || !auth || node_id.empty() ||
         g_store->tombstone_check(node_id, now_sec())) {
         json_object* d = json_object_new_object();
@@ -1384,7 +1339,7 @@ void ws_channel_loop(int fd, HttpRequest hs_req) {
                                json_object_new_int(ct::heartbeat_interval_ms()));
         json_object_object_add(w, "barrierTimeoutMs",
                                json_object_new_int(ct::barrier_timeout_ms()));
-        json_object_object_add(w, "nodeId", json_object_new_string(node_id.c_str()));
+        json_object_object_add(w, "id", json_object_new_string(node_id.c_str()));
         send_wrapped(ws_idem_key(msg_id, type, data), ct::kWelcome, w);
     }
     if (data) json_object_put(data);
@@ -1411,7 +1366,6 @@ void ws_channel_loop(int fd, HttpRequest hs_req) {
         if (tp == ct::kHeartbeat) {
             std::string e = ct::validate_heartbeat(dd);
             std::string hid = body_str(dd, "id");
-            if (hid.empty()) hid = body_str(dd, "nodeId");
             if (!e.empty() || hid.empty()) {
                 json_object* d = json_object_new_object();
                 json_object_object_add(d, "reason", json_object_new_string(
@@ -1556,7 +1510,6 @@ int main(int argc, char** argv) {
                 return;
             }
             std::string id = body_str(b, "id");
-            if (id.empty()) id = body_str(b, "sn");
             if (id.empty()) {
                 if (b) json_object_put(b);
                 send_json(res, fail_envelope("INVALID_ARGUMENT", 400, "missing id"));
@@ -1597,7 +1550,6 @@ int main(int argc, char** argv) {
                 return;
             }
             std::string id = body_str(b, "id");
-            if (id.empty()) id = body_str(b, "nodeId");
             json_object* cur = id.empty() ? nullptr : g_store->get_doc("node", id);
             if (!cur) {
                 if (b) json_object_put(b);
@@ -1732,8 +1684,6 @@ int main(int argc, char** argv) {
                     json_object* t = g_store->get_doc("playback-tasks", tid);
                     if (!t) continue;
                     std::string tn = body_str(t, "targetNodeId");
-                    if (tn.empty()) tn = body_str(t, "nodeId");
-                    if (tn.empty()) tn = body_str(t, "node");
                     bool active = (tn == id && playback_active_status(playback_status_of(t)));
                     if (active) { proj = t; break; }
                     json_object_put(t);
@@ -1767,10 +1717,7 @@ int main(int argc, char** argv) {
                 for (auto& wid : g_store->list_ids("whitelist")) {
                     json_object* w = g_store->get_doc("whitelist", wid);
                     if (!w) continue;
-                    std::string wn = body_str(w, "nodeId");
-                    if (wn.empty()) wn = body_str(w, "node");
-                    if (wn.empty()) wn = body_str(w, "sourceId");
-                    bool hit = (wn == id);
+                    bool hit = (body_str(w, "nodeId") == id);
                     json_object_put(w);
                     if (hit) refs.push_back("whitelist:" + wid);
                 }
@@ -1894,6 +1841,7 @@ int main(int argc, char** argv) {
         // never blocks on node calls. Geometry comes only from stored
         // node docs, never from the prepare request.
         if (req.method == "POST" && req.path == "/api/v1/ops/prepare") {
+            if (!require_bearer(req, res)) return;
             json_object* b = json_tokener_parse(req.body.c_str());
             std::string opid = body_str(b, "operationId");
             int rev = 1;
@@ -2259,6 +2207,7 @@ int main(int argc, char** argv) {
         }
         // 升级改为任务队列驱动：handler 只入队，worker 串行经 WS/短连接投递。
         if (req.method == "POST" && req.path == "/api/v1/nodes/upgrade") {
+            if (!require_bearer(req, res)) return;
             json_object* b = json_tokener_parse(req.body.c_str());
             json_object* arr = nullptr;
             if (b) json_object_object_get_ex(b, "targetNodeIds", &arr);
@@ -2346,7 +2295,6 @@ int main(int argc, char** argv) {
             }
             json_object* saved_wins = nullptr;
             json_object_object_get_ex(sc, "windows", &saved_wins);
-            if (!saved_wins) json_object_object_get_ex(sc, "layout", &saved_wins);
             int saved_vol = 80;
             json_object* sv = nullptr;
             if (json_object_object_get_ex(sc, "volume", &sv) && sv)
@@ -2495,10 +2443,7 @@ int main(int argc, char** argv) {
                 // Start validates the wall/scene/node triple before moving.
                 if (verb == "start" && from == "pending_execution") {
                     std::string wall_id = body_str(t, "wallId");
-                    if (wall_id.empty()) wall_id = body_str(t, "wall");
                     std::string node = body_str(t, "targetNodeId");
-                    if (node.empty()) node = body_str(t, "nodeId");
-                    if (node.empty()) node = body_str(t, "node");
                     json_object* w = wall_id.empty() ? nullptr
                                                      : g_store->get_doc("walls", wall_id);
                     json_object* nd = node.empty() ? nullptr
@@ -2537,24 +2482,17 @@ int main(int argc, char** argv) {
             json_object* b = json_tokener_parse(req.body.c_str());
             if (!b) b = json_object_new_object();
             std::string sig = body_str(b, "sig");
-            if (sig.empty()) sig = body_str(b, "id");
             int want_port = 0;
             json_object* pv = nullptr;
             if (json_object_object_get_ex(b, "port", &pv) && pv)
                 want_port = json_object_get_int(pv);
-            if (want_port == 0 &&
-                json_object_object_get_ex(b, "mcast_port", &pv) && pv)
-                want_port = json_object_get_int(pv);
             std::string want_addr = body_str(b, "address");
-            if (want_addr.empty()) want_addr = body_str(b, "mcast_ip");
             if (!sig.empty()) {
                 json_object* hit = nullptr;
                 for (auto& wid : g_store->list_ids("whitelist")) {
                     json_object* o = g_store->get_doc("whitelist", wid);
                     if (!o) continue;
-                    std::string ws = body_str(o, "sig");
-                    if (ws.empty()) ws = body_str(o, "id");
-                    if (ws == sig) { hit = o; break; }
+                    if (body_str(o, "sig") == sig) { hit = o; break; }
                     json_object_put(o);
                 }
                 if (hit) {
@@ -2613,6 +2551,7 @@ int main(int argc, char** argv) {
             json_object_object_add(doc, "address", json_object_new_string(addr.c_str()));
             json_object_object_add(doc, "port", json_object_new_int(port));
             for (const char* k : {"codec", "width", "height", "fps",
+                                    "audioPort",
                                     "bitrateKbps", "bitrate", "keyFrameInterval",
                                     "gop", "mode"}) {
                 json_object* kv = nullptr;

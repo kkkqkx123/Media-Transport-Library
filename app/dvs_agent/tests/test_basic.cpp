@@ -339,20 +339,19 @@ static void test_tx_config() {
   CHECK(tx_validate(tp, frozen, err), "max-spec tx validates");
   json_object_put(v);
 
-  /* legacy port-only shape: no tx requested */
+  /* port-only shape: no tx requested */
   v = json_object_new_object();
   json_object_object_add(v, "port", json_object_new_string("HDMI1"));
   CHECK(tx_parse(v, tp, err) && !tp.hasEncode && !tp.hasTarget, "port-only parses without tx");
   CHECK(tx_validate(tp, frozen, err), "port-only validates (nothing to check)");
   json_object_put(v);
 
-  /* flat fallback with defaults */
+  /* flat keys are not a shape: ignored, no tx requested */
   v = json_object_new_object();
   json_object_object_add(v, "port", json_object_new_string("HDMI1"));
   json_object_object_add(v, "targetSip", json_object_new_string("10.0.0.2"));
   json_object_object_add(v, "udpPort", json_object_new_int(6000));
-  CHECK(tx_parse(v, tp, err) && !tp.hasEncode && tp.hasTarget, "flat target parses");
-  CHECK(tx_validate(tp, frozen, err), "flat target validates");
+  CHECK(tx_parse(v, tp, err) && !tp.hasEncode && !tp.hasTarget, "flat keys ignored");
   json_object_put(v);
 
   /* rejections */
@@ -469,11 +468,15 @@ static void test_role_pending_projection() {
   std::remove(db.c_str());
 }
 
-static json_object* mk_ep(const char* sig, const char* addr, int port) {
+static json_object* mk_ep(const char* sig, const char* addr, int port,
+                          int fps = 60, int audio_port = 0) {
   json_object* e = json_object_new_object();
   json_object_object_add(e, "sig", json_object_new_string(sig));
   json_object_object_add(e, "address", json_object_new_string(addr));
   json_object_object_add(e, "port", json_object_new_int(port));
+  if (fps > 0) json_object_object_add(e, "fps", json_object_new_int(fps));
+  if (audio_port > 0)
+    json_object_object_add(e, "audioPort", json_object_new_int(audio_port));
   return e;
 }
 static json_object* mk_subwin(const char* id, const char* sig, int dx, int dy,
@@ -558,6 +561,7 @@ static void test_translate_platform_layout() {
         "first lane is main");
   CHECK(tgets(s0, "sip") == "239.0.0.1" && tget(s0, "udpPort") == 5000,
         "endpoint resolved");
+  CHECK(tget(s0, "fps") == 60, "fps carried from endpoint table");
   CHECK(tget(s0, "width") == 960 && tget(s0, "height") == 540, "frame size");
   CHECK(tget(s0, "x") == 0 && tget(s0, "y") == 0, "position");
   CHECK(tget(s0, "w") == 960 && tget(s0, "h") == 540, "size");
@@ -615,12 +619,13 @@ static void test_translate_platform_layout() {
   if (prep) json_object_put(prep);
   prep = nullptr;
   json_object_put(b);
-  // Lanes follow z ascending; envelope fields pass through.
+  // Lanes follow z ascending; envelope fields pass through. The window-id
+  // owner resolves to its lane (lo z=1 -> lane 0, hi z=5 -> lane 1).
   b = mk_body();
   json_object_object_add(b, "operationId", json_object_new_string("op-1"));
   json_object_object_add(b, "revision", json_object_new_int(7));
   json_object_object_add(b, "applyAtNs", json_object_new_int64(123));
-  json_object_object_add(b, "audioOwner", json_object_new_string("w9"));
+  json_object_object_add(b, "audioOwner", json_object_new_string("hi"));
   json_object_object_add(b, "volume", json_object_new_int(60));
   json_object_object_get_ex(b, "windows", &wins);
   json_object* hi = mk_subwin("hi", "s1", 0, 0, 100, 100, 0, 0, 100, 100);
@@ -639,8 +644,20 @@ static void test_translate_platform_layout() {
   CHECK(tget(e0, "lane") == 0 && tget(e1, "lane") == 1, "lanes numbered in order");
   CHECK(tgets(prep, "operationId") == "op-1", "operation id passes through");
   CHECK(tget(prep, "revision") == 7, "revision passes through");
-  CHECK(tgets(prep, "audioOwner") == "w9", "audio owner passes through");
+  CHECK(tgets(prep, "audioOwner") == "lane1", "window owner resolves to lane");
   CHECK(tget(prep, "audioVolume") == 60, "volume passes through");
+  if (prep) json_object_put(prep);
+  prep = nullptr;
+  json_object_put(b);
+  // Owner with no lane on this node is omitted (local mute), not rejected.
+  b = mk_body();
+  json_object_object_add(b, "audioOwner", json_object_new_string("ghost"));
+  json_object_object_get_ex(b, "windows", &wins);
+  json_object_array_add(wins, mk_subwin("w1", "s1", 0, 0, 100, 100, 0, 0, 100, 100));
+  CHECK(translate_platform_layout(b, &prep, err), "unknown owner still translates");
+  json_object* no_owner = nullptr;
+  CHECK(prep && !json_object_object_get_ex(prep, "audioOwner", &no_owner),
+        "owner without lane omitted");
   if (prep) json_object_put(prep);
   prep = nullptr;
   json_object_put(b);
@@ -656,6 +673,31 @@ static void test_translate_platform_layout() {
   json_object_object_get_ex(b, "windows", &wins);
   json_object_array_add(wins, mk_subwin("w4", "s2", 0, 0, 100, 100, 0, 0, 100, 100));
   CHECK(!translate_platform_layout(b, &prep, err), "portless endpoint rejected");
+  json_object_put(b);
+  // Endpoint entries without fps reject the order (engine needs the rate).
+  b = mk_body();
+  json_object_object_get_ex(b, "endpoints", &eps);
+  json_object_array_add(eps, mk_ep("s2", "239.0.0.2", 5002, 0));
+  json_object_object_get_ex(b, "windows", &wins);
+  json_object_array_add(wins, mk_subwin("w5", "s2", 0, 0, 100, 100, 0, 0, 100, 100));
+  CHECK(!translate_platform_layout(b, &prep, err), "fpsless endpoint rejected");
+  CHECK(err.find("fps") != std::string::npos, "rejection names fps");
+  json_object_put(b);
+  // audioPort rides the table into audioUdpPort; absent means no key.
+  b = mk_body();
+  json_object_object_get_ex(b, "endpoints", &eps);
+  json_object_array_add(eps, mk_ep("s2", "239.0.0.2", 5002, 30, 6002));
+  json_object_object_get_ex(b, "windows", &wins);
+  json_object_array_add(wins, mk_subwin("w6", "s2", 0, 0, 100, 100, 0, 0, 100, 100));
+  CHECK(translate_platform_layout(b, &prep, err), "audio endpoint translates");
+  CHECK(prep && json_object_object_get_ex(prep, "streams", &st) &&
+            json_object_array_length(st) == 1,
+        "one stream emitted");
+  json_object* sa = json_object_array_get_idx(st, 0);
+  CHECK(tget(sa, "fps") == 30, "per-signal fps honored");
+  CHECK(tget(sa, "audioUdpPort") == 6002, "audio port forwarded");
+  if (prep) json_object_put(prep);
+  prep = nullptr;
   json_object_put(b);
 }
 

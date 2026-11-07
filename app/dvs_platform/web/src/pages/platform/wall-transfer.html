@@ -157,7 +157,6 @@
         var dirty = false;
         var navTarget = null;
         var keyword = "";
-        var signalByDevice = { e1: "s1", e2: "s2", m1: "s3", t3: "s4", p1: "s5" };
         var catalog = window.DvsNodeState.list().filter(function (node) {
           return (node.role === "input" || node.type === "input") && node.lifecycle === "active";
         }).map(function (node) { return { id: node.id, name: node.name, ip: node.ip }; });
@@ -169,9 +168,8 @@
           else catalog.push({ id: device.id, name: device.name, ip: device.ip });
         });
         function useCount(device) {
-          var signal = signalByDevice[device.id] || device.id;
           return ((store.getWall(wall.id) || wall).windows || []).filter(function (win) {
-            return win.sig === signal || win.sig === device.id || win.sourceId === device.id;
+            return win.sig === device.id;
           }).length;
         }
         whitelist.forEach(function (device) { device.inUse = useCount(device); });
@@ -315,7 +313,6 @@
               })) throw new Error("白名单中的设备已退役或不可用，请刷新后重试");
               var kept = whitelist.map(function (device) { return device.id; });
               var removedIds = savedWhitelist.filter(function (device) { return kept.indexOf(device.id) < 0; }).map(function (device) { return device.id; });
-              var removedSignals = removedIds.map(function (id) { return signalByDevice[id] || id; });
               var latestWall = store.getWall(wall.id);
               wall = store.updateWall(wall.id, {
                 whitelist: whitelist.map(function (device) {
@@ -323,11 +320,11 @@
                   return { id: device.id, name: registered ? registered.name : device.name, ip: registered ? registered.ip : device.ip, port: device.port || 50010, transMode: device.transMode };
                 }),
                 windows: (latestWall.windows || []).filter(function (win) {
-                  return removedSignals.indexOf(win.sig) < 0 && removedIds.indexOf(win.sig) < 0 && removedIds.indexOf(win.sourceId) < 0;
+                  return removedIds.indexOf(win.sig) < 0;
                 }),
                 scenes: (latestWall.scenes || []).map(function (scene) {
                   return Object.assign({}, scene, { layout: (scene.layout || []).filter(function (item) {
-                    return removedSignals.indexOf(item.sig) < 0 && removedIds.indexOf(item.sig) < 0 && removedIds.indexOf(item.sourceId) < 0;
+                    return removedIds.indexOf(item.sig) < 0;
                   }) });
                 })
               });

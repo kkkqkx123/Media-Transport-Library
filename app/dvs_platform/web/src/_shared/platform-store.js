@@ -2,7 +2,10 @@
 (function (global) {
   "use strict";
 
-  var STORAGE_KEY = "dvs.platform.state.v1";
+  /* v2 drops the pre-unification device scheme: whitelist entries are keyed
+   * by signal id (s*), the same ids scenes and windows reference. v1 state
+   * is intentionally not migrated (no backward compatibility). */
+  var STORAGE_KEY = "dvs.platform.state.v2";
   var listeners = [];
 
   function copy(value) { return value === undefined ? undefined : JSON.parse(JSON.stringify(value)); }
@@ -43,9 +46,9 @@
       [{ node: "D2", port: 1 }, { node: "D2", port: 2 }, null, null]
     ];
     main.whitelist = [
-      { id: "e1", name: "输入盒-东1", ip: "192.168.10.61", transMode: "单播" },
-      { id: "e2", name: "输入盒-东2", ip: "192.168.10.62", transMode: "组播" },
-      { id: "m1", name: "会议终端-01", ip: "192.168.10.63", transMode: "单播" }
+      { id: "s1", name: "输入盒-东1", ip: "192.168.10.61", transMode: "单播" },
+      { id: "s2", name: "输入盒-东2", ip: "192.168.10.62", transMode: "组播" },
+      { id: "s3", name: "会议终端-01", ip: "192.168.10.63", transMode: "单播" }
     ];
     main.scenes = [
       { id: "scene-wall-main-default", name: "默认场景", isDefault: true, volume: 80, layout: [{ sig: "s1", c: 0, r: 0, cs: 2, rs: 1 }, { sig: "s3", c: 0, r: 1, cs: 1, rs: 1 }] },
@@ -68,7 +71,7 @@
     var commandMain = baseWall("wall-command-main", "g4", "指挥中心主屏", "LED", "", 2, 3, "5760×2160（逐行逐列）", "2026-10-08 16:35");
     var commandBackup = baseWall("wall-command-backup", "g4", "指挥中心备屏", "LCD", "标准", 1, 2, "3840×1080", "2026-10-08 16:34");
     return {
-      version: 1,
+      version: 2,
       groups: [
         { id: "g1", name: "展厅 A 区", createdAt: "2026-10-12 09:41" },
         { id: "g2", name: "会议报告厅", createdAt: "2026-10-11 15:20" },
@@ -86,7 +89,7 @@
       var raw = global.localStorage.getItem(STORAGE_KEY);
       if (raw) {
         var parsed = JSON.parse(raw);
-        if (parsed && parsed.version === 1 && Array.isArray(parsed.groups) && Array.isArray(parsed.walls)) return parsed;
+        if (parsed && parsed.version === 2 && Array.isArray(parsed.groups) && Array.isArray(parsed.walls)) return parsed;
       }
     } catch (e) { /* Storage may be unavailable in a local file preview. */ }
     return null;

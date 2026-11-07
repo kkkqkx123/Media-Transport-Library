@@ -331,10 +331,16 @@ static void test_contract() {
 
 static void test_contract_gaps() {
     namespace ct = dvs::contract;
-    // Heartbeat: nodeId alias, digest range, ptp shape.
+    // Heartbeat: id-only identity, digest range, ptp shape.
     {
         json_object* hb = json_object_new_object();
         json_object_object_add(hb, "nodeId", json_object_new_string("n1"));
+        assert(!ct::validate_heartbeat(hb).empty());
+        json_object_put(hb);
+    }
+    {
+        json_object* hb = json_object_new_object();
+        json_object_object_add(hb, "id", json_object_new_string("n1"));
         json_object* dg = json_object_new_object();
         json_object_object_add(dg, "ready", json_object_new_int(0));
         json_object_object_add(dg, "total", json_object_new_int(0));
@@ -375,7 +381,7 @@ static void test_contract_gaps() {
         assert(!ct::validate_heartbeat(hb).empty());
         json_object_put(hb);
     }
-    // Hello: sn alias, capabilities alias, network shape, clock alias.
+    // Hello: id-only identity, capability-only caps, ptp-only clock.
     {
         json_object* h = json_object_new_object();
         json_object_object_add(h, "sn", json_object_new_string("n9"));
@@ -385,7 +391,32 @@ static void test_contract_gaps() {
         json_object_object_add(g, "w", json_object_new_int(10));
         json_object_object_add(g, "h", json_object_new_int(10));
         json_object_object_add(h, "geometry", g);
+        assert(!ct::validate_hello(h).empty());
+        json_object_put(h);
+    }
+    {
+        json_object* h = json_object_new_object();
+        json_object_object_add(h, "id", json_object_new_string("n9"));
+        json_object* g = json_object_new_object();
+        json_object_object_add(g, "x", json_object_new_int(0));
+        json_object_object_add(g, "y", json_object_new_int(0));
+        json_object_object_add(g, "w", json_object_new_int(10));
+        json_object_object_add(g, "h", json_object_new_int(10));
+        json_object_object_add(h, "geometry", g);
         json_object_object_add(h, "capabilities", json_object_new_object());
+        assert(!ct::validate_hello(h).empty());
+        json_object_put(h);
+    }
+    {
+        json_object* h = json_object_new_object();
+        json_object_object_add(h, "id", json_object_new_string("n9"));
+        json_object* g = json_object_new_object();
+        json_object_object_add(g, "x", json_object_new_int(0));
+        json_object_object_add(g, "y", json_object_new_int(0));
+        json_object_object_add(g, "w", json_object_new_int(10));
+        json_object_object_add(g, "h", json_object_new_int(10));
+        json_object_object_add(h, "geometry", g);
+        json_object_object_add(h, "capability", json_object_new_object());
         json_object* clk = json_object_new_object();
         json_object_object_add(clk, "state", json_object_new_string("synced"));
         json_object_object_add(clk, "offsetUs", json_object_new_int(5));
@@ -972,7 +1003,7 @@ static void test_validation_gaps() {
         json_object_object_add(s, "layoutMode", json_object_new_string("tile"));
         assert(!validate_scene_shape(s, 0, 0).empty());
         json_object_object_del(s, "layoutMode");
-        json_object_object_add(s, "layout", json_object_new_array());
+        json_object_object_add(s, "layout", json_object_new_string("ignored"));
         assert(validate_scene_shape(s, 0, 0).empty());
         json_object_object_add(s, "windows", json_object_new_string("nope"));
         assert(!validate_scene_shape(s, 0, 0).empty());
@@ -1006,8 +1037,8 @@ static void test_validation_gaps() {
         json_object* s = json_object_new_object();
         json_object* wins = json_object_new_array();
         json_object* w0 = json_object_new_object();
-        json_object_object_add(w0, "windowId", json_object_new_string("w1"));
-        json_object_object_add(w0, "signalId", json_object_new_string("s1"));
+        json_object_object_add(w0, "id", json_object_new_string("w1"));
+        json_object_object_add(w0, "sig", json_object_new_string("s1"));
         json_object_object_add(w0, "x", json_object_new_int(1900));
         json_object_object_add(w0, "w", json_object_new_int(100));
         json_object_object_add(w0, "h", json_object_new_int(100));
@@ -1054,23 +1085,26 @@ static void test_validation_gaps() {
         assert(!validate_scene_shape(s, 0, 0).empty());
         json_object_put(s);
     }
-    // Bindings: aliases, disagree combos, bounds.
+    // Bindings: canonical keys only, outputPort bounds.
     assert(!validate_binding_shape(nullptr).empty());
     {
         json_object* b = json_object_new_object();
         assert(!validate_binding_shape(b).empty());
-        json_object_object_add(b, "wall", json_object_new_string("w1"));
-        json_object_object_add(b, "node_id", json_object_new_string("n1"));
-        assert(validate_binding_shape(b).empty());
-        json_object_object_add(b, "node", json_object_new_string("n2"));
+        json_object_object_add(b, "wallId", json_object_new_string("w1"));
+        json_object_object_add(b, "nodeId", json_object_new_string("n1"));
         assert(validate_binding_shape(b).empty());
         json_object_put(b);
+        json_object* legacy = json_object_new_object();
+        json_object_object_add(legacy, "wall", json_object_new_string("w1"));
+        json_object_object_add(legacy, "node", json_object_new_string("n1"));
+        assert(!validate_binding_shape(legacy).empty());
+        json_object_put(legacy);
     }
     {
         json_object* b = json_object_new_object();
         json_object_object_add(b, "wallId", json_object_new_string("w1"));
         json_object_object_add(b, "nodeId", json_object_new_string("n1"));
-        json_object_object_add(b, "output", json_object_new_boolean(1));
+        json_object_object_add(b, "outputPort", json_object_new_boolean(1));
         assert(!validate_binding_shape(b).empty());
         json_object_put(b);
     }
@@ -1086,7 +1120,7 @@ static void test_validation_gaps() {
         json_object* b = json_object_new_object();
         json_object_object_add(b, "wallId", json_object_new_string("w1"));
         json_object_object_add(b, "nodeId", json_object_new_string("n1"));
-        json_object_object_add(b, "port", json_object_new_string("3"));
+        json_object_object_add(b, "outputPort", json_object_new_int(0));
         assert(!validate_binding_shape(b).empty());
         json_object_put(b);
     }
@@ -1094,7 +1128,7 @@ static void test_validation_gaps() {
         json_object* b = json_object_new_object();
         json_object_object_add(b, "wallId", json_object_new_string("w1"));
         json_object_object_add(b, "nodeId", json_object_new_string("n1"));
-        json_object_object_add(b, "output", json_object_new_string(""));
+        json_object_object_add(b, "outputPort", json_object_new_string(""));
         assert(!validate_binding_shape(b).empty());
         json_object_put(b);
     }
@@ -1102,7 +1136,7 @@ static void test_validation_gaps() {
         json_object* b = json_object_new_object();
         json_object_object_add(b, "wallId", json_object_new_string("w1"));
         json_object_object_add(b, "nodeId", json_object_new_string("n1"));
-        json_object_object_add(b, "port", json_object_new_int(0));
+        json_object_object_add(b, "outputPort", json_object_new_int(0));
         assert(!validate_binding_shape(b).empty());
         json_object_put(b);
     }
@@ -1110,7 +1144,6 @@ static void test_validation_gaps() {
         json_object* b = json_object_new_object();
         json_object_object_add(b, "wallId", json_object_new_string("w1"));
         json_object_object_add(b, "nodeId", json_object_new_string("n1"));
-        json_object_object_add(b, "output", json_object_new_string("HDMI-1"));
         json_object_object_add(b, "outputPort", json_object_new_string("HDMI-1"));
         assert(validate_binding_shape(b).empty());
         json_object_object_add(b, "sig", json_object_new_string(std::string(129, 's').c_str()));
@@ -1121,18 +1154,18 @@ static void test_validation_gaps() {
         json_object* b = json_object_new_object();
         json_object_object_add(b, "wallId", json_object_new_string("w1"));
         json_object_object_add(b, "nodeId", json_object_new_string("n1"));
-        json_object_object_add(b, "output", json_object_new_int(3));
-        json_object_object_add(b, "port", json_object_new_int(3));
+        json_object_object_add(b, "outputPort", json_object_new_int(3));
         assert(validate_binding_shape(b).empty());
+        assert(binding_output_of(b) == "3");
         json_object_put(b);
     }
     assert(binding_output_of(nullptr).empty());
     assert(binding_sig_of(nullptr).empty());
     {
         json_object* b = json_object_new_object();
-        json_object_object_add(b, "output", json_object_new_int(5));
+        json_object_object_add(b, "outputPort", json_object_new_int(5));
         assert(binding_output_of(b) == "5");
-        json_object_object_add(b, "output", json_object_new_int(0));
+        json_object_object_add(b, "outputPort", json_object_new_int(0));
         assert(binding_output_of(b).empty());
         json_object_put(b);
     }
@@ -1150,18 +1183,26 @@ static void test_validation_gaps() {
     }
     {
         json_object* b = json_object_new_object();
-        json_object_object_add(b, "port", json_object_new_int(6));
+        json_object_object_add(b, "outputPort", json_object_new_int(6));
         assert(binding_output_of(b) == "6");
         json_object_put(b);
     }
-    // Whitelist aliases and ceilings.
+    // Whitelist canonical keys and ceilings.
     assert(!validate_whitelist_shape(nullptr).empty());
+    {
+        json_object* w = json_object_new_object();
+        json_object_object_add(w, "sig", json_object_new_string("s1"));
+        json_object_object_add(w, "address", json_object_new_string("239.0.0.1"));
+        json_object_object_add(w, "port", json_object_new_int(5000));
+        assert(validate_whitelist_shape(w).empty());
+        json_object_put(w);
+    }
     {
         json_object* w = json_object_new_object();
         json_object_object_add(w, "id", json_object_new_string("s1"));
         json_object_object_add(w, "mcast_ip", json_object_new_string("239.0.0.1"));
         json_object_object_add(w, "mcast_port", json_object_new_int(5000));
-        assert(validate_whitelist_shape(w).empty());
+        assert(!validate_whitelist_shape(w).empty());
         json_object_put(w);
     }
     {
@@ -1233,7 +1274,7 @@ static void test_validation_gaps() {
         json_object_object_add(t, "wall", json_object_new_string("w"));
         json_object_object_add(t, "scene", json_object_new_string("s"));
         json_object_object_add(t, "node", json_object_new_string("n"));
-        assert(validate_playback_shape(t).empty());
+        assert(!validate_playback_shape(t).empty());
         static const char* kStates[] = {"pending_check", "pending_execution",
                                         "executing", "playing", "succeeded",
                                         "failed", "cancelled", "expired"};
@@ -1359,7 +1400,7 @@ static void test_validation_gaps() {
         json_object_object_add(n, "role", json_object_new_string("output"));
         json_object* clk = json_object_new_object();
         json_object_object_add(clk, "state", json_object_new_string("synced"));
-        json_object_object_add(n, "clock", clk);
+        json_object_object_add(n, "ptp", clk);
         assert(node_clock_ok(n, &reason));
         json_object_put(n);
     }
@@ -1367,11 +1408,9 @@ static void test_validation_gaps() {
         std::string reason;
         json_object* n = json_object_new_object();
         json_object_object_add(n, "online", json_object_new_boolean(1));
-        json_object* m = json_object_new_object();
         json_object* p = json_object_new_object();
         json_object_object_add(p, "state", json_object_new_string("synced"));
-        json_object_object_add(m, "ptp", p);
-        json_object_object_add(n, "metrics", m);
+        json_object_object_add(n, "ptp", p);
         assert(node_clock_ok(n, &reason));
         json_object_put(n);
     }
@@ -1457,21 +1496,21 @@ static void test_p2_business_rules() {
         assert(validate_binding_shape(b).empty());
         assert(binding_output_of(b).empty());
         assert(binding_sig_of(b).empty());
-        json_object_object_add(b, "output", json_object_new_string("HDMI-1"));
+        json_object_object_add(b, "outputPort", json_object_new_string("HDMI-1"));
         assert(validate_binding_shape(b).empty());
         assert(binding_output_of(b) == "HDMI-1");
         json_object_object_add(b, "outputPort", json_object_new_string("other"));
-        assert(!validate_binding_shape(b).empty());
-        json_object_object_del(b, "outputPort");
-        json_object_object_add(b, "port", json_object_new_int(3));
-        assert(!validate_binding_shape(b).empty());  // string vs int disagree
-        json_object_object_del(b, "output");
-        json_object_object_add(b, "port", json_object_new_int(3));
+        assert(validate_binding_shape(b).empty());
+        json_object_object_add(b, "outputPort", json_object_new_int(3));
         assert(validate_binding_shape(b).empty());
         assert(binding_output_of(b) == "3");
-        json_object_object_add(b, "port", json_object_new_int(70000));
+        json_object_object_add(b, "output", json_object_new_string("other"));
+        assert(validate_binding_shape(b).empty());
+        assert(binding_output_of(b) == "3");
+        json_object_object_del(b, "output");
+        json_object_object_add(b, "outputPort", json_object_new_int(70000));
         assert(!validate_binding_shape(b).empty());
-        json_object_object_add(b, "port", json_object_new_int(3));
+        json_object_object_add(b, "outputPort", json_object_new_int(3));
         json_object_object_add(b, "sig", json_object_new_string("s1"));
         assert(validate_binding_shape(b).empty());
         assert(binding_sig_of(b) == "s1");
@@ -1479,7 +1518,7 @@ static void test_p2_business_rules() {
         json_object* bad = json_object_new_object();
         json_object_object_add(bad, "wallId", json_object_new_string("w1"));
         json_object_object_add(bad, "nodeId", json_object_new_string("n1"));
-        json_object_object_add(bad, "output", json_object_new_int(-2));
+        json_object_object_add(bad, "outputPort", json_object_new_int(-2));
         assert(!validate_binding_shape(bad).empty());
         json_object_put(bad);
     }

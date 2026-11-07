@@ -282,7 +282,6 @@
         window.DvsScheduleWallId = wall.id;
         document.getElementById("sched-back").href = "wall-list.html?groupId=" + encodeURIComponent(wall.groupId);
         var CELL_W = 130, CELL_H = 90, GAP = 0, ROWS = wall.rows, COLS = wall.cols; /* 连续墙面 */
-        var legacySignalIds = { s1: "e1", s2: "e2", s3: "m1", s4: "t3", s5: "p1" };
         var bound = wall.bindings.map(function (row) { return row.map(Boolean); });
         var offline = wall.bindings.map(function (row) {
           return row.map(function (cell) {
@@ -399,8 +398,7 @@
         $("zoom-fit").onclick = function () { setZoom(1); };
         window.addEventListener("resize", function () { setZoom(zoom); });
         function sigById(id) {
-          var normalized = legacySignalIds[id] || id;
-          return signals.find(function (s) { return s.id === normalized; }) || { id: normalized, name: "未知信号", port: "—", ok: false };
+          return signals.find(function (s) { return s.id === id; }) || { id: id, name: "未知信号", port: "—", ok: false };
         }
         function cw(cs) { return cs * (CELL_W + GAP) - GAP; }
         function ch(rs) { return rs * (CELL_H + GAP) - GAP; }

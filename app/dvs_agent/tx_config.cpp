@@ -86,50 +86,13 @@ bool tx_parse(json_object* val, TxParams& out, std::string& err) {
         out.enc.height = int_field(enc, "height", out.enc.height);
         out.enc.fps = int_field(enc, "fps", out.enc.fps);
         out.enc.bitrate = int_field(enc, "bitrateKbps", out.enc.bitrate);
-    } else {
-        /* Flat fallback: codec/width/... at the top level. */
-        json_object* v = nullptr;
-        bool any = false;
-        if (json_object_object_get_ex(val, "codec", &v) && v) {
-            out.enc.codec = trim_str(json_object_get_string(v));
-            any = true;
-        }
-        if (json_object_object_get_ex(val, "width", &v) && v) {
-            out.enc.width = json_object_get_int(v);
-            any = true;
-        }
-        if (json_object_object_get_ex(val, "height", &v) && v) {
-            out.enc.height = json_object_get_int(v);
-            any = true;
-        }
-        if (json_object_object_get_ex(val, "fps", &v) && v) {
-            out.enc.fps = json_object_get_int(v);
-            any = true;
-        }
-        if (json_object_object_get_ex(val, "bitrateKbps", &v) && v) {
-            out.enc.bitrate = json_object_get_int(v);
-            any = true;
-        }
-        out.hasEncode = any;
     }
     json_object* tgt = nullptr;
     if (json_object_object_get_ex(val, "target", &tgt) && tgt &&
         json_object_is_type(tgt, json_type_object)) {
         out.hasTarget = true;
         out.tgt.sip = trim_str(str_field(tgt, "sip"));
-        if (out.tgt.sip.empty()) out.tgt.sip = trim_str(str_field(tgt, "targetSip"));
         out.tgt.udpPort = int_field(tgt, "udpPort", out.tgt.udpPort);
-        if (!out.tgt.udpPort) out.tgt.udpPort = int_field(tgt, "targetPort", 0);
-        if (!out.tgt.udpPort) out.tgt.udpPort = int_field(tgt, "port", 0);
-    } else {
-        std::string sip = trim_str(str_field(val, "targetSip"));
-        int port = int_field(val, "udpPort", 0);
-        if (!port) port = int_field(val, "targetPort", 0);
-        if (!sip.empty() || port) {
-            out.hasTarget = true;
-            out.tgt.sip = sip;
-            out.tgt.udpPort = port;
-        }
     }
     return true;
 }

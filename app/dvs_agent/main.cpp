@@ -167,8 +167,10 @@ static bool parse_endpoint_item(const std::string& raw, std::string& ip_out,
     return true;
 }
 
-/* Strict per-item whitelist validation. Accepts comma string, array of
- * string/object, or {whitelist|sources: ...} nesting. */
+/* Strict per-item whitelist validation. Accepts a comma string, an array of
+ * string/object, where an object is exactly {sip, udp_port?}. The engine
+ * emits the same spelling in query_state lanes, so a lane snapshot pastes
+ * back as a whitelist verbatim. */
 static bool validate_whitelist_value(json_object* wv, std::string& bad_item) {
     if (!wv) return true;
     if (json_object_is_type(wv, json_type_string)) {
@@ -214,14 +216,10 @@ static bool validate_whitelist_value(json_object* wv, std::string& bad_item) {
                 json_object* iv = nullptr;
                 std::string ip;
                 if (json_object_object_get_ex(e, "sip", &iv) && iv) ip = json_object_get_string(iv);
-                else if (json_object_object_get_ex(e, "ip", &iv) && iv) ip = json_object_get_string(iv);
-                else if (json_object_object_get_ex(e, "source", &iv) && iv) ip = json_object_get_string(iv);
                 ip = trim_str(ip);
                 json_object* pv = nullptr;
                 bool has_p = false; int p = 0;
-                if ((json_object_object_get_ex(e, "udp_port", &pv) ||
-                     json_object_object_get_ex(e, "udpPort", &pv) ||
-                     json_object_object_get_ex(e, "port", &pv)) && pv) {
+                if (json_object_object_get_ex(e, "udp_port", &pv) && pv) {
                     /* json-c ints come back as int; strings are also accepted. */
                     if (json_object_is_type(pv, json_type_string)) {
                         std::string ps = trim_str(json_object_get_string(pv));
@@ -238,15 +236,6 @@ static bool validate_whitelist_value(json_object* wv, std::string& bad_item) {
             } else { bad_item = "bad entry type"; return false; }
         }
         return true;
-    }
-    if (json_object_is_type(wv, json_type_object)) {
-        json_object* inner = nullptr;
-        if (json_object_object_get_ex(wv, "whitelist", &inner) && inner)
-            return validate_whitelist_value(inner, bad_item);
-        if (json_object_object_get_ex(wv, "sources", &inner) && inner)
-            return validate_whitelist_value(inner, bad_item);
-        bad_item = "bad whitelist object";
-        return false;
     }
     bad_item = "bad whitelist value";
     return false;
@@ -464,8 +453,7 @@ static bool configure_has_layout_keys(json_object* payload) {
     if (!payload || !json_object_is_type(payload, json_type_object)) return false;
     json_object* t = nullptr;
     return (json_object_object_get_ex(payload, "streams", &t) && t) ||
-           (json_object_object_get_ex(payload, "windows", &t) && t) ||
-           (json_object_object_get_ex(payload, "layout", &t) && t);
+           (json_object_object_get_ex(payload, "windows", &t) && t);
 }
 
 /* Mutating verbs on the command channel, guarded by the version gate.
@@ -1326,11 +1314,9 @@ int main(int argc, char** argv) {
                             }
                         } else { fail_code = "INVALID_ARGUMENT"; fail_reason = "采集口不能为空"; }
                         if (fail_code.empty()) {
-                            json_object* wv = nullptr;
-                            json_object* wsrc = nullptr;
-                            if (val && (json_object_object_get_ex(val, "whitelist", &wv) ||
-                                        json_object_object_get_ex(val, "sources", &wsrc)) && (wv || wsrc)) {
-                                json_object* wcheck = wv ? wv : wsrc;
+                            json_object* wcheck = nullptr;
+                            if (val) json_object_object_get_ex(val, "whitelist", &wcheck);
+                            if (wcheck) {
                                 std::string bad;
                                 if (!validate_whitelist_value(wcheck, bad)) {
                                     fail_code = "INVALID_ARGUMENT";
@@ -1374,8 +1360,8 @@ int main(int argc, char** argv) {
                                 }
                                 json_object_object_add(node_patch, "input", in);
                                 json_object* wv = nullptr;
-                                if (val && (json_object_object_get_ex(val, "whitelist", &wv) ||
-                                            json_object_object_get_ex(val, "sources", &wv)) && wv) {
+                                if (val) json_object_object_get_ex(val, "whitelist", &wv);
+                                if (wv) {
                                     /* Whitelist stays RX admission (output role);
                                      * harmless to forward in the input role. */
                                     fwd = json_object_new_object();

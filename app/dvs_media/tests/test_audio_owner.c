@@ -44,6 +44,28 @@ int main(void) {
           "classify rejects a malformed address");
     CHECK(dvs_audio_owner_classify("1:2:3") == DVS_OWNER_INVALID,
           "classify rejects a double colon owner");
+    CHECK(dvs_audio_owner_classify("lane255") == DVS_OWNER_LANE,
+          "classify accepts the top lane index");
+    CHECK(dvs_audio_owner_classify("lane256") == DVS_OWNER_INVALID,
+          "classify rejects a lane past the range");
+    CHECK(dvs_audio_owner_classify("lane9999999999") == DVS_OWNER_INVALID,
+          "classify rejects an overflowing lane number");
+    CHECK(dvs_audio_owner_classify("LANE1") == DVS_OWNER_INVALID,
+          "classify rejects an uppercase lane prefix");
+    CHECK(dvs_audio_owner_classify(" 1") == DVS_OWNER_INVALID,
+          "classify rejects a padded index");
+    CHECK(dvs_audio_owner_classify("999") == DVS_OWNER_INDEX,
+          "classify accepts an out-of-range decimal as index kind");
+    CHECK(dvs_audio_owner_classify("239.0.0.1:65535") == DVS_OWNER_ENDPOINT,
+          "classify accepts the top audio port");
+    CHECK(dvs_audio_owner_classify("239.0.0.1:65536") == DVS_OWNER_INVALID,
+          "classify rejects a port past the range");
+    CHECK(dvs_audio_owner_classify("239.0.0.1:") == DVS_OWNER_INVALID,
+          "classify rejects an empty port");
+    CHECK(dvs_audio_owner_classify(":5000") == DVS_OWNER_INVALID,
+          "classify rejects an empty address");
+    CHECK(dvs_audio_owner_classify("239.0.0.1:abc") == DVS_OWNER_INVALID,
+          "classify rejects a non-numeric port");
 
     CHECK(dvs_audio_owner_lane_index("lane2", &lane) == 0 && lane == 2,
           "lane index resolves lane2");
@@ -53,6 +75,16 @@ int main(void) {
           "lane index refuses a sip owner");
     CHECK(dvs_audio_owner_lane_index("lane1", NULL) != 0,
           "lane index refuses a NULL out-param");
+    CHECK(dvs_audio_owner_lane_index("0", &lane) == 0 && lane == 0,
+          "lane index resolves zero");
+    CHECK(dvs_audio_owner_lane_index("lane300", &lane) != 0,
+          "lane index refuses an out-of-range lane");
+    CHECK(dvs_audio_owner_lane_index("999", &lane) != 0,
+          "lane index refuses an out-of-range decimal");
+    CHECK(dvs_audio_owner_lane_index(NULL, &lane) != 0,
+          "lane index refuses a NULL owner");
+    CHECK(dvs_audio_owner_lane_index("", &lane) != 0,
+          "lane index refuses an empty owner");
 
     printf("%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);
     return failures ? 1 : 0;

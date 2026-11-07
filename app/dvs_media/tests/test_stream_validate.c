@@ -30,6 +30,21 @@ int main(void) {
     CHECK(dvs_stream_shape_valid("239.0.0.1", 5000, 0, 1080, 30.0f, err,
                                  sizeof(err)) != 0,
           "shape rejects zero width");
+    CHECK(dvs_stream_shape_valid("239.0.0.1", 5000, 1920, 0, 30.0f, err,
+                                 sizeof(err)) != 0,
+          "shape rejects zero height");
+    CHECK(dvs_stream_shape_valid("239.0.0.1", 5000, -1920, 1080, 30.0f, err,
+                                 sizeof(err)) != 0,
+          "shape rejects negative width");
+    CHECK(dvs_stream_shape_valid("239.0.0.1", 5000, 1920, 1080, -1.0f, err,
+                                 sizeof(err)) != 0,
+          "shape rejects negative fps");
+    CHECK(dvs_stream_shape_valid(NULL, 5000, 1920, 1080, 30.0f, err,
+                                 sizeof(err)) != 0,
+          "shape rejects NULL sip");
+    CHECK(dvs_stream_shape_valid("239.0.0.1", 5000, 1920, 1080, 30.0f,
+                                 NULL, 0) == 0,
+          "shape tolerates a NULL error buffer on success");
     CHECK(dvs_stream_shape_valid("239.0.0.1", 5000, 1920, 1080, 0.0f, err,
                                  sizeof(err)) != 0,
           "shape rejects zero fps");
@@ -55,6 +70,23 @@ int main(void) {
           "crop rejects a negative origin");
     CHECK(dvs_stream_crop_valid(1920, 1080, 0, 0, 0, 0, NULL, 0) == 0,
           "crop tolerates a NULL error buffer on success");
+    CHECK(dvs_stream_crop_valid(1920, 1080, 0, 0, 1920, 0, err,
+                                sizeof(err)) == 0,
+          "crop accepts zero-h axis fallback to full height");
+    CHECK(dvs_stream_crop_valid(1920, 1080, 0, 0, -4, 100, err,
+                                sizeof(err)) == 0,
+          "crop treats a negative width as full-frame fallback");
+    CHECK(dvs_stream_crop_valid(0, 0, 0, 0, 0, 0, err, sizeof(err)) != 0,
+          "crop rejects a zero-size frame");
+    CHECK(dvs_stream_crop_valid(1920, 1080, 1900, 0, 100, 100, NULL, 0) != 0,
+          "crop failure tolerates a NULL error buffer");
+    {
+        char e2[128] = {0};
+        CHECK(dvs_stream_crop_valid(1920, 1080, 1900, 0, 100, 100, e2,
+                                    sizeof(e2)) != 0 &&
+                  e2[0] != '\0',
+              "crop failure reports the offending window");
+    }
 
     printf("%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);
     return failures ? 1 : 0;

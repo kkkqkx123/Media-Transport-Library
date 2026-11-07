@@ -420,11 +420,6 @@ int drm_renderer_update_layout(struct drm_renderer* r,
     for (int i = 0; i < next->layer_count; i++) {
         if (next->layers[i].plane_id != r->layout.layers[i].plane_id)
             return -EXDEV;
-        if (next->layers[i].src_x != r->layout.layers[i].src_x ||
-            next->layers[i].src_y != r->layout.layers[i].src_y ||
-            next->layers[i].src_w != r->layout.layers[i].src_w ||
-            next->layers[i].src_h != r->layout.layers[i].src_h)
-            return -EXDEV;
     }
     pthread_mutex_lock(&r->layout_mu);
     for (int i = 0; i < next->layer_count; i++) {

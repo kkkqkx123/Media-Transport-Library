@@ -31,6 +31,9 @@ struct Operation {
     std::string wall_id;
     std::string scene_id;
     std::string layout_hash;
+    // Scene volume carried with the fanout snapshot so a rollback reissue
+    // restores the previous loudness instead of keeping the failed one.
+    int volume = 80;
 };
 
 class OpCoordinator {

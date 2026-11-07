@@ -469,6 +469,196 @@ static void test_role_pending_projection() {
   std::remove(db.c_str());
 }
 
+static json_object* mk_ep(const char* sig, const char* addr, int port) {
+  json_object* e = json_object_new_object();
+  json_object_object_add(e, "sig", json_object_new_string(sig));
+  json_object_object_add(e, "address", json_object_new_string(addr));
+  json_object_object_add(e, "port", json_object_new_int(port));
+  return e;
+}
+static json_object* mk_subwin(const char* id, const char* sig, int dx, int dy,
+                              int dw, int dh, int sx, int sy, int sw, int sh) {
+  json_object* w = json_object_new_object();
+  json_object_object_add(w, "windowId", json_object_new_string(id));
+  json_object_object_add(w, "sig", json_object_new_string(sig));
+  json_object* dst = json_object_new_object();
+  json_object_object_add(dst, "x", json_object_new_int(dx));
+  json_object_object_add(dst, "y", json_object_new_int(dy));
+  json_object_object_add(dst, "w", json_object_new_int(dw));
+  json_object_object_add(dst, "h", json_object_new_int(dh));
+  json_object_object_add(w, "dst", dst);
+  json_object* src = json_object_new_object();
+  json_object_object_add(src, "x", json_object_new_int(sx));
+  json_object_object_add(src, "y", json_object_new_int(sy));
+  json_object_object_add(src, "w", json_object_new_int(sw));
+  json_object_object_add(src, "h", json_object_new_int(sh));
+  json_object_object_add(w, "src", src);
+  return w;
+}
+static json_object* mk_body() {
+  json_object* b = json_object_new_object();
+  json_object* geo = json_object_new_object();
+  json_object_object_add(geo, "x", json_object_new_int(0));
+  json_object_object_add(geo, "y", json_object_new_int(0));
+  json_object_object_add(geo, "w", json_object_new_int(1920));
+  json_object_object_add(geo, "h", json_object_new_int(1080));
+  json_object_object_add(b, "geometry", geo);
+  json_object* eps = json_object_new_array();
+  json_object_array_add(eps, mk_ep("s1", "239.0.0.1", 5000));
+  json_object_object_add(b, "endpoints", eps);
+  json_object_object_add(b, "windows", json_object_new_array());
+  return b;
+}
+static int tget(json_object* o, const char* k) {
+  json_object* v = nullptr;
+  if (o && json_object_object_get_ex(o, k, &v) && v)
+    return json_object_get_int(v);
+  return -9999;
+}
+static std::string tgets(json_object* o, const char* k) {
+  json_object* v = nullptr;
+  if (o && json_object_object_get_ex(o, k, &v) && v &&
+      json_object_is_type(v, json_type_string))
+    return json_object_get_string(v);
+  return "";
+}
+
+static void test_translate_platform_layout() {
+  std::string err;
+  json_object* prep = nullptr;
+  CHECK(!translate_platform_layout(nullptr, &prep, err), "null body rejected");
+  CHECK(prep == nullptr, "rejected body leaves no payload");
+  json_object* notobj = json_object_new_array();
+  CHECK(!translate_platform_layout(notobj, &prep, err), "non-object rejected");
+  json_object_put(notobj);
+  // Empty object translates to an empty (clear) stream set.
+  json_object* empty = json_object_new_object();
+  CHECK(translate_platform_layout(empty, &prep, err), "empty body clears");
+  json_object* st0 = nullptr;
+  CHECK(prep && json_object_object_get_ex(prep, "streams", &st0) &&
+            json_object_array_length(st0) == 0,
+        "clear carries empty streams");
+  if (prep) json_object_put(prep);
+  prep = nullptr;
+  json_object_put(empty);
+  // Single full window maps 1:1 onto one lane.
+  json_object* b = mk_body();
+  json_object* wins = nullptr;
+  json_object_object_get_ex(b, "windows", &wins);
+  json_object_array_add(wins, mk_subwin("w1", "s1", 0, 0, 960, 540, 0, 0, 960, 540));
+  CHECK(translate_platform_layout(b, &prep, err), "single window translates");
+  json_object* st = nullptr;
+  CHECK(prep && json_object_object_get_ex(prep, "streams", &st) &&
+            json_object_array_length(st) == 1,
+        "one stream emitted");
+  json_object* s0 = json_object_array_get_idx(st, 0);
+  CHECK(tget(s0, "lane") == 0, "lane zero");
+  json_object* mv = nullptr;
+  CHECK(json_object_object_get_ex(s0, "main", &mv) && json_object_get_boolean(mv),
+        "first lane is main");
+  CHECK(tgets(s0, "sip") == "239.0.0.1" && tget(s0, "udpPort") == 5000,
+        "endpoint resolved");
+  CHECK(tget(s0, "width") == 960 && tget(s0, "height") == 540, "frame size");
+  CHECK(tget(s0, "x") == 0 && tget(s0, "y") == 0, "position");
+  CHECK(tget(s0, "w") == 960 && tget(s0, "h") == 540, "size");
+  CHECK(tget(s0, "srcX") == 0 && tget(s0, "srcY") == 0, "crop origin");
+  CHECK(tget(s0, "srcW") == 960 && tget(s0, "srcH") == 540, "crop size");
+  if (prep) json_object_put(prep);
+  prep = nullptr;
+  json_object_put(b);
+  // Cross-node window forwards the crop with full-frame dims.
+  b = mk_body();
+  json_object_object_get_ex(b, "windows", &wins);
+  json_object* cw = mk_subwin("w2", "s1", 0, 0, 1920, 1080, 1920, 0, 1920, 1080);
+  json_object_object_add(cw, "fullW", json_object_new_int(3840));
+  json_object_object_add(cw, "fullH", json_object_new_int(1080));
+  json_object_object_add(cw, "partial", json_object_new_boolean(1));
+  json_object_array_add(wins, cw);
+  CHECK(translate_platform_layout(b, &prep, err), "partial window translates");
+  CHECK(prep && json_object_object_get_ex(prep, "streams", &st) &&
+            json_object_array_length(st) == 1,
+        "partial yields one stream");
+  s0 = json_object_array_get_idx(st, 0);
+  CHECK(tget(s0, "width") == 3840 && tget(s0, "height") == 1080, "full frame kept");
+  CHECK(tget(s0, "srcX") == 1920 && tget(s0, "srcW") == 1920, "crop forwarded");
+  if (prep) json_object_put(prep);
+  prep = nullptr;
+  json_object_put(b);
+  // Unknown signal rejects the whole order.
+  b = mk_body();
+  json_object_object_get_ex(b, "windows", &wins);
+  json_object_array_add(wins, mk_subwin("w3", "sx", 0, 0, 100, 100, 0, 0, 100, 100));
+  CHECK(!translate_platform_layout(b, &prep, err), "unknown signal rejected");
+  CHECK(err.find("not in endpoint") != std::string::npos, "reason names the table");
+  CHECK(prep == nullptr, "rejection stages nothing");
+  json_object_put(b);
+  // Over the lane cap rejects.
+  b = mk_body();
+  json_object_object_get_ex(b, "windows", &wins);
+  for (int i = 0; i < 9; i++)
+    json_object_array_add(wins, mk_subwin("w", "s1", 0, 0, 64, 64, 0, 0, 64, 64));
+  CHECK(!translate_platform_layout(b, &prep, err), "nine windows rejected");
+  json_object_put(b);
+  // Degenerate, outside-canvas and non-object windows are skipped.
+  b = mk_body();
+  json_object_object_get_ex(b, "windows", &wins);
+  json_object* deg = json_object_new_object();
+  json_object_object_add(deg, "windowId", json_object_new_string("d"));
+  json_object_object_add(deg, "sig", json_object_new_string("s1"));
+  json_object_array_add(wins, deg);
+  json_object_array_add(wins, mk_subwin("o", "s1", 5000, 0, 100, 100, 0, 0, 100, 100));
+  json_object_array_add(wins, json_object_new_int(3));
+  CHECK(translate_platform_layout(b, &prep, err), "skippable windows pass");
+  CHECK(prep && json_object_object_get_ex(prep, "streams", &st) &&
+            json_object_array_length(st) == 0,
+        "nothing staged for skipped windows");
+  if (prep) json_object_put(prep);
+  prep = nullptr;
+  json_object_put(b);
+  // Lanes follow z ascending; envelope fields pass through.
+  b = mk_body();
+  json_object_object_add(b, "operationId", json_object_new_string("op-1"));
+  json_object_object_add(b, "revision", json_object_new_int(7));
+  json_object_object_add(b, "applyAtNs", json_object_new_int64(123));
+  json_object_object_add(b, "audioOwner", json_object_new_string("w9"));
+  json_object_object_add(b, "volume", json_object_new_int(60));
+  json_object_object_get_ex(b, "windows", &wins);
+  json_object* hi = mk_subwin("hi", "s1", 0, 0, 100, 100, 0, 0, 100, 100);
+  json_object_object_add(hi, "z", json_object_new_int(5));
+  json_object* lo = mk_subwin("lo", "s1", 200, 0, 100, 100, 0, 0, 100, 100);
+  json_object_object_add(lo, "z", json_object_new_int(1));
+  json_object_array_add(wins, hi);
+  json_object_array_add(wins, lo);
+  CHECK(translate_platform_layout(b, &prep, err), "z-ordered pair translates");
+  CHECK(prep && json_object_object_get_ex(prep, "streams", &st) &&
+            json_object_array_length(st) == 2,
+        "two streams emitted");
+  json_object* e0 = json_object_array_get_idx(st, 0);
+  json_object* e1 = json_object_array_get_idx(st, 1);
+  CHECK(tget(e0, "x") == 200 && tget(e1, "x") == 0, "lanes follow z ascending");
+  CHECK(tget(e0, "lane") == 0 && tget(e1, "lane") == 1, "lanes numbered in order");
+  CHECK(tgets(prep, "operationId") == "op-1", "operation id passes through");
+  CHECK(tget(prep, "revision") == 7, "revision passes through");
+  CHECK(tgets(prep, "audioOwner") == "w9", "audio owner passes through");
+  CHECK(tget(prep, "audioVolume") == 60, "volume passes through");
+  if (prep) json_object_put(prep);
+  prep = nullptr;
+  json_object_put(b);
+  // Endpoint entries without a usable port never register.
+  b = mk_body();
+  json_object* eps = nullptr;
+  json_object_object_get_ex(b, "endpoints", &eps);
+  json_object* bad = json_object_new_object();
+  json_object_object_add(bad, "sig", json_object_new_string("s2"));
+  json_object_object_add(bad, "address", json_object_new_string("239.0.0.2"));
+  json_object_object_add(bad, "port", json_object_new_int(0));
+  json_object_array_add(eps, bad);
+  json_object_object_get_ex(b, "windows", &wins);
+  json_object_array_add(wins, mk_subwin("w4", "s2", 0, 0, 100, 100, 0, 0, 100, 100));
+  CHECK(!translate_platform_layout(b, &prep, err), "portless endpoint rejected");
+  json_object_put(b);
+}
+
 int main() {
   test_sha256();
   test_pbkdf2_deterministic();
@@ -484,6 +674,7 @@ int main() {
   test_network_render_and_gate();
   test_tx_config();
   test_role_pending_projection();
+  test_translate_platform_layout();
 
   if (g_failures == 0) {
     printf("\nALL TESTS PASSED\n");

@@ -33,11 +33,9 @@ typedef struct file_playout_pip_stream {
     int      y;
     int      w;
     int      h;
-    /* Source crop inside the decoded frame (forward-compatible fields; the
-     * compositor renders full-frame today — see
-     * DVS_WINDOWS_TRANSLATION_GAPS_DESIGN.md 源裁剪分两步走). Zero w/h means
-     * the full frame. The agent rejects cross-node windows, so in practice
-     * these always describe the full frame. */
+    /* Source crop inside the decoded frame. Zero w/h means the full frame.
+     * Cross-node windows carry a partial crop resolved to plane source
+     * rectangles at display time. */
     int      src_x;
     int      src_y;
     int      src_w;

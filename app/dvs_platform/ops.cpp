@@ -17,6 +17,7 @@ json_object* operation_to_json(const Operation& op) {
     json_object_object_add(o, "sceneId", json_object_new_string(op.scene_id.c_str()));
     json_object_object_add(o, "layoutHash",
                            json_object_new_string(op.layout_hash.c_str()));
+    json_object_object_add(o, "volume", json_object_new_int(op.volume));
     json_object* members = json_object_new_array();
     for (const auto& m : op.members)
         json_object_array_add(members, json_object_new_string(m.c_str()));
@@ -70,6 +71,13 @@ bool operation_from_json(json_object* o, Operation* out) {
     out->wall_id = jstr(o, "wallId");
     out->scene_id = jstr(o, "sceneId");
     out->layout_hash = jstr(o, "layoutHash");
+    out->volume = 80;
+    {
+        json_object* vv = nullptr;
+        if (json_object_object_get_ex(o, "volume", &vv) && vv &&
+            json_object_is_type(vv, json_type_int))
+            out->volume = json_object_get_int(vv);
+    }
     json_object* arr = nullptr;
     out->members.clear();
     if (json_object_object_get_ex(o, "members", &arr) &&
@@ -140,6 +148,7 @@ Operation& OpCoordinator::begin_with_deadline(const std::string& op_id, int revi
     op.wall_id.clear();
     op.scene_id.clear();
     op.layout_hash.clear();
+    op.volume = 80;
     persist(op);
     return op;
 }

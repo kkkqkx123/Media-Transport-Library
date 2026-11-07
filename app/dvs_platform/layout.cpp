@@ -15,11 +15,6 @@ bool layout_cell_grid(int wall_w, int wall_h, int cols, int rows,
     return true;
 }
 
-// Window/canvas intersection and source-crop math moved into
-// main.cpp fragment_for_node() with the unified flat wire shape (see
-// DVS_WINDOWS_TRANSLATION_GAPS_DESIGN.md §4); the old nested-shape helper
-// was removed rather than kept as a parallel track.
-
 uint64_t layout_apply_at_ns(uint64_t now_ns, double fps) {
     uint64_t per_frame_ns = (fps > 0.0) ? (uint64_t)(1000000000.0 / fps) : 20000000ULL;
     uint64_t guard = 2 * per_frame_ns;
@@ -56,6 +51,55 @@ int rect_int(json_object* o, const char* k) {
     return 0;
 }
 }  // namespace
+
+json_object* fragment_for_node(json_object* windows, const Rect& node) {
+    json_object* out = json_object_new_array();
+    if (!windows || !json_object_is_type(windows, json_type_array)) return out;
+    int n = json_object_array_length(windows);
+    for (int i = 0; i < n; i++) {
+        json_object* w = json_object_array_get_idx(windows, i);
+        if (!w || !json_object_is_type(w, json_type_object)) continue;
+        int gx = rect_int(w, "x"), gy = rect_int(w, "y");
+        int gw = rect_int(w, "w"), gh = rect_int(w, "h");
+        if (gw <= 0 || gh <= 0) continue;
+        int ix1 = std::max(gx, node.x), iy1 = std::max(gy, node.y);
+        int ix2 = std::min(gx + gw, node.x + node.w);
+        int iy2 = std::min(gy + gh, node.y + node.h);
+        if (ix2 <= ix1 || iy2 <= iy1) continue;
+        json_object* nw = json_object_new_object();
+        json_object_object_add(nw, "windowId",
+                               json_object_new_string(jstr(w, "id").c_str()));
+        json_object_object_add(nw, "sig",
+                               json_object_new_string(jstr(w, "sig").c_str()));
+        json_object* nd = json_object_new_object();
+        json_object_object_add(nd, "x", json_object_new_int(ix1 - node.x));
+        json_object_object_add(nd, "y", json_object_new_int(iy1 - node.y));
+        json_object_object_add(nd, "w", json_object_new_int(ix2 - ix1));
+        json_object_object_add(nd, "h", json_object_new_int(iy2 - iy1));
+        json_object* ns = json_object_new_object();
+        json_object_object_add(ns, "x", json_object_new_int(ix1 - gx));
+        json_object_object_add(ns, "y", json_object_new_int(iy1 - gy));
+        json_object_object_add(ns, "w", json_object_new_int(ix2 - ix1));
+        json_object_object_add(ns, "h", json_object_new_int(iy2 - iy1));
+        json_object_object_add(nw, "dst", nd);
+        json_object_object_add(nw, "src", ns);
+        json_object_object_add(nw, "fullW", json_object_new_int(gw));
+        json_object_object_add(nw, "fullH", json_object_new_int(gh));
+        bool partial = (ix1 != gx || iy1 != gy || (ix2 - ix1) != gw ||
+                        (iy2 - iy1) != gh);
+        json_object_object_add(nw, "partial",
+                               json_object_new_boolean(partial ? 1 : 0));
+        json_object* zv = nullptr;
+        if (json_object_object_get_ex(w, "z", &zv) && zv)
+            json_object_object_add(nw, "z", json_object_get(zv));
+        json_object* mv = nullptr;
+        if (json_object_object_get_ex(w, "muted", &mv) && mv &&
+            json_object_is_type(mv, json_type_boolean))
+            json_object_object_add(nw, "muted", json_object_get(mv));
+        json_object_array_add(out, nw);
+    }
+    return out;
+}
 
 std::string docs_trim(const std::string& s) {
     size_t a = 0;
@@ -539,4 +583,68 @@ bool node_clock_ok(json_object* node, std::string* reason) {
         if (o > ptp_max_offset_us()) return fail("clock offset exceeded");
     }
     return true;
+}
+
+bool barrier_lanes_ready(json_object* lanes) {
+    if (!lanes || !json_object_is_type(lanes, json_type_array)) return true;
+    for (size_t i = 0; i < json_object_array_length(lanes); i++) {
+        json_object* e = json_object_array_get_idx(lanes, i);
+        json_object* rv = nullptr;
+        if (e && json_object_object_get_ex(e, "ready", &rv) && rv) {
+            if (!json_object_get_boolean(rv)) return false;
+        }
+    }
+    return true;
+}
+
+bool barrier_lanes_frame_consistent(json_object* lanes, int64_t* seq_out) {
+    if (seq_out) *seq_out = 0;
+    if (!lanes || !json_object_is_type(lanes, json_type_array)) return true;
+    bool have = false;
+    int64_t first = 0;
+    for (size_t i = 0; i < json_object_array_length(lanes); i++) {
+        json_object* e = json_object_array_get_idx(lanes, i);
+        if (!e || !json_object_is_type(e, json_type_object)) continue;
+        json_object* v = nullptr;
+        int64_t seq = 0;
+        bool present = false;
+        if (json_object_object_get_ex(e, "frameSeq", &v) && v &&
+            json_object_is_type(v, json_type_int)) {
+            seq = json_object_get_int64(v);
+            present = true;
+        } else if (json_object_object_get_ex(e, "frame_seq", &v) && v &&
+                   json_object_is_type(v, json_type_int)) {
+            seq = json_object_get_int64(v);
+            present = true;
+        } else if (json_object_object_get_ex(e, "frame", &v) && v &&
+                   json_object_is_type(v, json_type_int)) {
+            seq = json_object_get_int64(v);
+            present = true;
+        }
+        if (!present) continue;
+        if (!have) {
+            have = true;
+            first = seq;
+            if (seq_out) *seq_out = seq;
+        } else if (seq != first) {
+            return false;
+        }
+    }
+    return true;
+}
+
+int fanout_parallelism() {
+    const char* v = std::getenv("DVS_FANOUT_PARALLEL");
+    if (!v || !*v) return 8;
+    int n = atoi(v);
+    if (n < 1) return 1;
+    if (n > 16) return 16;
+    return n;
+}
+
+int max_wall_members() {
+    const char* v = std::getenv("DVS_MAX_WALL_MEMBERS");
+    if (!v || !*v) return 128;
+    int n = atoi(v);
+    return n > 0 ? n : 128;
 }

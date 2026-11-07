@@ -17,6 +17,8 @@
 #include "http_server.h"
 #include "sha256.h"
 
+static void restore_env(const char* k, const std::string& keep, bool had);
+
 static void test_layout_cell_grid() {
     int cw = -1, ch = -1;
     assert(layout_cell_grid(3840, 2160, 2, 2, &cw, &ch));
@@ -325,6 +327,159 @@ static void test_contract() {
     json_object_put(h);
 }
 
+static void test_contract_gaps() {
+    namespace ct = dvs::contract;
+    // Heartbeat: nodeId alias, digest range, ptp shape.
+    {
+        json_object* hb = json_object_new_object();
+        json_object_object_add(hb, "nodeId", json_object_new_string("n1"));
+        json_object* dg = json_object_new_object();
+        json_object_object_add(dg, "ready", json_object_new_int(0));
+        json_object_object_add(dg, "total", json_object_new_int(0));
+        json_object_object_add(hb, "lanesDigest", dg);
+        assert(ct::validate_heartbeat(hb).empty());
+        json_object_put(hb);
+    }
+    {
+        json_object* hb = json_object_new_object();
+        json_object_object_add(hb, "id", json_object_new_string("n1"));
+        json_object* dg = json_object_new_object();
+        json_object_object_add(dg, "ready", json_object_new_int(3));
+        json_object_object_add(dg, "total", json_object_new_int(2));
+        json_object_object_add(hb, "lanesDigest", dg);
+        assert(!ct::validate_heartbeat(hb).empty());
+        json_object_put(hb);
+    }
+    {
+        json_object* hb = json_object_new_object();
+        json_object_object_add(hb, "id", json_object_new_string("n1"));
+        json_object* dg = json_object_new_object();
+        json_object_object_add(dg, "ready", json_object_new_string("x"));
+        json_object_object_add(dg, "total", json_object_new_int(2));
+        json_object_object_add(hb, "lanesDigest", dg);
+        assert(!ct::validate_heartbeat(hb).empty());
+        json_object_put(hb);
+    }
+    {
+        json_object* hb = json_object_new_object();
+        json_object_object_add(hb, "id", json_object_new_string("n1"));
+        json_object* dg = json_object_new_object();
+        json_object_object_add(dg, "ready", json_object_new_int(1));
+        json_object_object_add(dg, "total", json_object_new_int(2));
+        json_object_object_add(hb, "lanesDigest", dg);
+        json_object_object_add(hb, "ptp", json_object_new_string("x"));
+        assert(!ct::validate_heartbeat(hb).empty());
+        json_object_object_add(hb, "ptp", json_object_new_object());
+        assert(!ct::validate_heartbeat(hb).empty());
+        json_object_put(hb);
+    }
+    // Hello: sn alias, capabilities alias, network shape, clock alias.
+    {
+        json_object* h = json_object_new_object();
+        json_object_object_add(h, "sn", json_object_new_string("n9"));
+        json_object* g = json_object_new_object();
+        json_object_object_add(g, "x", json_object_new_int(0));
+        json_object_object_add(g, "y", json_object_new_int(0));
+        json_object_object_add(g, "w", json_object_new_int(10));
+        json_object_object_add(g, "h", json_object_new_int(10));
+        json_object_object_add(h, "geometry", g);
+        json_object_object_add(h, "capabilities", json_object_new_object());
+        json_object* clk = json_object_new_object();
+        json_object_object_add(clk, "state", json_object_new_string("synced"));
+        json_object_object_add(clk, "offsetUs", json_object_new_int(5));
+        json_object_object_add(h, "clock", clk);
+        assert(ct::validate_hello(h).empty());
+        json_object_put(h);
+    }
+    {
+        json_object* h = json_object_new_object();
+        json_object_object_add(h, "id", json_object_new_string("n1"));
+        json_object* g = json_object_new_object();
+        json_object_object_add(g, "x", json_object_new_int(0));
+        json_object_object_add(g, "y", json_object_new_int(0));
+        json_object_object_add(g, "w", json_object_new_string("x"));
+        json_object_object_add(g, "h", json_object_new_int(10));
+        json_object_object_add(h, "geometry", g);
+        assert(!ct::validate_hello(h).empty());
+        json_object_put(h);
+    }
+    {
+        json_object* h = json_object_new_object();
+        json_object_object_add(h, "id", json_object_new_string("n1"));
+        json_object* g = json_object_new_object();
+        json_object_object_add(g, "x", json_object_new_int(0));
+        json_object_object_add(g, "y", json_object_new_int(0));
+        json_object_object_add(g, "w", json_object_new_int(10));
+        json_object_object_add(g, "h", json_object_new_int(10));
+        json_object_object_add(h, "geometry", g);
+        json_object_object_add(h, "network", json_object_new_string("x"));
+        assert(!ct::validate_hello(h).empty());
+        json_object_put(h);
+    }
+    // Barrier ack: lanes shape, missing fields.
+    {
+        json_object* ba = json_object_new_object();
+        json_object_object_add(ba, "operationId", json_object_new_string("op-1"));
+        json_object_object_add(ba, "node", json_object_new_string("n1"));
+        json_object_object_add(ba, "status", json_object_new_string("blocked"));
+        json_object_object_add(ba, "lanes", json_object_new_array());
+        assert(ct::validate_barrier_ack(ba).empty());
+        json_object_object_add(ba, "lanes", json_object_new_string("x"));
+        assert(!ct::validate_barrier_ack(ba).empty());
+        json_object_put(ba);
+    }
+    {
+        json_object* ba = json_object_new_object();
+        json_object_object_add(ba, "node", json_object_new_string("n1"));
+        json_object_object_add(ba, "status", json_object_new_string("ready"));
+        assert(!ct::validate_barrier_ack(ba).empty());
+        json_object_put(ba);
+    }
+    // layout.prepare: missing operation id, bad revision type.
+    {
+        json_object* lp = json_object_new_object();
+        json_object_object_add(lp, "revision", json_object_new_int(1));
+        json_object_object_add(lp, "applyAtNs", json_object_new_int64(2));
+        json_object_object_add(lp, "windows", json_object_new_array());
+        json_object* g = json_object_new_object();
+        json_object_object_add(g, "x", json_object_new_int(0));
+        json_object_object_add(g, "y", json_object_new_int(0));
+        json_object_object_add(g, "w", json_object_new_int(1));
+        json_object_object_add(g, "h", json_object_new_int(1));
+        json_object_object_add(lp, "geometry", g);
+        assert(!ct::validate_layout_prepare(lp).empty());
+        json_object_put(lp);
+    }
+    // config.ack and upgrade.progress: missing identity fields.
+    {
+        json_object* ca = json_object_new_object();
+        assert(!ct::validate_config_ack(ca).empty());
+        json_object_object_add(ca, "node", json_object_new_string("n1"));
+        assert(ct::validate_config_ack(ca).empty());
+        json_object_object_add(ca, "appliedRevision", json_object_new_string("x"));
+        assert(!ct::validate_config_ack(ca).empty());
+        json_object_put(ca);
+    }
+    {
+        json_object* up = json_object_new_object();
+        assert(!ct::validate_upgrade_progress(up).empty());
+        json_object_object_add(up, "taskId", json_object_new_string("t"));
+        json_object_object_add(up, "node", json_object_new_string("n"));
+        assert(!ct::validate_upgrade_progress(up).empty());
+        json_object_object_add(up, "status", json_object_new_string("done"));
+        assert(ct::validate_upgrade_progress(up).empty());
+        json_object_put(up);
+    }
+    // unwrap rejects a typeless frame.
+    {
+        json_object* m = json_object_new_object();
+        std::string mid, tp, rid;
+        json_object* dd = nullptr;
+        assert(!ct::unwrap(m, mid, tp, dd, rid));
+        json_object_put(m);
+    }
+}
+
 static void test_ws_codec() {
     // RFC6455 附录握手向量。
     assert(HttpServer::ws_accept_key("dGhlIHNhbXBsZSBub25jZQ==") ==
@@ -387,6 +542,10 @@ static void test_op_serialization() {
     op.ready = {"n1"};
     op.result["n1"] = "ready";
 
+    op.wall_id = "wall-9";
+    op.scene_id = "scene-9";
+    op.layout_hash = "hash-9";
+    op.volume = 42;
     json_object* rec = operation_to_json(op);
     assert(rec != nullptr);
     Operation back;
@@ -398,7 +557,19 @@ static void test_op_serialization() {
     assert(back.wall_w == op.wall_w && back.wall_h == op.wall_h);
     assert(back.members == op.members && back.ready == op.ready);
     assert(back.result.size() == 1 && back.result["n1"] == "ready");
+    assert(back.wall_id == "wall-9" && back.scene_id == "scene-9");
+    assert(back.layout_hash == "hash-9" && back.volume == 42);
     json_object_put(rec);
+    // Volume absent on the wire (older writer) still decodes to the default.
+    {
+        json_object* legacy = json_object_new_object();
+        json_object_object_add(legacy, "opId", json_object_new_string("op-legacy"));
+        json_object_object_add(legacy, "state", json_object_new_string("preparing"));
+        Operation old;
+        assert(operation_from_json(legacy, &old));
+        assert(old.volume == 80 && old.wall_id.empty());
+        json_object_put(legacy);
+    }
 
     // Missing/empty required fields are rejected.
     assert(!operation_from_json(nullptr, &back));
@@ -712,6 +883,565 @@ static void test_business_rules() {
     }
 }
 
+static void test_validation_gaps() {
+    // String helpers.
+    assert(docs_trim("   \t\n ").empty());
+    assert(docs_trim("").empty());
+    assert(docs_lower("AbC DeF") == "abc def");
+    // Groups.
+    assert(!validate_group_shape(nullptr).empty());
+    {
+        json_object* g = json_object_new_string("x");
+        assert(!validate_group_shape(g).empty());
+        json_object_put(g);
+    }
+    {
+        json_object* g = json_object_new_object();
+        json_object_object_add(g, "name", json_object_new_string("   "));
+        assert(!validate_group_shape(g).empty());
+        json_object_put(g);
+    }
+    // Walls: bounds, enums, pixel arrays, cell grid shape.
+    assert(!validate_wall_shape(nullptr).empty());
+    {
+        json_object* w = json_object_new_object();
+        json_object_object_add(w, "name", json_object_new_string("w"));
+        assert(validate_wall_shape(w).empty());
+        json_object_object_add(w, "rows", json_object_new_int(0));
+        assert(!validate_wall_shape(w).empty());
+        json_object_object_add(w, "rows", json_object_new_int(7));
+        assert(!validate_wall_shape(w).empty());
+        json_object_object_add(w, "rows", json_object_new_int(2));
+        json_object_object_add(w, "cols", json_object_new_int(0));
+        assert(!validate_wall_shape(w).empty());
+        json_object_object_add(w, "cols", json_object_new_int(16));
+        assert(!validate_wall_shape(w).empty());
+        json_object_object_add(w, "cols", json_object_new_int(2));
+        json_object_object_add(w, "mode", json_object_new_string("LCD"));
+        assert(validate_wall_shape(w).empty());
+        json_object_object_add(w, "type", json_object_new_string(std::string(33, 'x').c_str()));
+        assert(!validate_wall_shape(w).empty());
+        json_object_object_del(w, "type");
+        json_object* rp = json_object_new_string("nope");
+        json_object_object_add(w, "rowPixels", rp);
+        assert(!validate_wall_shape(w).empty());
+        json_object_object_del(w, "rowPixels");
+        json_object* short_rp = json_object_new_array();
+        json_object_array_add(short_rp, json_object_new_int(1080));
+        json_object_object_add(w, "rowPixels", short_rp);
+        assert(!validate_wall_shape(w).empty());
+        json_object_object_del(w, "rowPixels");
+        json_object* bad_rp = json_object_new_array();
+        json_object_array_add(bad_rp, json_object_new_int(1080));
+        json_object_array_add(bad_rp, json_object_new_int(32));
+        json_object_object_add(w, "rowPixels", bad_rp);
+        assert(!validate_wall_shape(w).empty());
+        json_object_object_del(w, "rowPixels");
+        json_object* good_rp = json_object_new_array();
+        json_object_array_add(good_rp, json_object_new_int(1080));
+        json_object_array_add(good_rp, json_object_new_int(1080));
+        json_object_object_add(w, "rowPixels", good_rp);
+        assert(validate_wall_shape(w).empty());
+        json_object* bad_cp = json_object_new_string("nope");
+        json_object_object_add(w, "colPixels", bad_cp);
+        assert(!validate_wall_shape(w).empty());
+        json_object_object_del(w, "colPixels");
+        json_object* cg = json_object_new_int(3);
+        json_object_object_add(w, "cell_grid", cg);
+        assert(!validate_wall_shape(w).empty());
+        json_object_object_del(w, "cell_grid");
+        json_object_object_add(w, "cell_grid", json_object_new_array());
+        assert(validate_wall_shape(w).empty());
+        json_object_put(w);
+    }
+    // Scenes: aliases, caps, per-window branches.
+    assert(!validate_scene_shape(nullptr, 0, 0).empty());
+    {
+        json_object* s = json_object_new_object();
+        json_object_object_add(s, "snapshotVersion", json_object_new_int(1));
+        assert(validate_scene_shape(s, 0, 0).empty());
+        json_object_object_add(s, "volume", json_object_new_string("80"));
+        assert(!validate_scene_shape(s, 0, 0).empty());
+        json_object_object_add(s, "volume", json_object_new_int(-1));
+        assert(!validate_scene_shape(s, 0, 0).empty());
+        json_object_object_add(s, "volume", json_object_new_int(80));
+        json_object_object_add(s, "layoutMode", json_object_new_string("fixed"));
+        assert(validate_scene_shape(s, 0, 0).empty());
+        json_object_object_add(s, "layoutMode", json_object_new_string("tile"));
+        assert(!validate_scene_shape(s, 0, 0).empty());
+        json_object_object_del(s, "layoutMode");
+        json_object_object_add(s, "layout", json_object_new_array());
+        assert(validate_scene_shape(s, 0, 0).empty());
+        json_object_object_add(s, "windows", json_object_new_string("nope"));
+        assert(!validate_scene_shape(s, 0, 0).empty());
+        json_object_object_del(s, "windows");
+        json_object* many = json_object_new_array();
+        for (int i = 0; i < 5; i++) {
+            json_object* e = json_object_new_object();
+            json_object_object_add(e, "id", json_object_new_string("w"));
+            json_object_object_add(e, "sig", json_object_new_string("s"));
+            json_object_object_add(e, "w", json_object_new_int(100));
+            json_object_object_add(e, "h", json_object_new_int(100));
+            json_object_array_add(many, e);
+        }
+        json_object_object_add(s, "windows", many);
+        assert(!validate_scene_shape(s, 0, 0).empty());
+        json_object_put(s);
+    }
+    {
+        json_object* s = json_object_new_object();
+        json_object* wins = json_object_new_array();
+        json_object_array_add(wins, json_object_new_int(1));
+        json_object_object_add(s, "windows", wins);
+        assert(!validate_scene_shape(s, 0, 0).empty());
+        json_object_put(s);
+    }
+    {
+        json_object* s = json_object_new_object();
+        json_object* wins = json_object_new_array();
+        json_object* w0 = json_object_new_object();
+        json_object_object_add(w0, "windowId", json_object_new_string("w1"));
+        json_object_object_add(w0, "signalId", json_object_new_string("s1"));
+        json_object_object_add(w0, "x", json_object_new_int(1900));
+        json_object_object_add(w0, "w", json_object_new_int(100));
+        json_object_object_add(w0, "h", json_object_new_int(100));
+        json_object_array_add(wins, w0);
+        json_object_object_add(s, "windows", wins);
+        assert(validate_scene_shape(s, 0, 0).empty());
+        assert(!validate_scene_shape(s, 1920, 1080).empty());
+        json_object_put(s);
+    }
+    {
+        json_object* s = json_object_new_object();
+        json_object* wins = json_object_new_array();
+        json_object* w0 = json_object_new_object();
+        json_object_object_add(w0, "sig", json_object_new_string("s1"));
+        json_object_object_add(w0, "w", json_object_new_int(100));
+        json_object_object_add(w0, "h", json_object_new_int(100));
+        json_object_array_add(wins, w0);
+        json_object_object_add(s, "windows", wins);
+        assert(!validate_scene_shape(s, 0, 0).empty());
+        json_object_put(s);
+    }
+    {
+        json_object* s = json_object_new_object();
+        json_object* wins = json_object_new_array();
+        json_object* w0 = json_object_new_object();
+        json_object_object_add(w0, "id", json_object_new_string("w1"));
+        json_object_object_add(w0, "w", json_object_new_int(100));
+        json_object_object_add(w0, "h", json_object_new_int(100));
+        json_object_array_add(wins, w0);
+        json_object_object_add(s, "windows", wins);
+        assert(!validate_scene_shape(s, 0, 0).empty());
+        json_object_put(s);
+    }
+    {
+        json_object* s = json_object_new_object();
+        json_object* wins = json_object_new_array();
+        json_object* w0 = json_object_new_object();
+        json_object_object_add(w0, "id", json_object_new_string("w1"));
+        json_object_object_add(w0, "sig", json_object_new_string("s1"));
+        json_object_object_add(w0, "w", json_object_new_int(10));
+        json_object_object_add(w0, "h", json_object_new_int(10));
+        json_object_array_add(wins, w0);
+        json_object_object_add(s, "windows", wins);
+        assert(!validate_scene_shape(s, 0, 0).empty());
+        json_object_put(s);
+    }
+    // Bindings: aliases, disagree combos, bounds.
+    assert(!validate_binding_shape(nullptr).empty());
+    {
+        json_object* b = json_object_new_object();
+        assert(!validate_binding_shape(b).empty());
+        json_object_object_add(b, "wall", json_object_new_string("w1"));
+        json_object_object_add(b, "node_id", json_object_new_string("n1"));
+        assert(validate_binding_shape(b).empty());
+        json_object_object_add(b, "node", json_object_new_string("n2"));
+        assert(validate_binding_shape(b).empty());
+        json_object_put(b);
+    }
+    {
+        json_object* b = json_object_new_object();
+        json_object_object_add(b, "wallId", json_object_new_string("w1"));
+        json_object_object_add(b, "nodeId", json_object_new_string("n1"));
+        json_object_object_add(b, "output", json_object_new_boolean(1));
+        assert(!validate_binding_shape(b).empty());
+        json_object_put(b);
+    }
+    {
+        json_object* b = json_object_new_object();
+        json_object_object_add(b, "wallId", json_object_new_string("w1"));
+        json_object_object_add(b, "nodeId", json_object_new_string("n1"));
+        json_object_object_add(b, "outputPort", json_object_new_array());
+        assert(!validate_binding_shape(b).empty());
+        json_object_put(b);
+    }
+    {
+        json_object* b = json_object_new_object();
+        json_object_object_add(b, "wallId", json_object_new_string("w1"));
+        json_object_object_add(b, "nodeId", json_object_new_string("n1"));
+        json_object_object_add(b, "port", json_object_new_string("3"));
+        assert(!validate_binding_shape(b).empty());
+        json_object_put(b);
+    }
+    {
+        json_object* b = json_object_new_object();
+        json_object_object_add(b, "wallId", json_object_new_string("w1"));
+        json_object_object_add(b, "nodeId", json_object_new_string("n1"));
+        json_object_object_add(b, "output", json_object_new_string(""));
+        assert(!validate_binding_shape(b).empty());
+        json_object_put(b);
+    }
+    {
+        json_object* b = json_object_new_object();
+        json_object_object_add(b, "wallId", json_object_new_string("w1"));
+        json_object_object_add(b, "nodeId", json_object_new_string("n1"));
+        json_object_object_add(b, "port", json_object_new_int(0));
+        assert(!validate_binding_shape(b).empty());
+        json_object_put(b);
+    }
+    {
+        json_object* b = json_object_new_object();
+        json_object_object_add(b, "wallId", json_object_new_string("w1"));
+        json_object_object_add(b, "nodeId", json_object_new_string("n1"));
+        json_object_object_add(b, "output", json_object_new_string("HDMI-1"));
+        json_object_object_add(b, "outputPort", json_object_new_string("HDMI-1"));
+        assert(validate_binding_shape(b).empty());
+        json_object_object_add(b, "sig", json_object_new_string(std::string(129, 's').c_str()));
+        assert(!validate_binding_shape(b).empty());
+        json_object_put(b);
+    }
+    {
+        json_object* b = json_object_new_object();
+        json_object_object_add(b, "wallId", json_object_new_string("w1"));
+        json_object_object_add(b, "nodeId", json_object_new_string("n1"));
+        json_object_object_add(b, "output", json_object_new_int(3));
+        json_object_object_add(b, "port", json_object_new_int(3));
+        assert(validate_binding_shape(b).empty());
+        json_object_put(b);
+    }
+    assert(binding_output_of(nullptr).empty());
+    assert(binding_sig_of(nullptr).empty());
+    {
+        json_object* b = json_object_new_object();
+        json_object_object_add(b, "output", json_object_new_int(5));
+        assert(binding_output_of(b) == "5");
+        json_object_object_add(b, "output", json_object_new_int(0));
+        assert(binding_output_of(b).empty());
+        json_object_put(b);
+    }
+    {
+        json_object* b = json_object_new_object();
+        json_object_object_add(b, "outputPort", json_object_new_string("HDMI-2"));
+        assert(binding_output_of(b) == "HDMI-2");
+        json_object_put(b);
+    }
+    {
+        json_object* b = json_object_new_object();
+        json_object_object_add(b, "outputPort", json_object_new_int(4));
+        assert(binding_output_of(b) == "4");
+        json_object_put(b);
+    }
+    {
+        json_object* b = json_object_new_object();
+        json_object_object_add(b, "port", json_object_new_int(6));
+        assert(binding_output_of(b) == "6");
+        json_object_put(b);
+    }
+    // Whitelist aliases and ceilings.
+    assert(!validate_whitelist_shape(nullptr).empty());
+    {
+        json_object* w = json_object_new_object();
+        json_object_object_add(w, "id", json_object_new_string("s1"));
+        json_object_object_add(w, "mcast_ip", json_object_new_string("239.0.0.1"));
+        json_object_object_add(w, "mcast_port", json_object_new_int(5000));
+        assert(validate_whitelist_shape(w).empty());
+        json_object_put(w);
+    }
+    {
+        json_object* w = json_object_new_object();
+        json_object_object_add(w, "sig", json_object_new_string("s1"));
+        json_object_object_add(w, "address", json_object_new_string("239.0.0.1"));
+        json_object_object_add(w, "port", json_object_new_int(0));
+        assert(validate_whitelist_shape(w).empty());
+        json_object_put(w);
+    }
+    {
+        json_object* w = json_object_new_object();
+        json_object_object_add(w, "sig", json_object_new_string("s1"));
+        json_object_object_add(w, "address", json_object_new_string("239.0.0.1"));
+        json_object_object_add(w, "codec", json_object_new_string("HEVC"));
+        assert(validate_whitelist_shape(w).empty());
+        json_object_object_add(w, "codec", json_object_new_string("vp9"));
+        assert(!validate_whitelist_shape(w).empty());
+        json_object_put(w);
+    }
+    {
+        json_object* w = json_object_new_object();
+        json_object_object_add(w, "sig", json_object_new_string("s1"));
+        json_object_object_add(w, "address", json_object_new_string("239.0.0.1"));
+        json_object_object_add(w, "width", json_object_new_int(0));
+        assert(!validate_whitelist_shape(w).empty());
+        json_object_object_add(w, "width", json_object_new_string("x"));
+        assert(!validate_whitelist_shape(w).empty());
+        json_object_put(w);
+    }
+    {
+        json_object* w = json_object_new_object();
+        json_object_object_add(w, "sig", json_object_new_string("s1"));
+        json_object_object_add(w, "address", json_object_new_string("239.0.0.1"));
+        json_object_object_add(w, "fps", json_object_new_double(29.97));
+        assert(validate_whitelist_shape(w).empty());
+        json_object_object_add(w, "fps", json_object_new_string("60"));
+        assert(!validate_whitelist_shape(w).empty());
+        json_object_object_add(w, "fps", json_object_new_int(0));
+        assert(!validate_whitelist_shape(w).empty());
+        json_object_object_add(w, "fps", json_object_new_int(121));
+        assert(!validate_whitelist_shape(w).empty());
+        json_object_put(w);
+    }
+    {
+        json_object* w = json_object_new_object();
+        json_object_object_add(w, "sig", json_object_new_string("s1"));
+        json_object_object_add(w, "address", json_object_new_string("239.0.0.1"));
+        json_object_object_add(w, "bitrate", json_object_new_int(4000));
+        assert(validate_whitelist_shape(w).empty());
+        json_object_object_add(w, "bitrate", json_object_new_int(0));
+        assert(!validate_whitelist_shape(w).empty());
+        json_object_put(w);
+    }
+    {
+        json_object* w = json_object_new_object();
+        json_object_object_add(w, "sig", json_object_new_string("s1"));
+        json_object_object_add(w, "address", json_object_new_string("239.0.0.1"));
+        json_object_object_add(w, "gop", json_object_new_int(30));
+        assert(validate_whitelist_shape(w).empty());
+        json_object_object_add(w, "gop", json_object_new_int(601));
+        assert(!validate_whitelist_shape(w).empty());
+        json_object_put(w);
+    }
+    // Playback aliases and full status set.
+    assert(!validate_playback_shape(nullptr).empty());
+    {
+        json_object* t = json_object_new_object();
+        json_object_object_add(t, "wall", json_object_new_string("w"));
+        json_object_object_add(t, "scene", json_object_new_string("s"));
+        json_object_object_add(t, "node", json_object_new_string("n"));
+        assert(validate_playback_shape(t).empty());
+        static const char* kStates[] = {"pending_check", "pending_execution",
+                                        "executing", "playing", "succeeded",
+                                        "failed", "cancelled", "expired"};
+        for (auto st : kStates) {
+            json_object_object_add(t, "status", json_object_new_string(st));
+            assert(validate_playback_shape(t).empty());
+        }
+        json_object_put(t);
+    }
+    // Hash and dirty-compare branches.
+    {
+        json_object* e1 = json_object_new_array();
+        json_object* e2 = json_object_new_array();
+        assert(layout_windows_hash(e1) == layout_windows_hash(e2));
+        assert(layout_windows_hash(nullptr) == layout_windows_hash(nullptr));
+        json_object_put(e1);
+        json_object_put(e2);
+    }
+    {
+        json_object* o = json_object_new_object();
+        json_object_object_add(o, "a", json_object_new_int(1));
+        assert(layout_windows_hash(o) == layout_windows_hash(o));
+        json_object_put(o);
+    }
+    {
+        json_object* a = json_object_new_array();
+        json_object* d = layout_dirty_compare(a, 80, a, 50);
+        json_object* dv = nullptr;
+        assert(json_object_object_get_ex(d, "dirty", &dv) && json_object_get_boolean(dv));
+        json_object* diff = nullptr;
+        assert(json_object_object_get_ex(d, "diff", &diff));
+        assert(json_object_array_length(diff) == 1);
+        json_object_put(d);
+        json_object_put(a);
+    }
+    {
+        json_object* d = layout_dirty_compare(nullptr, 80, nullptr, 80);
+        json_object* dv = nullptr;
+        assert(json_object_object_get_ex(d, "dirty", &dv) && !json_object_get_boolean(dv));
+        json_object_put(d);
+    }
+    // wall_is_deleted variants.
+    assert(!wall_is_deleted(nullptr));
+    {
+        json_object* w = json_object_new_object();
+        json_object_object_add(w, "deletedAt", json_object_new_string("2024-01-01T00:00:00Z"));
+        assert(wall_is_deleted(w));
+        json_object_put(w);
+    }
+    {
+        json_object* w = json_object_new_object();
+        json_object_object_add(w, "deletedAt", json_object_new_int(123));
+        assert(wall_is_deleted(w));
+        json_object_put(w);
+    }
+    {
+        json_object* w = json_object_new_object();
+        json_object_object_add(w, "deletedAt", json_object_new_int(0));
+        assert(!wall_is_deleted(w));
+        json_object_put(w);
+    }
+    {
+        json_object* w = json_object_new_object();
+        json_object_object_add(w, "deletedAt", json_object_new_string(""));
+        assert(!wall_is_deleted(w));
+        json_object_put(w);
+    }
+    // base_subrect degenerate inputs.
+    assert(!base_subrect(0, 1080, Rect{0, 0, 100, 100}, nullptr));
+    assert(!base_subrect(1920, 1080, Rect{0, 0, 0, 100}, nullptr));
+    {
+        Rect sub{};
+        assert(base_subrect(1920, 1080, Rect{-100, -50, 300, 200}, &sub));
+        assert(sub.x == 0 && sub.y == 0 && sub.w == 200 && sub.h == 150);
+    }
+    assert(base_subrect(1920, 1080, Rect{0, 0, 1920, 1080}, nullptr));
+    // Env-driven knobs with save/restore.
+    {
+        const char* old = getenv("DVS_PTP_MAX_OFFSET_US");
+        std::string keep = old ? old : "";
+        bool had = old != nullptr;
+        setenv("DVS_PTP_MAX_OFFSET_US", "500", 1);
+        assert(ptp_max_offset_us() == 500);
+        setenv("DVS_PTP_MAX_OFFSET_US", "abc", 1);
+        assert(ptp_max_offset_us() == 2000);
+        setenv("DVS_PTP_MAX_OFFSET_US", "", 1);
+        assert(ptp_max_offset_us() == 2000);
+        restore_env("DVS_PTP_MAX_OFFSET_US", keep, had);
+    }
+    {
+        const char* old = getenv("DVS_FANOUT_PARALLEL");
+        std::string keep = old ? old : "";
+        bool had = old != nullptr;
+        setenv("DVS_FANOUT_PARALLEL", "0", 1);
+        assert(fanout_parallelism() == 1);
+        setenv("DVS_FANOUT_PARALLEL", "999", 1);
+        assert(fanout_parallelism() == 16);
+        setenv("DVS_FANOUT_PARALLEL", "", 1);
+        assert(fanout_parallelism() == 8);
+        restore_env("DVS_FANOUT_PARALLEL", keep, had);
+    }
+    {
+        const char* old = getenv("DVS_MAX_WALL_MEMBERS");
+        std::string keep = old ? old : "";
+        bool had = old != nullptr;
+        setenv("DVS_MAX_WALL_MEMBERS", "64", 1);
+        assert(max_wall_members() == 64);
+        setenv("DVS_MAX_WALL_MEMBERS", "0", 1);
+        assert(max_wall_members() == 128);
+        setenv("DVS_MAX_WALL_MEMBERS", "", 1);
+        assert(max_wall_members() == 128);
+        restore_env("DVS_MAX_WALL_MEMBERS", keep, had);
+    }
+    // Clock gate branches.
+    {
+        std::string reason;
+        assert(!node_clock_ok(nullptr, nullptr));
+        json_object* n = json_object_new_object();
+        assert(!node_clock_ok(n, &reason));
+        json_object_object_add(n, "online", json_object_new_boolean(1));
+        json_object_object_add(n, "role", json_object_new_string("input"));
+        assert(!node_clock_ok(n, &reason));
+        json_object_object_add(n, "role", json_object_new_string("output"));
+        json_object* clk = json_object_new_object();
+        json_object_object_add(clk, "state", json_object_new_string("synced"));
+        json_object_object_add(n, "clock", clk);
+        assert(node_clock_ok(n, &reason));
+        json_object_put(n);
+    }
+    {
+        std::string reason;
+        json_object* n = json_object_new_object();
+        json_object_object_add(n, "online", json_object_new_boolean(1));
+        json_object* m = json_object_new_object();
+        json_object* p = json_object_new_object();
+        json_object_object_add(p, "state", json_object_new_string("synced"));
+        json_object_object_add(m, "ptp", p);
+        json_object_object_add(n, "metrics", m);
+        assert(node_clock_ok(n, &reason));
+        json_object_put(n);
+    }
+    {
+        const char* old = getenv("DVS_PTP_MAX_OFFSET_US");
+        std::string keep = old ? old : "";
+        bool had = old != nullptr;
+        unsetenv("DVS_PTP_MAX_OFFSET_US");
+        std::string reason;
+        json_object* n = json_object_new_object();
+        json_object_object_add(n, "online", json_object_new_boolean(1));
+        json_object* ptp = json_object_new_object();
+        json_object_object_add(ptp, "state", json_object_new_string("synced"));
+        json_object_object_add(ptp, "offsetUs", json_object_new_int(5000));
+        json_object_object_add(n, "ptp", ptp);
+        assert(!node_clock_ok(n, &reason));
+        json_object* ptp2 = json_object_new_object();
+        json_object_object_add(ptp2, "state", json_object_new_string("holdover"));
+        json_object_object_add(n, "ptp", ptp2);
+        assert(!node_clock_ok(n, &reason));
+        json_object* bad = json_object_new_string("x");
+        json_object_object_add(n, "ptp", bad);
+        assert(!node_clock_ok(n, &reason));
+        json_object_put(n);
+        restore_env("DVS_PTP_MAX_OFFSET_US", keep, had);
+    }
+    // Barrier helpers: remaining input shapes.
+    {
+        json_object* o = json_object_new_object();
+        assert(barrier_lanes_ready(o));
+        json_object_put(o);
+    }
+    {
+        json_object* lanes = json_object_new_array();
+        json_object* e = json_object_new_object();
+        json_object_array_add(lanes, e);
+        assert(barrier_lanes_ready(lanes));
+        json_object_array_add(lanes, json_object_new_int(1));
+        assert(barrier_lanes_ready(lanes));
+        json_object_put(lanes);
+    }
+    {
+        int64_t seq = 0;
+        assert(barrier_lanes_frame_consistent(nullptr, &seq) && seq == 0);
+        json_object* o = json_object_new_object();
+        assert(barrier_lanes_frame_consistent(o, nullptr));
+        json_object_put(o);
+    }
+    {
+        json_object* lanes = json_object_new_array();
+        json_object* a = json_object_new_object();
+        json_object_object_add(a, "frame_seq", json_object_new_int(4));
+        json_object_array_add(lanes, a);
+        json_object* b = json_object_new_object();
+        json_object_object_add(b, "frame", json_object_new_int(4));
+        json_object_array_add(lanes, b);
+        int64_t seq = 0;
+        assert(barrier_lanes_frame_consistent(lanes, &seq) && seq == 4);
+        json_object* c = json_object_new_object();
+        json_object_array_add(lanes, c);
+        assert(barrier_lanes_frame_consistent(lanes, nullptr));
+        json_object_array_add(lanes, json_object_new_int(9));
+        assert(barrier_lanes_frame_consistent(lanes, nullptr));
+        json_object_put(lanes);
+    }
+    {
+        json_object* lanes = json_object_new_array();
+        json_object* a = json_object_new_object();
+        json_object_object_add(a, "frameSeq", json_object_new_int(11));
+        json_object_array_add(lanes, a);
+        int64_t seq = 0;
+        assert(barrier_lanes_frame_consistent(lanes, &seq) && seq == 11);
+        json_object_put(lanes);
+    }
+}
+
 static void test_p2_business_rules() {
     // Binding output dimension + signal reference (P2-1).
     {
@@ -814,6 +1544,225 @@ static void test_wall_ops() {
     json_object_put(rec);
 }
 
+static void test_ops_gaps() {
+    // find_committed skips unsettled and snapshot-less ops.
+    {
+        OpCoordinator c;
+        assert(c.find_committed(9) == nullptr);
+        c.begin("op-ns", 9, {"a"}, 0);
+        assert(c.find_committed(9) == nullptr);
+        c.on_reply("op-ns", "a", true, "ready");
+        assert(c.find_committed(9) == nullptr);
+        if (Operation* m = c.mutable_find("op-ns")) {
+            m->windows_json = "[]";
+            m->wall_w = 0;
+            m->wall_h = 0;
+        }
+        assert(c.find_committed(9) == nullptr);
+    }
+    // gc keeps preparing ops and ageless terminal ops.
+    {
+        OpCoordinator c;
+        c.begin("op-prep", 1, {"a"}, 0);
+        c.begin_with_deadline("op-old", 2, {"a"}, 0, 0);
+        c.on_reply("op-old", "a", true, "ready");
+        if (Operation* m = c.mutable_find("op-old")) m->created_ns = 100;
+        assert(c.gc(100000000000ULL, 1000ULL).size() == 1);
+        assert(c.find("op-old") == nullptr);
+        assert(c.find("op-prep") != nullptr);
+        assert(c.find("op-prep")->state == "preparing");
+    }
+    // set_deadline on a missing op is a no-op; on a live op it sticks.
+    {
+        OpCoordinator c;
+        c.set_deadline("missing", 5);
+        c.begin("op-dl", 1, {"a"}, 0);
+        c.set_deadline("op-dl", 77);
+        assert(c.find("op-dl")->deadline_ns == 77);
+        assert(c.mutable_find("missing") == nullptr);
+    }
+    // Empty wall id never reports preparing; unknown wall has no revision.
+    {
+        OpCoordinator c;
+        c.begin("op-e", 1, {"a"}, 0);
+        assert(!c.wall_has_preparing("", ""));
+        assert(c.wall_committed_revision("nope") == 0);
+    }
+}
+
+static json_object* mk_win(const char* id, const char* sig, int x, int y,
+                          int w, int h) {
+    json_object* o = json_object_new_object();
+    json_object_object_add(o, "id", json_object_new_string(id));
+    json_object_object_add(o, "sig", json_object_new_string(sig));
+    json_object_object_add(o, "x", json_object_new_int(x));
+    json_object_object_add(o, "y", json_object_new_int(y));
+    json_object_object_add(o, "w", json_object_new_int(w));
+    json_object_object_add(o, "h", json_object_new_int(h));
+    return o;
+}
+static int jget(json_object* o, const char* k) {
+    json_object* v = nullptr;
+    if (o && json_object_object_get_ex(o, k, &v) && v)
+        return json_object_get_int(v);
+    return -9999;
+}
+static std::string jgets(json_object* o, const char* k) {
+    json_object* v = nullptr;
+    if (o && json_object_object_get_ex(o, k, &v) && v &&
+        json_object_is_type(v, json_type_string))
+        return json_object_get_string(v);
+    return "";
+}
+static void restore_env(const char* k, const std::string& keep, bool had) {
+    if (had)
+        setenv(k, keep.c_str(), 1);
+    else
+        unsetenv(k);
+}
+
+static void test_fragment_for_node() {
+    // Null and non-array inputs yield an empty fragment.
+    assert(json_object_array_length(fragment_for_node(nullptr, Rect{0, 0, 1920, 1080})) == 0);
+    {
+        json_object* notarr = json_object_new_object();
+        json_object* f = fragment_for_node(notarr, Rect{0, 0, 1920, 1080});
+        assert(json_object_array_length(f) == 0);
+        json_object_put(f);
+        json_object_put(notarr);
+    }
+    // Single full window on the matching node: no crop, not partial.
+    {
+        json_object* wins = json_object_new_array();
+        json_object* w = mk_win("w1", "s1", 0, 0, 1920, 1080);
+        json_object_object_add(w, "z", json_object_new_int(3));
+        json_object_array_add(wins, w);
+        json_object* f = fragment_for_node(wins, Rect{0, 0, 1920, 1080});
+        assert(json_object_array_length(f) == 1);
+        json_object* e = json_object_array_get_idx(f, 0);
+        assert(jgets(e, "windowId") == "w1" && jgets(e, "sig") == "s1");
+        json_object* dst = nullptr;
+        assert(json_object_object_get_ex(e, "dst", &dst) && dst);
+        assert(jget(dst, "x") == 0 && jget(dst, "y") == 0);
+        assert(jget(dst, "w") == 1920 && jget(dst, "h") == 1080);
+        json_object* src = nullptr;
+        assert(json_object_object_get_ex(e, "src", &src) && src);
+        assert(jget(src, "x") == 0 && jget(src, "y") == 0);
+        assert(jget(src, "w") == 1920 && jget(src, "h") == 1080);
+        assert(jget(e, "fullW") == 1920 && jget(e, "fullH") == 1080);
+        json_object* pv = nullptr;
+        assert(json_object_object_get_ex(e, "partial", &pv) && !json_object_get_boolean(pv));
+        assert(jget(e, "z") == 3);
+        json_object* mv = nullptr;
+        assert(!json_object_object_get_ex(e, "muted", &mv));
+        json_object_put(f);
+        json_object_put(wins);
+    }
+    // Cross-node window splits into per-node crops with full-frame dims.
+    {
+        json_object* wins = json_object_new_array();
+        json_object* w = mk_win("w2", "s9", 0, 0, 3840, 1080);
+        json_object_object_add(w, "muted", json_object_new_boolean(1));
+        json_object_array_add(wins, w);
+        json_object* left = fragment_for_node(wins, Rect{0, 0, 1920, 1080});
+        json_object* right = fragment_for_node(wins, Rect{1920, 0, 1920, 1080});
+        assert(json_object_array_length(left) == 1);
+        assert(json_object_array_length(right) == 1);
+        json_object* l = json_object_array_get_idx(left, 0);
+        json_object* r = json_object_array_get_idx(right, 0);
+        json_object* pv = nullptr;
+        assert(json_object_object_get_ex(l, "partial", &pv) && json_object_get_boolean(pv));
+        assert(json_object_object_get_ex(r, "partial", &pv) && json_object_get_boolean(pv));
+        assert(jget(l, "fullW") == 3840 && jget(l, "fullH") == 1080);
+        json_object* ld = nullptr;
+        assert(json_object_object_get_ex(l, "dst", &ld) && ld);
+        assert(jget(ld, "x") == 0 && jget(ld, "w") == 1920);
+        json_object* ls = nullptr;
+        assert(json_object_object_get_ex(l, "src", &ls) && ls);
+        assert(jget(ls, "x") == 0 && jget(ls, "w") == 1920);
+        json_object* rd = nullptr;
+        assert(json_object_object_get_ex(r, "dst", &rd) && rd);
+        assert(jget(rd, "x") == 0 && jget(rd, "w") == 1920);
+        json_object* rs = nullptr;
+        assert(json_object_object_get_ex(r, "src", &rs) && rs);
+        assert(jget(rs, "x") == 1920 && jget(rs, "w") == 1920);
+        json_object* mv = nullptr;
+        assert(json_object_object_get_ex(r, "muted", &mv) && json_object_get_boolean(mv));
+        json_object_put(left);
+        json_object_put(right);
+        json_object_put(wins);
+    }
+    // No overlap, degenerate rects and non-object elements are skipped.
+    {
+        json_object* wins = json_object_new_array();
+        json_object_array_add(wins, mk_win("far", "s1", 5000, 0, 100, 100));
+        json_object_array_add(wins, mk_win("flat", "s1", 0, 0, 0, 100));
+        json_object_array_add(wins, json_object_new_int(7));
+        json_object* f = fragment_for_node(wins, Rect{0, 0, 1920, 1080});
+        assert(json_object_array_length(f) == 0);
+        json_object_put(f);
+        json_object_put(wins);
+    }
+}
+
+static void test_p3_barrier_and_scale() {
+    assert(barrier_lanes_ready(nullptr));
+    {
+        json_object* lanes = json_object_new_array();
+        assert(barrier_lanes_ready(lanes));
+        json_object* e = json_object_new_object();
+        json_object_object_add(e, "ready", json_object_new_boolean(0));
+        json_object_array_add(lanes, e);
+        assert(!barrier_lanes_ready(lanes));
+        json_object_put(lanes);
+    }
+    {
+        json_object* lanes = json_object_new_array();
+        json_object* a = json_object_new_object();
+        json_object_object_add(a, "ready", json_object_new_boolean(1));
+        json_object_object_add(a, "frameSeq", json_object_new_int(7));
+        json_object_array_add(lanes, a);
+        json_object* b = json_object_new_object();
+        json_object_object_add(b, "ready", json_object_new_boolean(1));
+        json_object_object_add(b, "frameSeq", json_object_new_int(7));
+        json_object_array_add(lanes, b);
+        int64_t seq = 0;
+        assert(barrier_lanes_frame_consistent(lanes, &seq) && seq == 7);
+        json_object* c = json_object_new_object();
+        json_object_object_add(c, "frameSeq", json_object_new_int(8));
+        json_object_array_add(lanes, c);
+        assert(!barrier_lanes_frame_consistent(lanes, nullptr));
+        json_object_put(lanes);
+    }
+    {
+        json_object* lanes = json_object_new_array();
+        assert(barrier_lanes_frame_consistent(lanes, nullptr));
+        json_object_put(lanes);
+    }
+    assert(fanout_parallelism() >= 1 && fanout_parallelism() <= 16);
+    assert(max_wall_members() >= 1);
+    {
+        OpCoordinator c;
+        c.begin_with_deadline("op-vol", 5, {"a"}, 100, 200);
+        if (Operation* m = c.mutable_find("op-vol")) {
+            m->volume = 42;
+            m->wall_id = "w";
+        }
+        json_object* rec = operation_to_json(*c.find("op-vol"));
+        Operation back;
+        assert(operation_from_json(rec, &back));
+        assert(back.volume == 42);
+        json_object_put(rec);
+        json_object* legacy = json_object_new_object();
+        json_object_object_add(legacy, "opId", json_object_new_string("op-old"));
+        json_object_object_add(legacy, "state", json_object_new_string("preparing"));
+        Operation old;
+        assert(operation_from_json(legacy, &old));
+        assert(old.volume == 80);
+        json_object_put(legacy);
+    }
+}
+
 int main() {
     test_layout_cell_grid();
     test_layout_apply_at();
@@ -823,10 +1772,15 @@ int main() {
     test_ops_persistence();
     test_store();
     test_contract();
+    test_contract_gaps();
     test_ws_codec();
     test_business_rules();
     test_p2_business_rules();
     test_wall_ops();
+    test_ops_gaps();
+    test_fragment_for_node();
+    test_validation_gaps();
+    test_p3_barrier_and_scale();
     test_common();
 
     printf("dvs_platform_basic OK\n");

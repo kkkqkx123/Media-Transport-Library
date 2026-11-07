@@ -133,6 +133,185 @@ static void test_tx_streams_dual(void) {
     CHECK(file_playout_tx_streams_validate(streams, 2) < 0, "tx duplicate port");
 }
 
+static void test_pip_srccrop(void) {
+    file_playout_pip_stream streams[1] = {
+        {
+            .main = true,
+            .sip = "239.0.0.1",
+            .udp_port = 5000,
+            .width = 3840,
+            .height = 1080,
+            .fps = 60.0f,
+            .x = 0,
+            .y = 0,
+            .w = 960,
+            .h = 540,
+            .src_x = 1920,
+            .src_y = 0,
+            .src_w = 1920,
+            .src_h = 1080,
+        },
+    };
+    CHECK(file_playout_pip_validate(streams, 1, 1920, 1080) == 0,
+          "partial crop validates");
+    display_layout lay;
+    CHECK(display_layout_from_pip_streams(streams, 1, 1920, 1080, &lay) == 1,
+          "cropped single builds one layer");
+    CHECK(lay.layers[0].src_x == 1920 && lay.layers[0].src_w == 1920,
+          "crop reaches the plane source rect");
+    CHECK(lay.layers[0].src_y == 0 && lay.layers[0].src_h == 1080,
+          "crop height passes through");
+    CHECK(lay.layers[0].dst_w == 960 && lay.layers[0].dst_h == 540,
+          "target rect untouched by crop");
+    CHECK(!lay.fullscreen && lay.compositor, "cropped single uses compositor");
+}
+
+static void test_pip_reject(void) {
+    display_layout lay;
+    CHECK(display_layout_from_pip_streams(NULL, 1, 1920, 1080, &lay) < 0,
+          "null streams rejected");
+    CHECK(display_layout_from_pip_streams(NULL, 0, 1920, 1080, NULL) < 0,
+          "null out rejected");
+    file_playout_pip_stream base = {
+        .main = true,
+        .sip = "239.0.0.1",
+        .udp_port = 5000,
+        .width = 1920,
+        .height = 1080,
+        .fps = 60.0f,
+        .x = 0,
+        .y = 0,
+        .w = 1920,
+        .h = 1080,
+    };
+    CHECK(file_playout_pip_validate(NULL, 1, 1920, 1080) < 0, "null rejected");
+    CHECK(file_playout_pip_validate(&base, 0, 1920, 1080) < 0, "empty rejected");
+    CHECK(file_playout_pip_validate(&base, MP4_PIP_MAX_LANES + 1, 1920, 1080) < 0,
+          "over lane cap rejected");
+    {
+        file_playout_pip_stream s = base;
+        s.sip[0] = '\0';
+        CHECK(file_playout_pip_validate(&s, 1, 1920, 1080) < 0, "missing sip rejected");
+    }
+    {
+        file_playout_pip_stream s = base;
+        s.udp_port = 0;
+        CHECK(file_playout_pip_validate(&s, 1, 1920, 1080) < 0, "missing port rejected");
+    }
+    {
+        file_playout_pip_stream s = base;
+        s.width = 0;
+        CHECK(file_playout_pip_validate(&s, 1, 1920, 1080) < 0, "zero width rejected");
+    }
+    {
+        file_playout_pip_stream s = base;
+        s.fps = 0.0f;
+        CHECK(file_playout_pip_validate(&s, 1, 1920, 1080) < 0, "zero fps rejected");
+    }
+    {
+        file_playout_pip_stream s = base;
+        s.w = 200;
+        s.h = 200;
+        s.x = 1800;
+        s.y = 900;
+        CHECK(file_playout_pip_validate(&s, 1, 1920, 1080) < 0,
+              "rect outside mode rejected");
+    }
+    {
+        file_playout_pip_stream s = base;
+        s.src_x = 1800;
+        s.src_w = 200;
+        CHECK(file_playout_pip_validate(&s, 1, 1920, 1080) < 0,
+              "crop overflowing the frame rejected");
+    }
+    {
+        file_playout_pip_stream s = base;
+        s.src_y = -1;
+        CHECK(file_playout_pip_validate(&s, 1, 1920, 1080) < 0,
+              "negative crop origin rejected");
+    }
+    {
+        file_playout_pip_stream pair[2] = {base, base};
+        pair[1].main = false;
+        pair[1].x = 100;
+        CHECK(file_playout_pip_validate(pair, 2, 1920, 1080) < 0,
+              "duplicate sip:port rejected");
+    }
+    {
+        file_playout_pip_stream pair[2] = {base, base};
+        CHECK(file_playout_pip_validate(pair, 2, 1920, 1080) < 0,
+              "two mains rejected");
+    }
+    {
+        /* Zero w/h crop falls back to the full frame per axis. */
+        file_playout_pip_stream s = base;
+        s.src_w = 0;
+        s.src_h = 0;
+        display_layout l2;
+        CHECK(display_layout_from_pip_streams(&s, 1, 1920, 1080, &l2) == 1,
+              "zero crop builds");
+        CHECK(l2.layers[0].src_w == 1920 && l2.layers[0].src_h == 1080,
+              "zero crop resolves to full frame");
+    }
+}
+
+static void test_pip_fullscreen_single(void) {
+    file_playout_pip_stream streams[1] = {
+        {
+            .main = true,
+            .sip = "239.0.0.1",
+            .udp_port = 5000,
+            .width = 1920,
+            .height = 1080,
+            .fps = 60.0f,
+            .x = 0,
+            .y = 0,
+            .w = 1920,
+            .h = 1080,
+        },
+    };
+    display_layout lay;
+    CHECK(display_layout_from_pip_streams(streams, 1, 1920, 1080, &lay) == 1,
+          "fullscreen single builds");
+    CHECK(lay.fullscreen && !lay.compositor, "fullscreen bypasses compositor");
+    CHECK(lay.layers[0].plane_id == 57, "fullscreen keeps plane 57");
+}
+
+static void test_tx_streams_reject(void) {
+    CHECK(file_playout_tx_streams_validate(NULL, 1) < 0, "tx null rejected");
+    file_playout_tx_stream base = {
+        .main = true,
+        .mp4_file = "a.mp4",
+        .udp_port = 20000,
+        .width = 1920,
+        .height = 1080,
+        .fps = 24.0f,
+    };
+    CHECK(file_playout_tx_streams_validate(&base, 0) < 0, "tx empty rejected");
+    CHECK(file_playout_tx_streams_validate(&base, MP4_PIP_MAX_LANES + 1) < 0,
+          "tx over lane cap rejected");
+    {
+        file_playout_tx_stream s = base;
+        s.mp4_file[0] = '\0';
+        CHECK(file_playout_tx_streams_validate(&s, 1) < 0, "tx missing file rejected");
+    }
+    {
+        file_playout_tx_stream s = base;
+        s.main = false;
+        CHECK(file_playout_tx_streams_validate(&s, 1) < 0, "tx zero mains rejected");
+    }
+    {
+        file_playout_tx_stream pair[2] = {base, base};
+        pair[1].udp_port = 20010;
+        CHECK(file_playout_tx_streams_validate(pair, 2) < 0, "tx two mains rejected");
+    }
+    {
+        file_playout_tx_stream s = base;
+        s.height = 0;
+        CHECK(file_playout_tx_streams_validate(&s, 1) < 0, "tx zero height rejected");
+    }
+}
+
 int main(void) {
     printf("test_display_layout\n");
     test_defaults();
@@ -141,7 +320,11 @@ int main(void) {
     test_invalid_fallback();
     test_pip_dual();
     test_pip_no_main();
+    test_pip_srccrop();
+    test_pip_reject();
+    test_pip_fullscreen_single();
     test_tx_streams_dual();
+    test_tx_streams_reject();
     printf("result: %d failed\n", g_failed);
     return g_failed ? 1 : 0;
 }

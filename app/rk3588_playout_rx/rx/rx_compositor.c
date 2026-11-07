@@ -600,11 +600,8 @@ int rx_compositor_try_fast_apply(rx_compositor* comp,
         if (strncmp(a->sip, b->sip, sizeof(a->sip)) != 0) return 1;
         if (a->udp_port != b->udp_port) return 1;
         if (a->width != b->width || a->height != b->height) return 1;
-        /* A crop change can only come with a source-size change today (full
-         * frame is the only accepted crop), but compare anyway so a future
-         * crop render path never silently keeps stale planes. */
-        if (a->src_x != b->src_x || a->src_y != b->src_y ||
-            a->src_w != b->src_w || a->src_h != b->src_h) return 1;
+        /* Source crop is a plane attribute consumed per frame, so it rides
+         * the fast layout update below instead of forcing a rebuild. */
     }
     int mode_w = comp->layout.mode_w;
     int mode_h = comp->layout.mode_h;

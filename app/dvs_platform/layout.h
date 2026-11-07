@@ -51,8 +51,25 @@ bool wall_is_deleted(json_object* wall);
 // Sub-image descriptor rect: intersection of the wall canvas with the node
 // canvas. Returns false when there is no overlap or inputs are degenerate.
 bool base_subrect(int wall_w, int wall_h, const Rect& node, Rect* out);
+// Intersect the global flat window set (wall pixels: id/sig/x/y/w/h/z/muted)
+// against one node's canvas rect and produce the node-local flat window list:
+// windowId/sig/dst/src/fullW/fullH/partial/z/muted, where dst is the
+// node-local target rect and src the source crop relative to the window
+// origin (window rect maps 1:1 onto the signal frame). Caller owns the
+// returned array. Pure pixel math; node never rounds (platform owns rounding).
+json_object* fragment_for_node(json_object* windows, const Rect& node);
 // Clock gate: max tolerable PTP offset in microseconds (env override).
 int ptp_max_offset_us();
 // Node qualification for fanout: online, role output, clock synced within
 // threshold. Missing clock summary means unknown and unqualified.
 bool node_clock_ok(json_object* node, std::string* reason);
+// Barrier ack lane readiness: every present lane must be ready. A missing
+// ready flag counts as ready; a missing or empty array counts as ready.
+bool barrier_lanes_ready(json_object* lanes);
+// Barrier ack frame self-consistency: lanes carrying a frame sequence must
+// agree within one ack. No sequence fields means unknown and passes.
+bool barrier_lanes_frame_consistent(json_object* lanes, int64_t* seq_out);
+// Fanout sharding for large walls (env override, clamped to a sane range).
+int fanout_parallelism();
+// Largest accepted wall membership (env override, at least one).
+int max_wall_members();

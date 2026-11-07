@@ -89,3 +89,12 @@ private:
     long long err_ms_ = 0;
     std::string last_code_;
 };
+
+/* Translate a platform sub-layout (flat windows with windowId/sig/dst/src/z/
+ * muted/partial plus full-frame dims, an endpoint table, audio owner and
+ * scene volume) into the engine "streams" prepare payload. Returns false on a
+ * whole-order rejection (signal not in the endpoint table or over the lane
+ * cap); on success *prep_out holds the payload with lanes assigned by z
+ * ascending, ties in array order. Pure JSON logic, no socket. */
+bool translate_platform_layout(json_object* body, json_object** prep_out,
+                               std::string& err_out);

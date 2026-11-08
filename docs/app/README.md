@@ -13,6 +13,9 @@
 | [`dvs_agent_frontend_mapping.md`](./dvs_agent_frontend_mapping.md) | dvs_agent 本机前端（node-admin）功能映射到 dvs / rk3588 app 功能的分析 |
 | [`dvs_platform_frontend_mapping.md`](./dvs_platform_frontend_mapping.md) | dvs_platform 平台前端功能映射到 dvs / rk3588 app 功能的分析 |
 | [`dvs_node_analysis.md`](./dvs_node_analysis.md) | `dvs_media` / `dvs_agent` 功能现状与 `docs/req` 需求差距分析；IPC 方式评估与网络通信（平台 WSS 注册心跳）补充建议 |
+| [`dvs_media.md`](./dvs_media.md) | `dvs_media` 节点媒体引擎功能分析：input/output 角色、IPC prepare/commit 状态机、帧锚定提交、准入/音频仲裁/TX 会话与能力上报 |
+| [`dvs_agent.md`](./dvs_agent.md) | `dvs_agent` 节点代理功能分析：注册/心跳与 WS 通道、六 scope 配置状态机、平台布局翻译、维护操作与安全门 |
+| [`dvs_platform.md`](./dvs_platform.md) | `dvs_platform` 平台服务功能分析：布局像素拆分、OpCoordinator 跨节点屏障与回退、升级与退役墓碑 |
 
 ## 依赖分析
 
@@ -29,8 +32,9 @@
   timer、codec_plugin.h、pipeline_common.h），`end2end` 与 `file_playout` 已引用。C/D 档
   （drm_renderer、mpp_decoder、drm_mode、display_layout、ptp_time 等）与 end2end 增量
   （dma_allocator、rga_converter、mtl_rx_bridge 等）的合并**尚未完成**。`dvs_media`
-  当前直接经 `meson.build` 复用 `rk3588_playout_rx/shared/` 与 `rk3588_playout_rx/rx/` 的
-  副本（即 S0 规划的 fallback 路径），并接受与 `file_playout` 的耦合；公共库收敛见
-  `docs/plan/DVS_REMAINING_TASKS.md` T5。修改时注意 `file_playout` 侧与 `dvs_media` 侧的同步。
+  当前经 `meson.build` **in-tree 编译直接复用** `rk3588_playout_rx` 的 `rx/`、`shared/`（含
+  `mp4_demux`、`extradata_handler`）与 `rk3588_common`（非拷贝）；input 角色数据面经
+  `engine/tx_backend_live_ingest.c` 复用 `rk3588_live_tx` 的 donor 链。修改这两个应用的这些
+  目录会直接影响 dvs_media 的构建与行为。
 - 单测位于各自 `tests/` 目录；`file_playout` 另有 Python 日志校验脚本与单板/双板
   验证脚本。

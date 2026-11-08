@@ -44,6 +44,23 @@ std::string validate_base_image(json_object* doc);
 std::string binding_output_of(json_object* doc);
 // Optional binding signal reference (sig/signalId). Empty when absent.
 std::string binding_sig_of(json_object* doc);
+// Wall canvas pixels: wall_px_w/h preferred, w/h fallback, then the
+// colPixels/rowPixels sums. Pure JSON read, no store access.
+void wall_px_of(json_object* wall, int* w, int* h);
+// Wall output frame rate, default 60 when absent or non-positive.
+double wall_fps_of(json_object* wall);
+// Binding reference fields. Empty when absent.
+std::string binding_wall_of(json_object* doc);
+std::string binding_node_of(json_object* doc);
+std::string binding_cell_of(json_object* doc);
+// Whitelist address/port pair. Port defaults to 0 (caller maps to default).
+void whitelist_addr_port(json_object* doc, std::string* addr, int* port);
+// Playback task status value. Empty when absent.
+std::string playback_status_of(json_object* doc);
+// Playback status transition gate. Returns true when from -> to is legal.
+bool playback_transition_ok(const std::string& from, const std::string& to);
+// Whether the status counts as an active (node-occupying) playback.
+bool playback_active_status(const std::string& st);
 // First free (address, port) in the platform multicast pool, skipping the
 // used pairs. want_port > 0 pins the port, 0 selects the default port.
 // Returns false when the pool is exhausted or the port is out of range.

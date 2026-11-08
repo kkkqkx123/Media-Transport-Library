@@ -833,3 +833,84 @@ int max_wall_members() {
     int n = atoi(v);
     return n > 0 ? n : 128;
 }
+
+void wall_px_of(json_object* wall, int* w, int* h) {
+    int ww = 0, hh = 0;
+    if (wall) {
+        ww = rect_int(wall, "wall_px_w");
+        hh = rect_int(wall, "wall_px_h");
+        if (ww <= 0) ww = rect_int(wall, "w");
+        if (hh <= 0) hh = rect_int(wall, "h");
+        json_object* rp = nullptr;
+        json_object* cp = nullptr;
+        if (ww <= 0 && json_object_object_get_ex(wall, "colPixels", &cp) && cp &&
+            json_object_is_type(cp, json_type_array)) {
+            for (size_t i = 0; i < (size_t)json_object_array_length(cp); i++)
+                ww += json_object_get_int(json_object_array_get_idx(cp, (int)i));
+        }
+        if (hh <= 0 && json_object_object_get_ex(wall, "rowPixels", &rp) && rp &&
+            json_object_is_type(rp, json_type_array)) {
+            for (size_t i = 0; i < (size_t)json_object_array_length(rp); i++)
+                hh += json_object_get_int(json_object_array_get_idx(rp, (int)i));
+        }
+    }
+    if (w) *w = ww;
+    if (h) *h = hh;
+}
+
+double wall_fps_of(json_object* wall) {
+    json_object* v = nullptr;
+    if (wall && json_object_object_get_ex(wall, "fps", &v) && v) {
+        double f = json_object_get_double(v);
+        if (f > 0.0) return f;
+    }
+    return 60.0;
+}
+
+namespace {
+std::string doc_str(json_object* o, const char* key) {
+    json_object* v = nullptr;
+    if (o && json_object_object_get_ex(o, key, &v) && v)
+        return json_object_get_string(v);
+    return "";
+}
+}  // namespace
+
+std::string binding_wall_of(json_object* doc) { return doc_str(doc, "wallId"); }
+std::string binding_node_of(json_object* doc) { return doc_str(doc, "nodeId"); }
+std::string binding_cell_of(json_object* doc) { return doc_str(doc, "cellId"); }
+
+void whitelist_addr_port(json_object* doc, std::string* addr, int* port) {
+    int p = 0;
+    json_object* v = nullptr;
+    if (json_object_object_get_ex(doc, "port", &v) && v) p = json_object_get_int(v);
+    if (addr) *addr = doc_str(doc, "address");
+    if (port) *port = p;
+}
+
+std::string playback_status_of(json_object* doc) { return doc_str(doc, "status"); }
+
+bool playback_transition_ok(const std::string& from, const std::string& to) {
+    if (from.empty()) return to.empty() || to == "pending_check";
+    if (from == to) return true;
+    if (from == "pending_check" &&
+        (to == "pending_execution" || to == "failed" || to == "cancelled"))
+        return true;
+    if (from == "pending_execution" &&
+        (to == "executing" || to == "failed" || to == "cancelled" ||
+         to == "expired"))
+        return true;
+    if (from == "executing" &&
+        (to == "playing" || to == "failed" || to == "cancelled" ||
+         to == "expired"))
+        return true;
+    if (from == "playing" &&
+        (to == "succeeded" || to == "failed" || to == "cancelled" ||
+         to == "expired"))
+        return true;
+    return false;
+}
+
+bool playback_active_status(const std::string& st) {
+    return st == "executing" || st == "playing";
+}

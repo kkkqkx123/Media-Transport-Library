@@ -263,9 +263,9 @@
     </div>
 
     <script src="../../_shared/proto-shell.js"></script>
+    <script src="../../_shared/api.js"></script>
     <script src="../../_shared/node-state.js"></script>
     <script src="../../_shared/playback-tasks.js"></script>
-    <script src="../../_shared/api.js"></script>
     <script src="../../_shared/platform-store.js"></script>
     <script>
       (function () {
@@ -818,8 +818,9 @@
             return { id: "w-" + s.id + "-" + l.sig, sig: l.sig, x: pxX(l.c), y: pxY(l.r), w: pxW(l.c, l.cs), h: pxH(l.r, l.rs), z: 1, muted: !!l.muted };
           });
         }
-        /* POST /api/v1/ops/prepare 后轮询操作状态直至 committed/blocked。
-         * 返回 Promise<true>（屏障达成）或 false（超时/回退）。 */
+        /* POST /api/v1/ops/prepare 后长轮询操作状态直至终态。
+         * 单次 hanging read 代替固定间隔短轮询；返回 Promise<true>
+         *（屏障达成）或 false（超时/回退）。 */
         function dispatchAndWait(pixelWindows, volume) {
           var members = boundNodeIds();
           if (!members.length) return Promise.resolve(false);
@@ -834,20 +835,26 @@
           }).then(function (r) {
             if (!r.ok) { protoToast(r.msg || "平台拒绝该操作"); return false; }
             return new Promise(function (resolve) {
-              var tries = 0;
-              var timer = setInterval(function () {
-                if (++tries > 40) { clearInterval(timer); resolve(false); return; }
-                DvsApi.request("GET", "/api/v1/ops/" + encodeURIComponent(opId)).then(function (st) {
+              var attempts = 0;
+              function pollOnce() {
+                attempts++;
+                DvsApi.request("GET", "/api/v1/ops/" + encodeURIComponent(opId) + "?wait=1&timeoutMs=10000").then(function (st) {
                   var op = st.ok && st.data ? st.data : null;
                   var state = op ? op.state : "";
                   if (state === "committed" || state === "rolledback" || state === "blocked") {
-                    clearInterval(timer);
                     if (state !== "committed" && op && op.rollback)
                       protoToast("屏障未达成，已回退：" + op.rollback);
                     resolve(state === "committed");
+                    return;
                   }
+                  if (attempts < 3) pollOnce();
+                  else resolve(false);
+                }).catch(function () {
+                  if (attempts < 3) pollOnce();
+                  else resolve(false);
                 });
-              }, 500);
+              }
+              pollOnce();
             });
           });
         }

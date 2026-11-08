@@ -2,7 +2,10 @@
 (function (global) {
   "use strict";
 
-  var STORAGE_KEY = "dvs.platform.state.v1";
+  /* v2 drops the pre-unification device scheme: whitelist entries are keyed
+   * by signal id (s*), the same ids scenes and windows reference. v1 state
+   * is intentionally not migrated (no backward compatibility). */
+  var STORAGE_KEY = "dvs.platform.state.v2";
   var listeners = [];
 
   function copy(value) { return value === undefined ? undefined : JSON.parse(JSON.stringify(value)); }
@@ -36,48 +39,16 @@
       deletedAt: null
     };
   }
+  /* Empty initial state: the browser holds no business truth. Real data
+   * arrives via refreshFromServer; while the server is unreachable the
+   * pages render empty instead of demo walls. Local edits stay drafts
+   * until the owning page wires them to the matching REST call. */
   function seed() {
-    var main = baseWall("wall-main", "g1", "展厅主屏", "LED", "", 2, 4, "7680×2160（逐行逐列）", "2026-10-12 09:45");
-    main.bindings = [
-      [{ node: "D1", port: 1 }, { node: "D1", port: 2 }, { node: "D1", port: 3 }, { node: "D1", port: 4 }],
-      [{ node: "D2", port: 1 }, { node: "D2", port: 2 }, null, null]
-    ];
-    main.whitelist = [
-      { id: "e1", name: "输入盒-东1", ip: "192.168.10.61", transMode: "单播" },
-      { id: "e2", name: "输入盒-东2", ip: "192.168.10.62", transMode: "组播" },
-      { id: "m1", name: "会议终端-01", ip: "192.168.10.63", transMode: "单播" }
-    ];
-    main.scenes = [
-      { id: "scene-wall-main-default", name: "默认场景", isDefault: true, volume: 80, layout: [{ sig: "s1", c: 0, r: 0, cs: 2, rs: 1 }, { sig: "s3", c: 0, r: 1, cs: 1, rs: 1 }] },
-      { id: "scene-wall-main-meeting", name: "会议模式", isDefault: false, volume: 80, layout: [{ sig: "s3", c: 0, r: 0, cs: 4, rs: 1 }] },
-      { id: "scene-wall-main-presentation", name: "宣讲模式", isDefault: false, volume: 60, layout: [{ sig: "s1", c: 0, r: 0, cs: 1, rs: 1 }, { sig: "s2", c: 2, r: 0, cs: 1, rs: 1 }, { sig: "s3", c: 1, r: 1, cs: 1, rs: 1 }] }
-    ];
-    main.windows = [
-      { id: "w1", sig: "s1", x: 0, y: 0, w: 260, h: 90, z: 1, muted: false },
-      { id: "w2", sig: "s3", x: 0, y: 90, w: 130, h: 90, z: 2, muted: true },
-      { id: "w3", sig: "s2", x: 260, y: 0, w: 130, h: 90, z: 3, muted: true }
-    ];
-    main.rowPixels = [1080, 1080];
-
-    var meeting = baseWall("wall-meeting", "g1", "会议室横屏", "LCD", "标准", 1, 2, "3840×1080", "2026-10-11 15:22");
-    meeting.scenes[0].layout = [];
-    var command = baseWall("wall-command", "g1", "指挥拼接屏", "LCD", "非标准", 2, 2, "3840×2160（逐行逐列）", "2026-10-10 13:15");
-    command.bindings = [[{ node: "C1", port: 1 }, { node: "C2", port: 1 }], [{ node: "C3", port: 1 }, { node: "C4", port: 1 }]];
-    command.scenes.push({ id: "scene-wall-command-2", name: "指挥模式", isDefault: false, volume: 80, layout: [] });
-    var report = baseWall("wall-report", "g2", "报告厅主屏", "LCD", "标准", 1, 2, "3840×1080", "2026-10-11 15:21");
-    var commandMain = baseWall("wall-command-main", "g4", "指挥中心主屏", "LED", "", 2, 3, "5760×2160（逐行逐列）", "2026-10-08 16:35");
-    var commandBackup = baseWall("wall-command-backup", "g4", "指挥中心备屏", "LCD", "标准", 1, 2, "3840×1080", "2026-10-08 16:34");
     return {
-      version: 1,
-      groups: [
-        { id: "g1", name: "展厅 A 区", createdAt: "2026-10-12 09:41" },
-        { id: "g2", name: "会议报告厅", createdAt: "2026-10-11 15:20" },
-        { id: "g3", name: "运维测试组", createdAt: "2026-10-09 11:05" },
-        { id: "g4", name: "指挥中心", createdAt: "2026-10-08 16:32" },
-        { id: "g5", name: "备用空组", createdAt: "2026-09-30 10:00" }
-      ],
-      walls: [main, meeting, command, report, commandMain, commandBackup],
-      currentGroupId: "g1", currentWallId: "wall-main"
+      version: 2,
+      groups: [],
+      walls: [],
+      currentGroupId: null, currentWallId: null
     };
   }
 
@@ -86,7 +57,7 @@
       var raw = global.localStorage.getItem(STORAGE_KEY);
       if (raw) {
         var parsed = JSON.parse(raw);
-        if (parsed && parsed.version === 1 && Array.isArray(parsed.groups) && Array.isArray(parsed.walls)) return parsed;
+        if (parsed && parsed.version === 2 && Array.isArray(parsed.groups) && Array.isArray(parsed.walls)) return parsed;
       }
     } catch (e) { /* Storage may be unavailable in a local file preview. */ }
     return null;
@@ -322,8 +293,71 @@
   if (global.addEventListener) global.addEventListener("storage", function (event) {
     if (event.key === STORAGE_KEY) { state = fromStorage() || seed(); notify(); }
   });
+  function serverItems(payload) {
+    if (!payload || !payload.ok) return null;
+    var d = payload.data;
+    if (Array.isArray(d)) return d;
+    if (d && Array.isArray(d.items)) return d.items;
+    return null;
+  }
+  /* Adapt a server wall doc to the local wall view. The server stores
+   * bindings/scenes/whitelist as separate doc kinds the list pages do not
+   * join yet, so adapted walls carry a 1x1 placeholder canvas plus the raw
+   * pixel size; detail pages show the served data instead of demo data. */
+  function adaptServerWall(w) {
+    w = w || {};
+    var px = "";
+    if (w.wall_px_w && w.wall_px_h) px = w.wall_px_w + "×" + w.wall_px_h;
+    else if (w.w && w.h) px = w.w + "×" + w.h;
+    return {
+      id: w.id, groupId: w.groupId || w.group || null, name: w.name || w.id,
+      mode: w.mode || "", type: w.type || "", rows: 1, cols: 1,
+      res: px || "—", rowPixels: [], colPixels: [], firstRes: null,
+      bindings: [[null]], whitelist: [], settings: w.settings || null,
+      backdrop: w.backdrop || null, scenes: [],
+      currentSceneId: w.currentSceneId || null, windows: [], operations: 0,
+      layoutMode: w.layoutMode || "free", volume: w.volume == null ? 80 : w.volume,
+      deletedAt: null, createdAt: w.createdAt || "", serverDoc: true
+    };
+  }
+  /* Pull groups/walls from the server and replace the local state. Server
+   * wins on conflict; unreachable keeps the local drafts. Never throws. */
+  function refreshFromServer() {
+    if (!global.DvsApi || typeof global.DvsApi.request !== "function") {
+      return Promise.resolve(false);
+    }
+    return Promise.all([
+      global.DvsApi.request("GET", "/api/v1/groups"),
+      global.DvsApi.request("GET", "/api/v1/walls")
+    ]).then(function (results) {
+      var groups = serverItems(results[0]);
+      var walls = serverItems(results[1]);
+      if (!groups && !walls) return false;
+      state = {
+        version: 2,
+        groups: (groups || []).map(function (g) {
+          return { id: g.id, name: g.name || g.id, createdAt: g.createdAt || "" };
+        }),
+        walls: (walls || []).map(adaptServerWall),
+        currentGroupId: null, currentWallId: null
+      };
+      if (state.groups.length) state.currentGroupId = state.groups[0].id;
+      var firstWall = state.walls.filter(function (w) { return sameId(w.groupId, state.currentGroupId); })[0] || state.walls[0];
+      if (firstWall) {
+        state.currentWallId = firstWall.id;
+        state.currentGroupId = firstWall.groupId;
+      }
+      persist();
+      return true;
+    }).catch(function (err) {
+      if (global.console && global.console.warn) global.console.warn("platform store refresh failed", err);
+      return false;
+    });
+  }
+  if (global.DvsApi && typeof global.DvsApi.request === "function") refreshFromServer();
   global.DvsPlatformStore = {
     storageKey: STORAGE_KEY, getState: getState, reset: reset, subscribe: subscribe,
+    refreshFromServer: refreshFromServer,
     listGroups: listGroups, getGroup: getGroup, createGroup: createGroup, renameGroup: renameGroup, deleteGroup: deleteGroup,
     listWalls: listWalls, getWall: getWall, createWall: createWall, updateWall: updateWall, deleteWall: deleteWall, restoreWall: restoreWall,
     currentGroupId: function () { return state.currentGroupId; }, currentWallId: function () { return state.currentWallId; },

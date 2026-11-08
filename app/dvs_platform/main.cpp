@@ -26,6 +26,8 @@ static std::string g_web_root;
 #include "dvs_contract.h"
 #include "http_client.h"
 #include "http_server.h"
+#include "docs_routes.h"
+#include "http_json.h"
 #include "layout.h"
 #include "ops.h"
 #include "platform_store.h"
@@ -33,8 +35,6 @@ static std::string g_web_root;
 static PlatformStore* g_store = nullptr;
 static OpCoordinator g_ops;
 static std::mutex g_ops_mu;
-static std::mutex g_idem_mu;
-static std::map<std::string, std::string> g_idem_cache;
 
 // Layout admission limits (DVS_WINDOWS_TRANSLATION_GAPS_DESIGN.md §4):
 // window size shares the 64~7680 per-cell pixel floor so degenerate rects
@@ -48,31 +48,6 @@ static const int kMinWindowSize = 64;
 // Escape a string for embedding inside a JSON string literal. Audit events
 // are built by string concatenation over untrusted ids; without this, an id
 // containing '"' can forge or break audit records (log injection).
-static std::string json_escape(const std::string& s) {
-    std::string out;
-    out.reserve(s.size() + 8);
-    for (unsigned char c : s) {
-        switch (c) {
-        case '"': out += "\\\""; break;
-        case '\\': out += "\\\\"; break;
-        case '\b': out += "\\b"; break;
-        case '\f': out += "\\f"; break;
-        case '\n': out += "\\n"; break;
-        case '\r': out += "\\r"; break;
-        case '\t': out += "\\t"; break;
-        default:
-            if (c < 0x20) {
-                char b[8];
-                snprintf(b, sizeof(b), "\\u%04x", c);
-                out += b;
-            } else {
-                out += (char)c;
-            }
-        }
-    }
-    return out;
-}
-
 struct ChannelRegistry {
     std::mutex mu;
     std::map<std::string, int> node_fd;
@@ -159,44 +134,6 @@ static std::string g_api_token =
 
 namespace {
 namespace ct = dvs::contract;
-std::string idempotency_key(const HttpRequest& req) {
-    for (auto& h : req.headers) {
-        std::string k = h.first;
-        for (auto& c : k) c = (char)tolower((unsigned char)c);
-        if (k == "idempotency-key" && !h.second.empty()) return h.second;
-    }
-    return "";
-}
-std::string now_iso() {
-    char b[32];
-    time_t t = time(nullptr);
-    strftime(b, sizeof(b), "%FT%TZ", gmtime(&t));
-    return b;
-}
-int64_t now_sec() { return (int64_t)time(nullptr); }
-uint64_t now_ns() {
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
-}
-json_object* ok_envelope(json_object* data, const std::string& msg) {
-    return ct::make_ok(data, msg, "p");
-}
-json_object* fail_envelope(const char* code, int status, const std::string& msg) {
-    return ct::make_fail(code, status, msg, "p");
-}
-void send_json(HttpResponse& res, json_object* o) {
-    const char* s = json_object_to_json_string(o);
-    res.body = s ? s : "{}";
-    res.content_type = "application/json; charset=utf-8";
-    json_object_put(o);
-}
-std::string body_str(json_object* o, const char* key) {
-    json_object* v = nullptr;
-    if (o && json_object_object_get_ex(o, key, &v) && v)
-        return json_object_get_string(v);
-    return "";
-}
 bool bearer_ok(const HttpRequest& req) {
     return ct::bearer_ok(ct::extract_bearer(req.headers), g_api_token);
 }
@@ -212,81 +149,8 @@ int rect_int(json_object* o, const char* k) {
         return json_object_get_int(v);
     return 0;
 }
-// Business-rule helpers (store-reading, handler-called). Pure shape checks
-// live in layout.cpp; here are the reference scans and derived values.
-static void wall_px_of(json_object* wall, int* w, int* h) {
-    int ww = 0, hh = 0;
-    if (wall) {
-        ww = rect_int(wall, "wall_px_w");
-        hh = rect_int(wall, "wall_px_h");
-        if (ww <= 0) ww = rect_int(wall, "w");
-        if (hh <= 0) hh = rect_int(wall, "h");
-        json_object* rp = nullptr;
-        json_object* cp = nullptr;
-        if (ww <= 0 && json_object_object_get_ex(wall, "colPixels", &cp) && cp &&
-            json_object_is_type(cp, json_type_array)) {
-            for (size_t i = 0; i < json_object_array_length(cp); i++)
-                ww += json_object_get_int(json_object_array_get_idx(cp, i));
-        }
-        if (hh <= 0 && json_object_object_get_ex(wall, "rowPixels", &rp) && rp &&
-            json_object_is_type(rp, json_type_array)) {
-            for (size_t i = 0; i < json_object_array_length(rp); i++)
-                hh += json_object_get_int(json_object_array_get_idx(rp, i));
-        }
-    }
-    if (w) *w = ww;
-    if (h) *h = hh;
-}
-static double wall_fps_of(json_object* wall) {
-    json_object* v = nullptr;
-    if (wall && json_object_object_get_ex(wall, "fps", &v) && v) {
-        double f = json_object_get_double(v);
-        if (f > 0.0) return f;
-    }
-    return 60.0;
-}
-static std::string binding_wall_of(json_object* b) {
-    return body_str(b, "wallId");
-}
-static std::string binding_node_of(json_object* b) {
-    return body_str(b, "nodeId");
-}
-static std::string binding_cell_of(json_object* b) {
-    return body_str(b, "cellId");
-}
-static void whitelist_addr_port(json_object* w, std::string* addr, int* port) {
-    int p = 0;
-    json_object* v = nullptr;
-    if (json_object_object_get_ex(w, "port", &v) && v) p = json_object_get_int(v);
-    if (addr) *addr = body_str(w, "address");
-    if (port) *port = p;
-}
-static std::string playback_status_of(json_object* d) {
-    return body_str(d, "status");
-}
-static bool playback_transition_ok(const std::string& from, const std::string& to) {
-    if (from.empty()) return to.empty() || to == "pending_check";
-    if (from == to) return true;
-    if (from == "pending_check" &&
-        (to == "pending_execution" || to == "failed" || to == "cancelled"))
-        return true;
-    if (from == "pending_execution" &&
-        (to == "executing" || to == "failed" || to == "cancelled" ||
-         to == "expired"))
-        return true;
-    if (from == "executing" &&
-        (to == "playing" || to == "failed" || to == "cancelled" ||
-         to == "expired"))
-        return true;
-    if (from == "playing" &&
-        (to == "succeeded" || to == "failed" || to == "cancelled" ||
-         to == "expired"))
-        return true;
-    return false;
-}
-static bool playback_active_status(const std::string& st) {
-    return st == "executing" || st == "playing";
-}
+// Wall/binding/playback pure-JSON accessors live in layout.h (shared by the
+// docs routes and the barrier paths); store-reading scans stay local below.
 // Derive fanout members from the binding table. Pending-offline bindings are
 // excluded; callers report them separately.
 static std::set<std::string> derive_wall_members(const std::string& wall_id,
@@ -404,598 +268,6 @@ static void promote_pending_bindings(const std::string& node_id) {
                            "\",\"reason\":\"" + json_escape(why) + "\"}");
         }
     }
-}
-// Generic docs CRUD mounted at /api/v1/<kind>[/<id>].
-// Stage 1: per-kind shape validation, uniqueness and reference checks.
-// Walls use soft delete; lists filter deleted docs.
-bool route_docs(const std::string& kind, const HttpRequest& req, HttpResponse& res) {
-    std::string base = "/api/v1/" + kind;
-    if (req.path != base && req.path.rfind(base + "/", 0) != 0) return false;
-    std::string id = (req.path.size() > base.size()) ? req.path.substr(base.size() + 1) : "";
-    if (req.method == "GET" && id.empty()) {
-        json_object* arr = json_object_new_array();
-        for (auto& i : g_store->list_ids(kind)) {
-            json_object* d = g_store->get_doc(kind, i);
-            if (!d) continue;
-            if (kind == "walls" && wall_is_deleted(d)) { json_object_put(d); continue; }
-            json_object_array_add(arr, d);
-        }
-        json_object* d = json_object_new_object();
-        json_object_object_add(d, "items", arr);
-        send_json(res, ok_envelope(d, ""));
-        return true;
-    }
-    if (req.method == "GET") {
-        json_object* d = g_store->get_doc(kind, id);
-        if (!d) { send_json(res, fail_envelope("NOT_FOUND", 404, "not found")); return true; }
-        if (kind == "walls" && wall_is_deleted(d)) {
-            json_object_put(d);
-            send_json(res, fail_envelope("GONE", 410, "wall deleted"));
-            return true;
-        }
-        send_json(res, ok_envelope(d, ""));
-        return true;
-    }
-    if (req.method == "POST" || req.method == "PUT") {
-        std::string ikey = idempotency_key(req);
-        std::string cache_key;
-        if (!ikey.empty()) {
-            cache_key = req.method + " " + req.path + "#" + ikey;
-            std::lock_guard<std::mutex> lk(g_idem_mu);
-            auto it = g_idem_cache.find(cache_key);
-            if (it != g_idem_cache.end()) {
-                res.body = it->second;
-                res.content_type = "application/json; charset=utf-8";
-                return true;
-            }
-        }
-        json_object* b = json_tokener_parse(req.body.c_str());
-        if (!b) b = json_object_new_object();
-        if (id.empty()) {
-            id = body_str(b, "id");
-            if (id.empty()) {
-                char nb[32];
-                snprintf(nb, sizeof(nb), "%s-%ld", kind.c_str(), (long)now_sec());
-                id = nb;
-                json_object_object_add(b, "id", json_object_new_string(id.c_str()));
-            }
-        }
-        // Per-kind admission: shape first, then references. Any violation
-        // rejects the whole write; nothing is stored on failure.
-        std::string verr;
-        if (kind == "groups") {
-            verr = validate_group_shape(b);
-            if (verr.empty()) {
-                std::string want = docs_lower(docs_trim(body_str(b, "name")));
-                for (auto& gid : g_store->list_ids("groups")) {
-                    if (gid == id) continue;
-                    json_object* g = g_store->get_doc("groups", gid);
-                    if (!g) continue;
-                    bool dup = (docs_lower(docs_trim(body_str(g, "name"))) == want);
-                    json_object_put(g);
-                    if (dup) { verr = "CONFLICT:group name already exists"; break; }
-                }
-            }
-        } else if (kind == "walls") {
-            verr = validate_wall_shape(b);
-            json_object* old = verr.empty() ? g_store->get_doc("walls", id) : nullptr;
-            if (verr.empty() && old && wall_is_deleted(old)) {
-                // Deleted walls are immutable except via restore.
-                verr = "GONE:wall deleted, restore first";
-            }
-            if (verr.empty() && old) {
-                // Geometry freeze: cell grid and wall pixels never change.
-                int ow = 0, oh = 0, nw = 0, nh = 0;
-                wall_px_of(old, &ow, &oh);
-                wall_px_of(b, &nw, &nh);
-                if (ow > 0 && nw > 0 && (ow != nw || oh != nh))
-                    verr = "INVALID_ARGUMENT:wall pixels frozen, rebuild the wall";
-            }
-            if (verr.empty() && old) {
-                json_object* ocg = nullptr;
-                json_object* ncg = nullptr;
-                bool has_o = json_object_object_get_ex(old, "cell_grid", &ocg) && ocg;
-                bool has_n = json_object_object_get_ex(b, "cell_grid", &ncg) && ncg;
-                if (has_o && has_n) {
-                    const char* os = json_object_to_json_string(ocg);
-                    const char* ns = json_object_to_json_string(ncg);
-                    std::string a = os ? os : "", cc = ns ? ns : "";
-                    if (a != cc) verr = "INVALID_ARGUMENT:wall cell_grid frozen";
-                }
-            }
-            if (old) json_object_put(old);
-            if (verr.empty()) {
-                // Wall name unique within its group.
-                std::string g = body_str(b, "groupId");
-                if (g.empty()) g = body_str(b, "group");
-                std::string want = docs_lower(docs_trim(body_str(b, "name")));
-                for (auto& wid : g_store->list_ids("walls")) {
-                    if (wid == id) continue;
-                    json_object* w = g_store->get_doc("walls", wid);
-                    if (!w) continue;
-                    if (wall_is_deleted(w)) { json_object_put(w); continue; }
-                    std::string wg = body_str(w, "groupId");
-                    if (wg.empty()) wg = body_str(w, "group");
-                    bool dup = (!g.empty() && wg == g &&
-                                docs_lower(docs_trim(body_str(w, "name"))) == want);
-                    json_object_put(w);
-                    if (dup) { verr = "CONFLICT:wall name already exists in group"; break; }
-                }
-            }
-            if (verr.empty()) {
-                // Epoch freeze: the frame time base never moves once set.
-                // Updates that drop it inherit the stored one; updates that
-                // move it are rejected so frame numbers stay stable.
-                json_object* oldw = g_store->get_doc("walls", id);
-                int64_t old_epoch = 0;
-                if (oldw) {
-                    json_object* oev = nullptr;
-                    if (json_object_object_get_ex(oldw, "epochTaiNs", &oev) && oev &&
-                        json_object_is_type(oev, json_type_int))
-                        old_epoch = json_object_get_int64(oev);
-                    json_object_put(oldw);
-                }
-                json_object* ev = nullptr;
-                bool has_epoch =
-                    json_object_object_get_ex(b, "epochTaiNs", &ev) && ev &&
-                    json_object_is_type(ev, json_type_int);
-                int64_t want_epoch = has_epoch ? json_object_get_int64(ev) : 0;
-                if (has_epoch && want_epoch <= 0)
-                    verr = "INVALID_ARGUMENT:wall epochTaiNs must be positive";
-                else if (has_epoch && old_epoch > 0 && want_epoch != old_epoch)
-                    verr = "INVALID_ARGUMENT:wall epochTaiNs frozen";
-                else if (!has_epoch || want_epoch <= 0) {
-                    int64_t use = old_epoch > 0 ? old_epoch : (int64_t)now_ns();
-                    json_object_object_del(b, "epochTaiNs");
-                    json_object_object_add(b, "epochTaiNs",
-                                           json_object_new_int64(use));
-                }
-            }
-            if (verr.empty()) {
-                json_object* biv = nullptr;
-                if (json_object_object_get_ex(b, "baseImage", &biv) && biv)
-                    verr = validate_base_image(biv);
-            }
-            if (verr.empty()) {
-                json_object* iav = nullptr;
-                if (json_object_object_get_ex(b, "imageAdjust", &iav) && iav)
-                    verr = validate_image_adjust(iav);
-            }
-        } else if (kind == "scenes") {
-            int ww = 0, hh = 0;
-            std::string wall_id = body_str(b, "wallId");
-            if (!wall_id.empty()) {
-                json_object* w = g_store->get_doc("walls", wall_id);
-                if (!w || wall_is_deleted(w)) {
-                    verr = "NOT_FOUND:wall unknown or deleted";
-                } else {
-                    wall_px_of(w, &ww, &hh);
-                }
-                if (w) json_object_put(w);
-            }
-            if (verr.empty()) verr = validate_scene_shape(b, ww, hh);
-            if (verr.empty()) {
-                json_object* mv = nullptr;
-                bool fixed = json_object_object_get_ex(b, "layoutMode", &mv) && mv &&
-                             json_object_is_type(mv, json_type_string) &&
-                             std::string(json_object_get_string(mv)) == "fixed";
-                if (fixed && !wall_id.empty()) {
-                    // Fixed mode: the platform snaps windows to cell bounds;
-                    // the snapped geometry is what gets stored and fanned out.
-                    json_object* wdoc = g_store->get_doc("walls", wall_id);
-                    if (wdoc && !wall_is_deleted(wdoc)) {
-                        int sw = 0, sh = 0;
-                        wall_px_of(wdoc, &sw, &sh);
-                        std::vector<std::pair<std::string, Rect>> cells;
-                        wall_cells(wdoc, sw, sh, &cells);
-                        json_object* wins = nullptr;
-                        if (!cells.empty() &&
-                            json_object_object_get_ex(b, "windows", &wins) && wins) {
-                            json_object* snapped = snap_windows_to_cells(wins, cells);
-                            json_object_object_del(b, "windows");
-                            json_object_object_add(b, "windows", snapped);
-                        }
-                    }
-                    if (wdoc) json_object_put(wdoc);
-                }
-            }
-        } else if (kind == "bindings") {
-            verr = validate_binding_shape(b);
-            std::string w = binding_wall_of(b);
-            std::string n = binding_node_of(b);
-            std::string c = binding_cell_of(b);
-            if (verr.empty()) {
-                json_object* wall = g_store->get_doc("walls", w);
-                if (!wall || wall_is_deleted(wall)) verr = "NOT_FOUND:wall unknown or deleted";
-                if (wall) json_object_put(wall);
-            }
-            if (verr.empty()) {
-                for (auto& bid : g_store->list_ids("bindings")) {
-                    if (bid == id) continue;
-                    json_object* o = g_store->get_doc("bindings", bid);
-                    if (!o) continue;
-                    bool node_dup = (binding_node_of(o) == n);
-                    bool cell_dup = (binding_wall_of(o) == w && !c.empty() &&
-                                     binding_cell_of(o) == c);
-                    json_object_put(o);
-                    if (node_dup) { verr = "CONFLICT:node already bound to a wall"; break; }
-                    if (cell_dup) { verr = "CONFLICT:cell already bound"; break; }
-                }
-            }
-            if (verr.empty()) {
-                // Port idle: the same node output feeds at most one active
-                // binding. Pending-offline bindings hold no port.
-                std::string outp = binding_output_of(b);
-                if (!outp.empty()) {
-                    for (auto& bid : g_store->list_ids("bindings")) {
-                        if (bid == id) continue;
-                        json_object* o = g_store->get_doc("bindings", bid);
-                        if (!o) continue;
-                        std::string st = body_str(o, "status");
-                        bool busy = (binding_node_of(o) == n &&
-                                     binding_output_of(o) == outp &&
-                                     st != "pending" && st != "pending_offline");
-                        json_object_put(o);
-                        if (busy) {
-                            verr = "CONFLICT:node output port already bound";
-                            break;
-                        }
-                    }
-                }
-            }
-            if (verr.empty()) {
-                // Binding constraint: a referenced signal must be whitelisted.
-                std::string sig = binding_sig_of(b);
-                if (!sig.empty()) {
-                    bool found = false;
-                    for (auto& wid : g_store->list_ids("whitelist")) {
-                        json_object* o = g_store->get_doc("whitelist", wid);
-                        if (!o) continue;
-                        bool hit = (body_str(o, "sig") == sig);
-                        json_object_put(o);
-                        if (hit) { found = true; break; }
-                    }
-                    if (!found)
-                        verr = "NOT_FOUND:binding signal not in whitelist";
-                }
-            }
-            if (verr.empty()) {
-                // Online nodes activate immediately; offline stay pending.
-                json_object* nd = g_store->get_doc("node", n);
-                bool online = false;
-                if (nd) {
-                    json_object* v = nullptr;
-                    if (json_object_object_get_ex(nd, "online", &v) && v)
-                        online = json_object_get_boolean(v) != 0;
-                }
-                if (nd) json_object_put(nd);
-                json_object_object_del(b, "status");
-                json_object_object_add(b, "status", json_object_new_string(
-                    online ? "active" : "pending_offline"));
-            }
-        } else if (kind == "whitelist") {
-            verr = validate_whitelist_shape(b);
-            if (verr.empty()) {
-                std::string addr;
-                int port = 0;
-                whitelist_addr_port(b, &addr, &port);
-                if (port <= 0) {
-                    port = 50010;
-                    json_object_object_del(b, "port");
-                    json_object_object_add(b, "port", json_object_new_int(port));
-                }
-                for (auto& wid : g_store->list_ids("whitelist")) {
-                    if (wid == id) continue;
-                    json_object* o = g_store->get_doc("whitelist", wid);
-                    if (!o) continue;
-                    std::string oa;
-                    int op = 0;
-                    whitelist_addr_port(o, &oa, &op);
-                    if (op <= 0) op = 50010;
-                    bool dup = (!addr.empty() && oa == addr && op == port);
-                    json_object_put(o);
-                    if (dup) { verr = "CONFLICT:multicast address+port already used"; break; }
-                }
-            }
-            if (verr.empty()) {
-                if (!body_str(b, "status").empty() && body_str(b, "status") == "conflict")
-                    verr = "INVALID_ARGUMENT:whitelist status is server-computed";
-                else {
-                    json_object_object_del(b, "status");
-                    json_object_object_add(b, "status",
-                                           json_object_new_string("active"));
-                }
-            }
-        } else if (kind == "playback-tasks") {
-            // Alias normalization at the boundary (frontend/test dialects):
-            // wall/scene/node and targetNodeIds[] fold to the canonical
-            // wallId/sceneId/targetNodeId before the strict validator runs.
-            // A multi-node targetNodeIds is rejected loudly: one playback
-            // task drives exactly one output box.
-            {
-                json_object* av = nullptr;
-                if (!body_str(b, "wallId").size() &&
-                    json_object_object_get_ex(b, "wall", &av) && av &&
-                    json_object_is_type(av, json_type_string)) {
-                    json_object_object_add(b, "wallId", json_object_get(av));
-                    json_object_object_del(b, "wall");
-                }
-                if (!body_str(b, "sceneId").size() &&
-                    json_object_object_get_ex(b, "scene", &av) && av &&
-                    json_object_is_type(av, json_type_string)) {
-                    json_object_object_add(b, "sceneId", json_object_get(av));
-                    json_object_object_del(b, "scene");
-                }
-                if (!body_str(b, "targetNodeId").size()) {
-                    if (json_object_object_get_ex(b, "node", &av) && av &&
-                        json_object_is_type(av, json_type_string)) {
-                        json_object_object_add(b, "targetNodeId",
-                                               json_object_get(av));
-                        json_object_object_del(b, "node");
-                    } else if (json_object_object_get_ex(b, "targetNodeIds", &av) &&
-                               av && json_object_is_type(av, json_type_array)) {
-                        size_t tn = json_object_array_length(av);
-                        if (tn == 1) {
-                            json_object* e0 = json_object_array_get_idx(av, 0);
-                            if (e0 && json_object_is_type(e0, json_type_string))
-                                json_object_object_add(b, "targetNodeId",
-                                                       json_object_get(e0));
-                            json_object_object_del(b, "targetNodeIds");
-                        } else if (tn > 1) {
-                            verr = "INVALID_ARGUMENT:playback task takes one targetNodeId";
-                        }
-                    }
-                }
-            }
-            if (verr.empty()) verr = validate_playback_shape(b);
-            std::string want_st = playback_status_of(b);
-            if (want_st.empty()) want_st = "pending_check";
-            json_object* old = verr.empty() ? g_store->get_doc("playback-tasks", id) : nullptr;
-            std::string from = old ? playback_status_of(old) : "";
-            if (verr.empty() && !playback_transition_ok(from, want_st))
-                verr = "CONFLICT:illegal playback transition";
-            if (verr.empty() && playback_active_status(want_st)) {
-                std::string node = body_str(b, "targetNodeId");
-                for (auto& tid : g_store->list_ids("playback-tasks")) {
-                    if (tid == id) continue;
-                    json_object* o = g_store->get_doc("playback-tasks", tid);
-                    if (!o) continue;
-                    std::string on = body_str(o, "targetNodeId");
-                    bool busy = (on == node && playback_active_status(playback_status_of(o)));
-                    json_object_put(o);
-                    if (busy) { verr = "CONFLICT:node already has an active playback"; break; }
-                }
-            }
-            if (old) json_object_put(old);
-            if (verr.empty() && playback_status_of(b).empty()) {
-                json_object_object_add(b, "status",
-                                       json_object_new_string("pending_check"));
-            }
-        }
-        if (!verr.empty()) {
-            std::string code = "INVALID_ARGUMENT";
-            int status = 400;
-            if (verr.rfind("CONFLICT:", 0) == 0) { code = "CONFLICT"; status = 409; }
-            else if (verr.rfind("NOT_FOUND:", 0) == 0) { code = "NOT_FOUND"; status = 404; }
-            else if (verr.rfind("GONE:", 0) == 0) { code = "GONE"; status = 410; }
-            g_store->audit("{\"rejected-" + json_escape(kind) + "\":\"" +
-                           json_escape(id) + "\"}");
-            json_object_put(b);
-            send_json(res, fail_envelope(code.c_str(), status, verr));
-            return true;
-        }
-        bool is_new_wall = false;
-        if (kind == "walls") {
-            json_object* exist = g_store->get_doc("walls", id);
-            is_new_wall = (exist == nullptr);
-            if (exist) json_object_put(exist);
-        }
-        g_store->put_doc(kind, id, b);
-        g_store->audit("{\"kind\":\"" + json_escape(kind) + "\",\"id\":\"" + json_escape(id) + "\"}");
-        if (is_new_wall) {
-            // New walls start with an empty default scene so switching and
-            // clear-screen have a revision-1 baseline to roll back to.
-            std::string sid = id + "-default";
-            json_object* sexist = g_store->get_doc("scenes", sid);
-            if (!sexist) {
-                json_object* sc = json_object_new_object();
-                json_object_object_add(sc, "id", json_object_new_string(sid.c_str()));
-                json_object_object_add(sc, "wallId", json_object_new_string(id.c_str()));
-                json_object_object_add(sc, "name", json_object_new_string("default"));
-                json_object_object_add(sc, "snapshotVersion", json_object_new_int(1));
-                json_object_object_add(sc, "volume", json_object_new_int(80));
-                json_object_object_add(sc, "layoutMode", json_object_new_string("free"));
-                json_object_object_add(sc, "windows", json_object_new_array());
-                g_store->put_doc("scenes", sid, sc);
-                json_object_put(sc);
-                g_store->audit("{\"default-scene\":\"" + json_escape(sid) + "\"}");
-            } else {
-                json_object_put(sexist);
-            }
-            json_object* w0 = g_store->get_doc("walls", id);
-            if (w0) {
-                if (body_str(w0, "currentSceneId").empty()) {
-                    json_object_object_add(w0, "currentSceneId",
-                                           json_object_new_string(sid.c_str()));
-                    g_store->put_doc("walls", id, w0);
-                }
-                json_object_put(w0);
-            }
-        }
-        json_object* d = g_store->get_doc(kind, id);
-        json_object_put(b);
-        send_json(res, ok_envelope(d ? d : json_object_new_object(), ""));
-        if (!cache_key.empty()) {
-            std::lock_guard<std::mutex> lk(g_idem_mu);
-            if (g_idem_cache.size() < 1024) g_idem_cache[cache_key] = res.body;
-        }
-        return true;
-    }
-    if (req.method == "DELETE") {
-        if (kind == "groups") {
-            int walls = 0;
-            for (auto& wid : g_store->list_ids("walls")) {
-                json_object* w = g_store->get_doc("walls", wid);
-                if (!w) continue;
-                bool hit = false;
-                if (!wall_is_deleted(w)) {
-                    std::string g = body_str(w, "groupId");
-                    if (g.empty()) g = body_str(w, "group");
-                    hit = (g == id);
-                }
-                json_object_put(w);
-                if (hit) walls++;
-            }
-            if (walls > 0) {
-                json_object* d = json_object_new_object();
-                json_object_object_add(d, "wallCount", json_object_new_int(walls));
-                json_object_put(d);
-                send_json(res, fail_envelope("RESOURCE_IN_USE", 409,
-                    "group still has " + std::to_string(walls) + " wall(s)"));
-                return true;
-            }
-            g_store->del_doc(kind, id);
-            send_json(res, ok_envelope(json_object_new_object(), ""));
-            return true;
-        }
-        if (kind == "walls") {
-            json_object* w = g_store->get_doc("walls", id);
-            if (!w) {
-                send_json(res, fail_envelope("NOT_FOUND", 404, "not found"));
-                return true;
-            }
-            if (wall_is_deleted(w)) {
-                json_object_put(w);
-                send_json(res, fail_envelope("GONE", 410, "wall already deleted"));
-                return true;
-            }
-            json_object_put(w);
-            {
-                std::lock_guard<std::mutex> lk(g_ops_mu);
-                if (g_ops.wall_has_preparing(id, "")) {
-                    send_json(res, fail_envelope("RESOURCE_IN_USE", 409,
-                        "wall has an operation in flight"));
-                    return true;
-                }
-            }
-            for (auto& tid : g_store->list_ids("playback-tasks")) {
-                json_object* t = g_store->get_doc("playback-tasks", tid);
-                if (!t) continue;
-                bool busy = (body_str(t, "wallId") == id &&
-                             playback_active_status(playback_status_of(t)));
-                json_object_put(t);
-                if (busy) {
-                    send_json(res, fail_envelope("RESOURCE_IN_USE", 409,
-                        "wall has an active playback task"));
-                    return true;
-                }
-            }
-            for (auto& bid : g_store->list_ids("bindings")) {
-                json_object* b = g_store->get_doc("bindings", bid);
-                if (!b) continue;
-                bool hit = (binding_wall_of(b) == id);
-                json_object_put(b);
-                if (hit) {
-                    send_json(res, fail_envelope("RESOURCE_IN_USE", 409,
-                        "wall still has bindings; unbind first"));
-                    return true;
-                }
-            }
-            // Soft delete: keep the doc 7 days for restore, hide from lists.
-            json_object* cur = g_store->get_doc("walls", id);
-            if (cur) {
-                json_object_object_del(cur, "deleted");
-                json_object_object_add(cur, "deleted", json_object_new_boolean(1));
-                json_object_object_del(cur, "deletedAt");
-                json_object_object_add(cur, "deletedAt",
-                    json_object_new_string(now_iso().c_str()));
-                json_object_object_del(cur, "deletedAtEpoch");
-                json_object_object_add(cur, "deletedAtEpoch",
-                    json_object_new_int64((int64_t)now_sec()));
-                g_store->put_doc("walls", id, cur);
-                json_object_put(cur);
-            }
-            g_store->audit("{\"wall-soft-delete\":\"" + json_escape(id) + "\"}");
-            send_json(res, ok_envelope(json_object_new_object(), "soft deleted"));
-            return true;
-        }
-        if (kind == "scenes") {
-            json_object* sc = g_store->get_doc("scenes", id);
-            std::string wall_id;
-            if (sc) {
-                wall_id = body_str(sc, "wallId");
-                json_object_put(sc);
-            }
-            if (!wall_id.empty()) {
-                json_object* w = g_store->get_doc("walls", wall_id);
-                if (w) {
-                    bool eff = (body_str(w, "currentSceneId") == id);
-                    json_object_put(w);
-                    if (eff) {
-                        send_json(res, fail_envelope("RESOURCE_IN_USE", 409,
-                            "scene is the effective scene"));
-                        return true;
-                    }
-                }
-            }
-            g_store->del_doc(kind, id);
-            send_json(res, ok_envelope(json_object_new_object(), ""));
-            return true;
-        }
-        if (kind == "whitelist") {
-            json_object* wl = g_store->get_doc("whitelist", id);
-            std::string sig;
-            if (wl) {
-                sig = body_str(wl, "sig");
-                json_object_put(wl);
-            }
-            if (sig.empty()) sig = id;
-            for (auto& sid : g_store->list_ids("scenes")) {
-                json_object* sc = g_store->get_doc("scenes", sid);
-                if (!sc) continue;
-                bool hit = false;
-                json_object* wins = nullptr;
-                if (json_object_object_get_ex(sc, "windows", &wins) && wins &&
-                    json_object_is_type(wins, json_type_array)) {
-                    for (size_t i = 0; i < json_object_array_length(wins); i++) {
-                        json_object* e = json_object_array_get_idx(wins, i);
-                        if (body_str(e, "sig") == sig) { hit = true; break; }
-                    }
-                }
-                json_object_put(sc);
-                if (hit) {
-                    send_json(res, fail_envelope("RESOURCE_IN_USE", 409,
-                        "signal still referenced by a scene"));
-                    return true;
-                }
-            }
-            g_store->del_doc(kind, id);
-            send_json(res, ok_envelope(json_object_new_object(), ""));
-            return true;
-        }
-        if (kind == "playback-tasks") {
-            json_object* t = g_store->get_doc("playback-tasks", id);
-            if (!t) {
-                send_json(res, fail_envelope("NOT_FOUND", 404, "not found"));
-                return true;
-            }
-            std::string st = playback_status_of(t);
-            json_object_put(t);
-            if (st == "pending_check" || st == "pending_execution" ||
-                st == "executing" || st == "playing") {
-                send_json(res, fail_envelope("RESOURCE_IN_USE", 409,
-                    "playback task still active"));
-                return true;
-            }
-            g_store->del_doc(kind, id);
-            send_json(res, ok_envelope(json_object_new_object(), ""));
-            return true;
-        }
-        g_store->del_doc(kind, id);
-        send_json(res, ok_envelope(json_object_new_object(), ""));
-        return true;
-    }
-    return false;
 }
 
 static void store_ptp_playback(json_object* cur, json_object* data) {
@@ -1708,6 +980,15 @@ int main(int argc, char** argv) {
     }
 
     HttpServer::Handler h = [](const HttpRequest& req, HttpResponse& res) {
+        // Unified write gate: when a control-plane token is configured,
+        // every mutating API call must carry it; reads stay open so local
+        // consoles keep working. Empty token means no check (prototype).
+        if (req.path.rfind("/api/", 0) == 0 && req.method != "GET" &&
+            !bearer_ok(req)) {
+            send_json(res, fail_envelope("UNAUTHORIZED", 401,
+                                          "missing or bad token"));
+            return;
+        }
         if (req.method == "POST" && req.path == "/api/v1/nodes/register") {
             if (!require_bearer(req, res)) return;
             json_object* b = json_tokener_parse(req.body.c_str());
@@ -2524,11 +1805,37 @@ int main(int argc, char** argv) {
             return;
         }
         // Operation status query: state, applyAt, missing, wall/scene/hash.
+        // Long-poll form (?wait=1&timeoutMs=N, N capped at 30s): the call
+        // returns once the barrier leaves preparing or the budget expires,
+        // so browsers replace fixed-interval polling with one hanging read.
         if (req.method == "GET" && req.path.rfind("/api/v1/ops/", 0) == 0) {
             std::string opid = req.path.substr(strlen("/api/v1/ops/"));
             if (!opid.empty() && opid.find('/') == std::string::npos) {
+                bool wait = req.query.count("wait") && req.query.at("wait") == "1";
+                long wait_ms = 10000;
+                if (wait && req.query.count("timeoutMs")) {
+                    try { wait_ms = std::stol(req.query.at("timeoutMs")); }
+                    catch (...) { wait_ms = 10000; }
+                    if (wait_ms < 0) wait_ms = 0;
+                    if (wait_ms > 30000) wait_ms = 30000;
+                }
                 const Operation* op = nullptr;
                 std::set<std::string> miss;
+                if (wait) {
+                    auto deadline = std::chrono::steady_clock::now() +
+                                    std::chrono::milliseconds(wait_ms);
+                    for (;;) {
+                        std::string st;
+                        {
+                            std::lock_guard<std::mutex> lk(g_ops_mu);
+                            op = g_ops.find(opid);
+                            if (op) st = op->state;
+                        }
+                        if (!op || st != "preparing") break;
+                        if (std::chrono::steady_clock::now() >= deadline) break;
+                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    }
+                }
                 {
                     std::lock_guard<std::mutex> lk(g_ops_mu);
                     op = g_ops.find(opid);
@@ -2951,28 +2258,13 @@ int main(int argc, char** argv) {
         }
         const char* kinds[] = {"groups", "walls", "scenes", "bindings",
                                "whitelist", "playback-tasks"};
+        DocsCtx docs_ctx{g_store, &g_ops, &g_ops_mu};
         for (auto k : kinds)
-            if (route_docs(k, req, res)) return;
-        // static files
-        if (req.method == "GET") {
-            std::string path = req.path;
-            if (path == "/" || path.empty()) path = "/index.html";
-            std::string full = g_web_root + path;
-            struct stat st;
-            if (stat(full.c_str(), &st) == 0 && S_ISREG(st.st_mode)) {
-                std::ifstream f(full, std::ios::binary);
-                std::ostringstream ss; ss << f.rdbuf();
-                res.status = 200;
-                res.body = ss.str();
-                // guess content type
-                if (full.find(".html") != std::string::npos) res.content_type = "text/html; charset=utf-8";
-                else if (full.find(".css") != std::string::npos) res.content_type = "text/css; charset=utf-8";
-                else if (full.find(".js") != std::string::npos) res.content_type = "text/javascript; charset=utf-8";
-                else if (full.find(".svg") != std::string::npos) res.content_type = "image/svg+xml";
-                else res.content_type = "application/octet-stream";
-                return;
-            }
-        }
+            if (route_docs(docs_ctx, k, req, res)) return;
+        // static files share the common traversal-safe server
+        if (req.method == "GET" &&
+            HttpServer::serve_static_file(g_web_root, req.path, res))
+            return;
         send_json(res, fail_envelope("NOT_FOUND", 404, "unknown api"));
     };
 
@@ -2982,6 +2274,9 @@ int main(int argc, char** argv) {
         if (env && *env) g_web_root = env;
     }
     if (g_web_root.empty()) g_web_root = "./web/src";
+    if (g_api_token.empty())
+        fprintf(stderr, "dvs-platform: WARNING DVS_API_TOKEN unset, "
+                        "mutating APIs accept unauthenticated calls\n");
     HttpServer server(port, h);
     server.set_ws_handler("/api/v1/channel/ws", ws_channel_loop);
     // 屏障超时回收：超时未齐按阻塞处理并回滚，避免永久停留 preparing。

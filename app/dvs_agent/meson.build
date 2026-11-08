@@ -24,6 +24,7 @@ common_sources = files(
 dvs_agent = executable('dvs_agent',
   files(
     'main.cpp',
+    'local_shim.cpp',
     'node_store.cpp',
     'media_ipc.cpp',
     'maintenance.cpp',
@@ -40,8 +41,9 @@ dvs_agent = executable('dvs_agent',
 # tests
 
 test_exe = executable('dvs_agent_test',
-  files('tests/test_basic.cpp', 'node_store.cpp', 'media_ipc.cpp',
-        'registration.cpp', 'network_apply.cpp', 'tx_config.cpp') + common_sources,
+  files('tests/test_basic.cpp', 'node_store.cpp', 'local_shim.cpp',
+        'media_ipc.cpp', 'registration.cpp', 'network_apply.cpp',
+        'tx_config.cpp') + common_sources,
   include_directories: inc,
   dependencies: [json_c_dep, threads_dep, dl_dep],
   c_args: ['-DSQLITE_THREADSAFE=1'],

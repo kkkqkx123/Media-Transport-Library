@@ -34,6 +34,12 @@ public:
     static bool ws_recv_text(int fd, std::string& out, int timeout_ms,
                              bool mask_pong = false);
     static std::string ws_accept_key(const std::string& client_key);
+    // 统一静态文件 serving：共享的目录穿越防护与类型映射。
+    // "/" 映射到 "/index.html"；命中常规文件时填充 res 并返回 true，
+    // 否则保持 res 不变返回 false（调用方回 404 包络）。
+    static bool serve_static_file(const std::string& web_root,
+                                  const std::string& req_path,
+                                  HttpResponse& res);
 
 private:
     void loop();

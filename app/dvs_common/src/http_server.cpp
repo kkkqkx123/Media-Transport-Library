@@ -6,12 +6,15 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/stat.h>
 #include <cstring>
+#include <fstream>
 #include <sstream>
 #include <algorithm>
 #include <cctype>
 #include <map>
 #include <random>
+#include <vector>
 
 static std::string url_decode(const std::string& s) {
     std::string out;
@@ -206,6 +209,88 @@ bool HttpServer::ws_recv_text(int fd, std::string& out, int timeout_ms,
         // 二进制帧不支持，直接拒绝该连接。
         return false;
     }
+}
+
+static std::string static_pct_decode(const std::string& s) {
+    std::string out;
+    for (size_t i = 0; i < s.size(); i++) {
+        if (s[i] == '%' && i + 2 < s.size()) {
+            unsigned v = 0;
+            char h[3] = {s[i + 1], s[i + 2], 0};
+            if (sscanf(h, "%2x", &v) == 1) {
+                out.push_back((char)v);
+                i += 2;
+                continue;
+            }
+        }
+        out.push_back(s[i]);
+    }
+    return out;
+}
+
+static std::string static_content_type(const std::string& full) {
+    size_t dot = full.rfind('.');
+    std::string ext = (dot == std::string::npos) ? "" : full.substr(dot);
+    for (auto& c : ext) c = (char)tolower((unsigned char)c);
+    if (ext == ".html") return "text/html; charset=utf-8";
+    if (ext == ".css") return "text/css; charset=utf-8";
+    if (ext == ".js" || ext == ".mjs") return "text/javascript; charset=utf-8";
+    if (ext == ".json" || ext == ".map") return "application/json; charset=utf-8";
+    if (ext == ".svg") return "image/svg+xml";
+    if (ext == ".png") return "image/png";
+    if (ext == ".jpg" || ext == ".jpeg") return "image/jpeg";
+    if (ext == ".gif") return "image/gif";
+    if (ext == ".ico") return "image/x-icon";
+    if (ext == ".woff") return "font/woff";
+    if (ext == ".woff2") return "font/woff2";
+    if (ext == ".ttf") return "font/ttf";
+    return "application/octet-stream";
+}
+
+bool HttpServer::serve_static_file(const std::string& web_root,
+                                    const std::string& req_path,
+                                    HttpResponse& res) {
+    if (web_root.empty()) return false;
+    std::string path = req_path;
+    if (path.empty() || path == "/") path = "/index.html";
+    if (path[0] != '/') return false;
+    std::string decoded = static_pct_decode(path);
+    if (decoded.find('\\') != std::string::npos) return false;
+    if (decoded.find('\0') != std::string::npos) return false;
+    std::vector<std::string> segs;
+    {
+        size_t i = 0;
+        while (i < decoded.size()) {
+            while (i < decoded.size() && decoded[i] == '/') i++;
+            size_t j = i;
+            while (j < decoded.size() && decoded[j] != '/') j++;
+            if (j > i) {
+                std::string seg = decoded.substr(i, j - i);
+                if (seg == "..") return false;
+                if (seg != ".") segs.push_back(seg);
+            }
+            i = j;
+        }
+    }
+    std::string root = web_root;
+    while (root.size() > 1 && root.back() == '/') root.pop_back();
+    std::string full = root;
+    for (auto& s : segs) { full.push_back('/'); full += s; }
+    if (full.size() < root.size() ||
+        (full.size() > root.size() && full.compare(0, root.size(), root) != 0))
+        return false;
+    struct stat st;
+    if (stat(full.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
+    std::ifstream f(full, std::ios::binary);
+    if (!f) return false;
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    res.status = 200;
+    res.body = ss.str();
+    res.content_type = static_content_type(full);
+    res.headers["Cache-Control"] = "no-cache";
+    res.headers["X-Content-Type-Options"] = "nosniff";
+    return true;
 }
 
 void HttpServer::loop() {

@@ -29,6 +29,8 @@ platform_lib_src = files(
   'platform_store.cpp',
   'layout.cpp',
   'ops.cpp',
+  'http_json.cpp',
+  'docs_routes.cpp',
 ) + common_sources
 
 dvs_platform = executable('dvs_platform',

@@ -2,6 +2,7 @@
 #include <sqlite3.h>
 
 #include "node_store.h"
+#include "local_shim.h"
 #include "media_ipc.h"
 #include "network_apply.h"
 #include "tx_config.h"
@@ -724,24 +725,6 @@ static bool tcp_reachable(const std::string& host, int port, int timeout_ms) {
     }
     freeaddrinfo(ai);
     return ok;
-}
-
-static std::string read_file(const std::string& path) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) return "";
-    std::ostringstream ss;
-    ss << f.rdbuf();
-    return ss.str();
-}
-
-static std::string guess_ct(const std::string& path) {
-    if (path.find(".html") != std::string::npos) return "text/html; charset=utf-8";
-    if (path.find(".css") != std::string::npos) return "text/css; charset=utf-8";
-    if (path.find(".js") != std::string::npos) return "text/javascript; charset=utf-8";
-    if (path.find(".json") != std::string::npos) return "application/json; charset=utf-8";
-    if (path.find(".svg") != std::string::npos) return "image/svg+xml";
-    if (path.find(".png") != std::string::npos) return "image/png";
-    return "application/octet-stream";
 }
 
 static std::string env_or(const char* k, const char* d) {
@@ -1810,108 +1793,8 @@ int main(int argc, char** argv) {
             }
         }
 
-        if (req.method == "GET" && req.path == "/api/v1/nodes") {
-            json_object* arr = json_object_new_array();
-            json_object_array_add(arr, json_object_get(g_store->node()));
-            json_object* d = json_object_new_object();
-            json_object_object_add(d, "items", arr);
-            json_object_object_add(d, "page", json_object_new_int(1));
-            json_object_object_add(d, "pageSize", json_object_new_int(1));
-            json_object_object_add(d, "total", json_object_new_int(1));
-            send_json(res, envelope_ok(d, ""));
-            return;
-        }
-
-        if (req.method == "POST" && req.path == "/api/v1/nodes/heartbeat") {
-            json_object* body = json_tokener_parse(req.body.c_str());
-            json_object* patch = nullptr;
-            if (body) {
-                if (!json_object_object_get_ex(body, "patch", &patch)) patch = body;
-            }
-            // update lastHeartbeat
-            json_object* hp = json_object_new_object();
-            json_object_object_add(hp, "lastHeartbeat", json_object_new_string(iso_now().c_str()));
-            if (patch) {
-                json_object* m = nullptr;
-                if (json_object_object_get_ex(patch, "metrics", &m)) json_object_object_add(hp, "metrics", json_object_get(m));
-            }
-            g_store->update_node(hp);
-            json_object_put(hp);
-            if (body) json_object_put(body);
-            send_json(res, envelope_ok(json_object_get(g_store->node()), "心跳已接收"));
-            return;
-        }
-
-        if (req.method == "POST" && req.path == "/api/v1/nodes/upgrade") {
-            json_object* body = json_tokener_parse(req.body.c_str());
-            json_object* ids = nullptr;
-            if (body) json_object_object_get_ex(body, "targetNodeIds", &ids);
-            if (!ids && body) json_object_object_get_ex(body, "nodeIds", &ids);
-            json_object* d = json_object_new_object();
-            json_object* arr = json_object_new_array();
-            if (ids) {
-                // assume array
-                int len = json_object_array_length(ids);
-                for (int i = 0; i < len; i++) json_object_array_add(arr, json_object_get(json_object_array_get_idx(ids, i)));
-            }
-            json_object_object_add(d, "nodeIds", arr);
-            json_object_object_add(d, "status", json_object_new_string("applied"));
-            if (body) json_object_put(body);
-            send_json(res, envelope_ok(d, ""));
-            return;
-        }
-
-        // node by id routes
-        if (req.path.rfind("/api/v1/nodes/", 0) == 0) {
-            std::string rest = req.path.substr(strlen("/api/v1/nodes/"));
-            std::string id = rest;
-            std::string action;
-            size_t slash = rest.find('/');
-            if (slash != std::string::npos) { id = rest.substr(0, slash); action = rest.substr(slash+1); }
-            if (req.method == "GET" && action.empty()) {
-                send_json(res, envelope_ok(json_object_get(g_store->node()), ""));
-                return;
-            }
-            if (req.method == "PUT" && action.empty()) {
-                json_object* body = json_tokener_parse(req.body.c_str());
-                std::string name = get_str(body, "name");
-                if (body) json_object_put(body);
-                json_object* patch = json_object_new_object();
-                json_object_object_add(patch, "name", json_object_new_string(name.c_str()));
-                g_store->update_node(patch);
-                json_object_put(patch);
-                send_json(res, envelope_ok(json_object_get(g_store->node()), ""));
-                return;
-            }
-            if (req.method == "POST" && action == "retire") {
-                json_object* patch = json_object_new_object();
-                json_object_object_add(patch, "lifecycle", json_object_new_string("retired"));
-                json_object_object_add(patch, "online", json_object_new_boolean(0));
-                json_object_object_add(patch, "bind", json_object_new_string("—"));
-                g_store->update_node(patch);
-                json_object_put(patch);
-                send_json(res, envelope_ok(json_object_get(g_store->node()), ""));
-                return;
-            }
-            if (req.method == "POST" && action == "heartbeat") {
-                json_object* body = json_tokener_parse(req.body.c_str());
-                json_object* patch = nullptr;
-                if (body) {
-                    if (!json_object_object_get_ex(body, "patch", &patch)) patch = body;
-                }
-                json_object* hp = json_object_new_object();
-                json_object_object_add(hp, "lastHeartbeat", json_object_new_string(iso_now().c_str()));
-                if (patch) {
-                    json_object* m = nullptr;
-                    if (json_object_object_get_ex(patch, "metrics", &m)) json_object_object_add(hp, "metrics", json_object_get(m));
-                }
-                g_store->update_node(hp);
-                json_object_put(hp);
-                if (body) json_object_put(body);
-                send_json(res, envelope_ok(json_object_get(g_store->node()), "心跳已接收"));
-                return;
-            }
-        }
+        // Single-node platform-compatible view lives in local_shim.
+        if (route_local_nodes(g_store, req, res)) return;
 
         // media endpoints
         if (req.method == "GET" && req.path == "/api/v1/node/media/status") {
@@ -1944,6 +1827,10 @@ int main(int argc, char** argv) {
             return;
         }
         if (req.method == "POST" && req.path == "/api/v1/node/media/prepare") {
+            if (!g_api_token.empty() && !token_ok) {
+                send_json(res, envelope_fail("UNAUTHORIZED", 401, "missing or bad token"));
+                return;
+            }
             json_object* body = json_tokener_parse(req.body.c_str());
             std::string r = media_cmd("prepare", body);
             if (body) json_object_put(body);
@@ -1955,6 +1842,10 @@ int main(int argc, char** argv) {
         // Manual two-phase close: passthrough commit/abort so a prepared
         // operation can be finished by hand when the barrier path is down.
         if (req.method == "POST" && req.path == "/api/v1/node/media/commit") {
+            if (!g_api_token.empty() && !token_ok) {
+                send_json(res, envelope_fail("UNAUTHORIZED", 401, "missing or bad token"));
+                return;
+            }
             json_object* body = json_tokener_parse(req.body.c_str());
             std::string r = media_cmd("commit", body);
             if (body) json_object_put(body);
@@ -1964,6 +1855,10 @@ int main(int argc, char** argv) {
             return;
         }
         if (req.method == "POST" && req.path == "/api/v1/node/media/abort") {
+            if (!g_api_token.empty() && !token_ok) {
+                send_json(res, envelope_fail("UNAUTHORIZED", 401, "missing or bad token"));
+                return;
+            }
             json_object* body = json_tokener_parse(req.body.c_str());
             std::string r = g_media->request("abort", body);
             if (body) json_object_put(body);
@@ -2391,22 +2286,10 @@ int main(int argc, char** argv) {
             return;
         }
 
-        // static files
-        if (req.method == "GET") {
-            std::string path = req.path;
-            if (path == "/" || path.empty()) path = "/index.html";
-            std::string full = g_web_root + path;
-            struct stat st;
-            if (stat(full.c_str(), &st) == 0 && S_ISREG(st.st_mode)) {
-                std::string content = read_file(full);
-                res.status = 200;
-                res.body = content;
-                res.content_type = guess_ct(full);
-                res.headers["Cache-Control"] = "no-cache";
-                res.headers["X-Content-Type-Options"] = "nosniff";
-                return;
-            }
-        }
+        // static files share the common traversal-safe server
+        if (req.method == "GET" &&
+            HttpServer::serve_static_file(g_web_root, req.path, res))
+            return;
 
         send_json(res, envelope_fail("NOT_FOUND", 404, ("未定义的 API：" + req.method + " " + req.path).c_str()));
     };

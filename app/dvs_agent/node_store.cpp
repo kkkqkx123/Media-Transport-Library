@@ -89,26 +89,9 @@ void NodeStore::load() {
         json_object_object_add(seed, "registerState", json_object_new_string("unregistered"));
         json_object_object_add(seed, "network", json_object_new_object());
         json_object* outp = json_object_new_object();
-        json_object* in_ports = json_object_new_array();
-        json_object* in0 = json_object_new_object();
-        json_object_object_add(in0, "id", json_object_new_string("HDMI1"));
-        json_object_object_add(in0, "label", json_object_new_string("HDMI 输入 1"));
-        json_object_object_add(in0, "kind", json_object_new_string("HDMI 2.0 RX"));
-        json_object_object_add(in0, "maxWidth", json_object_new_int(3840));
-        json_object_object_add(in0, "maxHeight", json_object_new_int(2160));
-        json_object_object_add(in0, "maxRefreshHz", json_object_new_int(60));
-        json_object_array_add(in_ports, in0);
-        json_object_object_add(outp, "inputPorts", in_ports);
-        json_object* out_ports = json_object_new_array();
-        json_object* out0 = json_object_new_object();
-        json_object_object_add(out0, "id", json_object_new_string("HDMI-A"));
-        json_object_object_add(out0, "label", json_object_new_string("HDMI 输出 A"));
-        json_object_object_add(out0, "kind", json_object_new_string("HDMI 2.1 TX"));
-        json_object_object_add(out0, "maxWidth", json_object_new_int(7680));
-        json_object_object_add(out0, "maxHeight", json_object_new_int(4320));
-        json_object_object_add(out0, "maxRefreshHz", json_object_new_int(60));
-        json_object_array_add(out_ports, out0);
-        json_object_object_add(outp, "outputPorts", out_ports);
+        /* Ports come only from engine capability reports. Absent means
+         * unreported, empty means the engine reported zero ports. Seeding
+         * local ports here would look like a real report to the frontend. */
         json_object_object_add(outp, "maxDecodeSessions", json_object_new_int(4));
         json_object_object_add(outp, "maxLayers", json_object_new_int(4));
         /* TX static ceiling (SoC limits, not probed). The engine reports the
@@ -137,6 +120,7 @@ void NodeStore::load() {
         json_object* sip = json_object_new_object();
         json_object_object_add(sip, "enabled", json_object_new_boolean(0));
         json_object_object_add(sip, "state", json_object_new_string("disabled"));
+        json_object_object_add(sip, "mode", json_object_new_string("connectivity-probe"));
         json_object_object_add(seed, "sip", sip);
         json_object_object_add(seed, "currentPlayback", json_object_new_null());
         json_object_object_add(seed, "exception", json_object_new_null());
@@ -156,6 +140,19 @@ void NodeStore::load() {
         n = get_kv(db_, "node");
     }
     node_ = json_tokener_parse(n.c_str());
+    /* Backfill sip mode for databases seeded before the probe label. */
+    {
+        json_object* sip = nullptr;
+        if (node_ && json_object_object_get_ex(node_, "sip", &sip) && sip &&
+            json_object_is_type(sip, json_type_object)) {
+            json_object* mv = nullptr;
+            if (!json_object_object_get_ex(sip, "mode", &mv) || !mv) {
+                json_object_object_add(sip, "mode",
+                                       json_object_new_string("connectivity-probe"));
+                set_kv(db_, "node", json_object_to_json_string(node_));
+            }
+        }
+    }
 
     std::string c = get_kv(db_, "config");
     if (c.empty()) {

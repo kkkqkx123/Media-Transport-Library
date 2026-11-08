@@ -206,7 +206,7 @@ json_object* Maintenance::upgrade(const std::string& filename,
     std::string ver = derive_version(path);
     std::string staged = std::string("/var/lib/dvs_agent/upgrade/") + ver + "/fw.bin";
     std::string content = slurp_file(path);
-    /* Best-effort staging write; failures still keep the old version. */
+    bool staged_ok = false;
     {
         size_t pos = staged.find_last_of('/');
         if (pos != std::string::npos) {
@@ -215,7 +215,17 @@ json_object* Maintenance::upgrade(const std::string& filename,
             system(cmd.c_str());
         }
         std::ofstream out(staged, std::ios::binary);
-        if (out) out.write(content.data(), (std::streamsize)content.size());
+        if (out) {
+            out.write(content.data(), (std::streamsize)content.size());
+            out.close();
+            staged_ok = (bool)out;
+        }
+    }
+    if (!staged_ok) {
+        json_object_object_add(o, "ok", json_object_new_boolean(0));
+        json_object_object_add(o, "status", json_object_new_string("failed"));
+        json_object_object_add(o, "reason", json_object_new_string("cannot stage package"));
+        return o;
     }
 
     if (!std::getenv("DVS_ALLOW_UPGRADE_SWITCH")) {

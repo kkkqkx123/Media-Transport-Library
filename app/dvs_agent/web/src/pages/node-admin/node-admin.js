@@ -53,17 +53,38 @@
         function renderPlaybackTasks() {
           var cur = (nodeSnapshot && nodeSnapshot.currentPlayback) || null;
           var playing = cur && cur.status === "playing";
+          var lanes = cur ? ((cur.lanesReady != null ? cur.lanesReady : "?") + "/" + (cur.lanesTotal != null ? cur.lanesTotal : "?")) : "";
           $("playback-current-status").textContent = playing ? "播放中" : "暂无播放";
           $("playback-current-detail").textContent = playing
-            ? ((cur.name || cur.taskId || "当前任务") + " · " + (cur.taskId || ""))
+            ? ("就绪 " + lanes + "路" + (cur.updatedAt ? " · " + cur.updatedAt : ""))
             : "当前节点没有正在播放的任务";
-          $("playback-current").setAttribute("data-task-id", (cur && cur.taskId) || "");
+          $("playback-current").setAttribute("data-task-id", "");
           var hint = '<div class="task-empty">完整任务列表由平台服务管理，节点本机页仅投影当前播放。</div>';
           $("playback-task-list").innerHTML = hint;
           $("playback-record-list").innerHTML = hint;
         }
         function taskAction() { protoToast("任务操作请前往平台服务端执行"); }
         function $(id) { return document.getElementById(id); }
+        function formatUptime(sec) {
+          var s = Number(sec);
+          if (!isFinite(s) || s < 0) return "—";
+          s = Math.floor(s);
+          var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+          if (h > 0) return h + "时" + m + "分";
+          if (m > 0) return m + "分" + (s % 60) + "秒";
+          return s + "秒";
+        }
+        function formatMem(metrics) {
+          if (!metrics) return "—";
+          var text = "—";
+          if (metrics.memUsedPercent != null) text = metrics.memUsedPercent + "%";
+          if (metrics.memTotalKB && metrics.memAvailableKB) {
+            var totalMb = Math.round(metrics.memTotalKB / 1024);
+            var availMb = Math.round(metrics.memAvailableKB / 1024);
+            text += " · " + (totalMb - availMb) + "/" + totalMb + "MB";
+          }
+          return text;
+        }
         function roleText(role) { return role === "input" ? "输入盒" : "输出盒"; }
         function nodeExceptionText(node) {
           return node && node.exception && node.exception.reason ? node.exception.reason : "—";
@@ -176,8 +197,12 @@
           $("info-sync").textContent = nodeCapabilities.sync;
         }
         function playbackText(node) {
-          return node && node.currentPlayback && node.currentPlayback.status === "playing"
-            ? node.currentPlayback.name + " · " + node.currentPlayback.taskId : "未播放";
+          var cur = node && node.currentPlayback;
+          if (cur && cur.status === "playing") {
+            var lanes = (cur.lanesReady != null ? cur.lanesReady : "?") + "/" + (cur.lanesTotal != null ? cur.lanesTotal : "?");
+            return "播放中 · " + lanes + "路";
+          }
+          return "未播放";
         }
         function mergeNode(patch) {
           patch = patch || {};
@@ -227,14 +252,15 @@
           $("info-role").textContent = pendingRole ? roleText(currentRole) + " → " + roleText(pendingRole) + "（待重启）" : roleText(currentRole);
           $("info-ip").textContent = nodeSnapshot.ip || "—";
           $("info-mac").textContent = nodeSnapshot.mac || "—";
-          $("info-uptime").textContent = nodeSnapshot.uptime || "—";
+          var upSec = nodeSnapshot.metrics && nodeSnapshot.metrics.uptimeSec;
+          $("info-uptime").textContent = (upSec != null && upSec !== "") ? formatUptime(upSec) : "—";
           $("info-regmode").textContent = nodeSnapshot.registerMode === "manual" ? "手动注册" : "自动注册";
           $("info-sipstate").textContent = nodeSnapshot.sip && nodeSnapshot.sip.enabled
-            ? (nodeSnapshot.sip.state === "connected" ? "已连接" : (nodeSnapshot.sip.state === "probing" ? "探测中…" : "连接失败")) : "未启用";
+            ? (nodeSnapshot.sip.state === "connected" ? "探测可达（连通性探测）" : (nodeSnapshot.sip.state === "probing" ? "探测中…" : "探测失败")) : "未启用";
           $("info-playback").textContent = playbackText(nodeSnapshot);
           $("info-exception").textContent = nodeExceptionText(nodeSnapshot);
           $("info-temp").textContent = nodeSnapshot.metrics && nodeSnapshot.metrics.temperature || "—";
-          $("info-mem").textContent = nodeSnapshot.metrics && nodeSnapshot.metrics.memory || "—";
+          $("info-mem").textContent = formatMem(nodeSnapshot.metrics);
           if (nodeSnapshot.output && nodeCapabilities.outputPorts.length) {
             var output = nodeSnapshot.output;
             var outputPortId = output.connector && nodeCapabilities.outputPorts.some(function (port) { return port.id === output.connector; })
@@ -366,6 +392,7 @@
               return;
             }
             var cfg = r.data || {};
+            if (scope === "network" && r.msg) opts.appliedText = r.msg;
             if (!nodeSnapshot.configStates) nodeSnapshot.configStates = {};
             nodeSnapshot.configStates[scope] = cfg.state || "pending_apply";
             pollConfig(id, scope, token, opts);
@@ -469,8 +496,8 @@
           var outputSave = document.querySelector('.btn-save-zone[data-zone="output"]');
           var playbackNav = navItem("playback");
           var playbackAvailable = currentRole === "output";
-          if (inputSave) inputSave.disabled = !(shown === "input" || pendingRole);
-          if (outputSave) outputSave.disabled = !(shown === "output" || pendingRole);
+          if (inputSave) inputSave.disabled = !(shown === "input" || pendingRole) || !nodeCapabilities.inputPorts.length;
+          if (outputSave) outputSave.disabled = !(shown === "output" || pendingRole) || !nodeCapabilities.outputPorts.length;
           if (playbackNav) {
             playbackNav.classList.toggle("is-muted", !playbackAvailable);
             playbackNav.setAttribute("aria-disabled", playbackAvailable ? "false" : "true");
@@ -579,17 +606,17 @@
                 button: btn,
                 pendingText: "配置已保存，等待节点应用",
                 applyingText: "正在应用采集口配置",
-                appliedText: wantTx ? "已生效 · 采集发送参数已下发" : "已生效 · 当前采集口：" + inputPort,
+                appliedText: wantTx ? "已生效 · 采集发送参数已下发" : "已保存 · 当前采集口：" + inputPort + "（未下发引擎）",
                 onPending: function () { patchNodeConfig("input", "pending", "配置已保存，等待节点应用"); },
                 onApplying: function () { patchNodeConfig("input", "applying", "正在应用采集口配置"); },
                 onApplied: function () {
                   var inputPatch = { port: inputPort };
                   if (wantTx) { inputPatch.encode = encDraft; inputPatch.target = { sip: tgtIp, udpPort: tgtPort }; }
-                  patchNode({ input: inputPatch, configStates: { input: "applied" }, configMessages: { input: "已生效 · 当前采集口：" + inputPort }, exception: null });
+                  patchNode({ input: inputPatch, configStates: { input: "applied" }, configMessages: { input: wantTx ? "已生效 · 采集发送参数已下发" : "已保存 · 当前采集口：" + inputPort + "（未下发引擎）" }, exception: null });
                   syncNodeView();
                   refreshTxState();
-                  protoToast(wantTx ? "输入采集发送参数已下发" : ("输入口配置已生效：" + inputPort));
-                  setLastOps("输入口配置", "已生效");
+                  protoToast(wantTx ? "输入采集发送参数已下发" : ("输入口配置已保存：" + inputPort));
+                  setLastOps("输入口配置", wantTx ? "已生效" : "已保存");
                 }
               });
             } else {
@@ -844,26 +871,26 @@
             scope: "sip",
             desiredValue: { enabled: true, server: server, port: port, deviceId: device, user: user },
             button: $("btn-save-sip"),
-            pendingText: "配置已保存，等待 SIP 应用",
-            applyingText: "应用中 · 正在连接 SIP 服务",
-            appliedText: "已生效 · SIP 已连接",
-            failedText: "SIP 连接失败，可修改参数后重试",
-            onPending: function () { patchNodeConfig("sip", "pending", "配置已保存，等待 SIP 应用"); },
-            onApplying: function () { patchNodeConfig("sip", "applying", "正在连接 SIP 服务"); },
+            pendingText: "配置已保存，等待 SIP 探测",
+            applyingText: "应用中 · 正在探测 SIP 服务",
+            appliedText: "已生效 · SIP 探测可达（连通性探测）",
+            failedText: "SIP 探测失败，可修改参数后重试",
+            onPending: function () { patchNodeConfig("sip", "pending", "配置已保存，等待 SIP 探测"); },
+            onApplying: function () { patchNodeConfig("sip", "applying", "正在探测 SIP 服务"); },
             onFail: function () {
-              $("sip-state").textContent = "连接失败 · 可重试";
+              $("sip-state").textContent = "探测失败 · 可重试";
               $("sip-state").className = "tag-pending";
-              $("info-sipstate").textContent = "连接失败";
-              patchNode({ sip: { enabled: true, state: "failed", server: server, port: port, deviceId: device, user: user }, configStates: { sip: "failed" }, configMessages: { sip: "SIP 连接失败，可修改参数后重试" }, exception: { code: "SIP_UNREACHABLE", reason: "SIP 服务不可达", at: new Date().toISOString() } });
+              $("info-sipstate").textContent = "探测失败";
+              patchNode({ sip: { enabled: true, state: "failed", server: server, port: port, deviceId: device, user: user }, configStates: { sip: "failed" }, configMessages: { sip: "SIP 探测失败，可修改参数后重试" }, exception: { code: "SIP_UNREACHABLE", reason: "SIP 服务不可达", at: new Date().toISOString() } });
               syncNodeView();
               protoToast("SIP 服务不可达，本机播放不受影响");
               setLastOps("SIP 配置", "失败");
             },
             onApplied: function () {
-              $("sip-state").textContent = "已连接";
+              $("sip-state").textContent = "探测可达";
               $("sip-state").className = "tag-ok";
-              $("info-sipstate").textContent = "已连接";
-              patchNode({ sip: { enabled: true, state: "connected", server: server, port: port, deviceId: device, user: user, lastAt: new Date().toISOString() }, configStates: { sip: "applied" }, configMessages: { sip: "已生效 · SIP 已连接" }, exception: null });
+              $("info-sipstate").textContent = "探测可达（连通性探测）";
+              patchNode({ sip: { enabled: true, state: "connected", server: server, port: port, deviceId: device, user: user, lastAt: new Date().toISOString() }, configStates: { sip: "applied" }, configMessages: { sip: "已生效 · SIP 探测可达（连通性探测）" }, exception: null });
               syncNodeView();
               protoToast("SIP 配置已生效");
               setLastOps("SIP 配置", "已生效");
@@ -879,6 +906,15 @@
             onOk: function () {
               setOpsRunning(true, "正在重启…");
               apiAsync("POST", "/api/v1/node/reboot").then(function (r) {
+                var gated = r && r.data && r.data.gated;
+                var st = r && r.data && r.data.status;
+                if (gated || st === "reboot_deferred") {
+                  setOpsRunning(false, "受控未重启：角色提升与媒体清理已应用，系统未重启");
+                  protoToast("受控未重启：角色提升与媒体清理已应用，系统未重启");
+                  setLastOps("重启", "受控未执行");
+                  setTimeout(function () { window.location.reload(); }, 1500);
+                  return;
+                }
                 protoToast("重启指令已下发");
                 setLastOps("重启", "已提交");
                 setTimeout(function () { window.location.reload(); }, 3000);

@@ -600,6 +600,23 @@ json_object* Registration::build_heartbeat() {
                     tx_udp = int_of(tgt, "udpPort");
                 }
             }
+            /* Fold the same snapshot into the stored playback projection
+             * so /info reports playing without an extra status poll. */
+            {
+                json_object* pp = json_object_new_object();
+                if (lane_ready > 0) {
+                    json_object* cur = json_object_new_object();
+                    json_object_object_add(cur, "status", json_object_new_string("playing"));
+                    json_object_object_add(cur, "lanesReady", json_object_new_int(lane_ready));
+                    json_object_object_add(cur, "lanesTotal", json_object_new_int(lane_total));
+                    json_object_object_add(cur, "updatedAt", json_object_new_string(iso_now().c_str()));
+                    json_object_object_add(pp, "currentPlayback", cur);
+                } else {
+                    json_object_object_add(pp, "currentPlayback", json_object_new_null());
+                }
+                store_->update_node(pp);
+                json_object_put(pp);
+            }
         }
         json_object_put(st);
     } else {
@@ -646,15 +663,28 @@ json_object* Registration::build_heartbeat() {
         json_object_object_add(so, "enabled", json_object_new_boolean(en ? 1 : 0));
         json_object_object_add(so, "state",
                                json_object_new_string(sip ? str_of(sip, "state", "disabled").c_str() : "disabled"));
+        json_object_object_add(so, "mode", json_object_new_string("connectivity-probe"));
         json_object_object_add(so, "server",
                                json_object_new_string(sip ? str_of(sip, "server", "").c_str() : ""));
         json_object_object_add(o, "sip", so);
     }
 
-    /* resources (best effort) */
+    /* resources (best effort): MemTotal parsed by key, not by position. */
     json_object* res = json_object_new_object();
-    long mem_kb = read_long_file("/proc/meminfo", 0);
-    /* MemAvailable is the 3rd field on a line; a crude read suffices. */
+    long mem_kb = 0;
+    {
+        std::ifstream mf("/proc/meminfo");
+        std::string mline;
+        while (std::getline(mf, mline)) {
+            long v = 0;
+            char key[64];
+            if (sscanf(mline.c_str(), "%63[^:]: %ld", key, &v) == 2 &&
+                strcmp(key, "MemTotal") == 0) {
+                mem_kb = v;
+                break;
+            }
+        }
+    }
     json_object_object_add(res, "cpu", json_object_new_int(0));
     json_object_object_add(res, "memMb", json_object_new_int((int)(mem_kb / 1024)));
     long temp = read_long_file("/sys/class/thermal/thermal_zone0/temp", 0);

@@ -405,6 +405,8 @@ static bool media_layout_allowed(std::string& reason_out) {
     int ei = -1;
     MediaIpcClient::parse_hello(g_media_q->hello(), answered, match, eb, ei);
     std::lock_guard<std::mutex> lk(g_ver_mu);
+    bool prev_known = g_ver_known;
+    bool prev_match = g_ver_match;
     g_ver_at = agent_now_ms();
     if (!answered) {
         /* Engine silent: unknown, not mismatched. Let the verb itself
@@ -421,6 +423,8 @@ static bool media_layout_allowed(std::string& reason_out) {
                  DVS_MEDIA_IPC_VERSION);
         reason_out = buf;
         fprintf(stderr, "dvs-agent: %s\n", buf);
+        if (!prev_known || prev_match)
+            agent_audit("version", "gate", "failed", buf);
     }
     return match;
 }
@@ -535,11 +539,12 @@ static std::string engine_link_state() {
     else if (streak > 0) st = "degraded";
     else if (ok_age >= 0) st = "online";
     else st = "unknown";
-    if (st != g_link_logged && (st == "offline" || g_link_logged == "offline")) {
-        fprintf(stderr, "dvs-agent: engine link %s -> %s (streak=%d)\n",
-                g_link_logged.c_str(), st.c_str(), streak);
-        g_link_logged = st;
-    } else if (g_link_logged == "unknown" && st != "unknown") {
+    if (st != g_link_logged) {
+        char detail[96];
+        snprintf(detail, sizeof(detail), "%s -> %s (streak=%d)",
+                 g_link_logged.c_str(), st.c_str(), streak);
+        fprintf(stderr, "dvs-agent: engine link %s\n", detail);
+        agent_audit("engine", "link", st, detail);
         g_link_logged = st;
     }
     return st;
@@ -685,7 +690,7 @@ static void hotplug_poll_once() {
 
 static void hotplug_loop() {
     for (;;) {
-        std::this_thread::sleep_for(std::chrono::seconds(15));
+        std::this_thread::sleep_for(std::chrono::seconds(10));
         hotplug_poll_once();
     }
 }
@@ -1031,19 +1036,26 @@ int main(int argc, char** argv) {
             json_object_put(patch2);
             if (role_val) {
                 std::string want;
-                if (json_object_is_type(role_val, json_type_string)) {
+                if (json_object_is_type(role_val, json_type_string))
                     want = json_object_get_string(role_val);
-                    json_object* rv2 = json_object_new_object();
-                    json_object_object_add(rv2, "role", json_object_new_string(want.c_str()));
-                    g_store->set_desired("role", rv2, nullptr);
-                    json_object_put(rv2);
-                } else {
+                else {
                     json_object* rv = nullptr;
                     if (json_object_object_get_ex(role_val, "role", &rv) && rv)
                         want = json_object_get_string(rv);
-                    g_store->set_desired("role", json_object_get(role_val), nullptr);
                 }
-                if (want == "input" || want == "output") {
+                if (want != "input" && want != "output") {
+                    g_store->mark_failed("role", "INVALID_ARGUMENT", "角色取值非法");
+                    agent_audit("role", "platform-ws", "failed",
+                                std::string("INVALID_ARGUMENT: illegal role '") + want + "'");
+                } else {
+                    if (json_object_is_type(role_val, json_type_string)) {
+                        json_object* rv2 = json_object_new_object();
+                        json_object_object_add(rv2, "role", json_object_new_string(want.c_str()));
+                        g_store->set_desired("role", rv2, nullptr);
+                        json_object_put(rv2);
+                    } else {
+                        g_store->set_desired("role", json_object_get(role_val), nullptr);
+                    }
                     std::string pend = sync_pending_role(want);
                     agent_audit("role", "platform-ws", pend.empty() ? "applied" : "pending",
                                 pend.empty() ? "already active" : ("pending " + pend));
@@ -1199,6 +1211,8 @@ int main(int argc, char** argv) {
                 json_object_object_add(metrics, "memAvailableKB", json_object_get(v));
             if (json_object_object_get_ex(cap, "load1", &v) && v)
                 json_object_object_add(metrics, "load1", json_object_get(v));
+            if (json_object_object_get_ex(cap, "uptimeSec", &v) && v)
+                json_object_object_add(metrics, "uptimeSec", json_object_get(v));
             long temp = 0;
             {
                 std::ifstream tf("/sys/class/thermal/thermal_zone0/temp");
@@ -1302,15 +1316,21 @@ int main(int argc, char** argv) {
                             json_object_object_get_ex(g_store->node(), "capabilities", &caps);
                             json_object* arr = nullptr;
                             if (caps && json_object_object_get_ex(caps, "inputPorts", &arr) && arr &&
-                                json_object_is_type(arr, json_type_array) && json_object_array_length(arr) > 0) {
-                                ok = false;
-                                for (size_t i = 0; i < (size_t)json_object_array_length(arr); i++) {
-                                    json_object* e = json_object_array_get_idx(arr, (int)i);
-                                    json_object* idv = nullptr;
-                                    if (e && json_object_object_get_ex(e, "id", &idv) && idv &&
-                                        port == json_object_get_string(idv)) { ok = true; break; }
+                                json_object_is_type(arr, json_type_array)) {
+                                if (json_object_array_length(arr) == 0) {
+                                    ok = false;
+                                    fail_code = "INVALID_ARGUMENT";
+                                    fail_reason = "无可用采集口（节点上报零端口）";
+                                } else {
+                                    ok = false;
+                                    for (size_t i = 0; i < (size_t)json_object_array_length(arr); i++) {
+                                        json_object* e = json_object_array_get_idx(arr, (int)i);
+                                        json_object* idv = nullptr;
+                                        if (e && json_object_object_get_ex(e, "id", &idv) && idv &&
+                                            port == json_object_get_string(idv)) { ok = true; break; }
+                                    }
+                                    if (!ok) { fail_code = "INVALID_ARGUMENT"; fail_reason = "采集口超出本机能力"; }
                                 }
-                                if (!ok) { fail_code = "INVALID_ARGUMENT"; fail_reason = "采集口超出本机能力"; }
                             }
                         } else { fail_code = "INVALID_ARGUMENT"; fail_reason = "采集口不能为空"; }
                         if (fail_code.empty()) {
@@ -1374,10 +1394,12 @@ int main(int argc, char** argv) {
                                 bool tx_requested = txp.hasEncode || txp.hasTarget;
                                 if (!tx_requested) {
                                     g_store->mark_applied(scope, 0);
+                                    scope_ok_msg = "已保存·采集口已存储（未下发引擎）";
                                 } else if (!txp.hasEncode || !txp.hasTarget) {
                                     fail_code = "INVALID_ARGUMENT";
                                     fail_reason = "发送需同时给出编码与目标参数";
                                 } else {
+                                    int tx_want_rev = config_desired_revision(scope, node_id);
                                     /* Sync the engine role first so mutual
                                      * exclusion (RX off in input role) holds
                                      * before TX starts. */
@@ -1413,7 +1435,12 @@ int main(int argc, char** argv) {
                                         code = "TX_START_UNPARSABLE";
                                         msg = "media engine response unparsable";
                                     }
-                                    if (!ok) {
+                                    if (config_desired_revision(scope, node_id) != tx_want_rev) {
+                                        fprintf(stderr,
+                                                "dvs-agent: tx_start (%s) stale rev %d vs %d, skip\n",
+                                                scope.c_str(), tx_want_rev,
+                                                config_desired_revision(scope, node_id));
+                                    } else if (!ok) {
                                         fail_code = code.empty() ? "TX_START_FAILED" : code;
                                         fail_reason = msg.empty() ? "media engine refused tx start" : msg;
                                         g_store->mark_failed(scope, fail_code.c_str(), fail_reason.c_str());
@@ -1442,19 +1469,24 @@ int main(int argc, char** argv) {
                         json_object* arr = nullptr;
                         if (caps && json_object_object_get_ex(caps, "outputPorts", &arr) && arr &&
                             json_object_is_type(arr, json_type_array)) {
-                            for (size_t i = 0; i < (size_t)json_object_array_length(arr); i++) {
-                                json_object* e = json_object_array_get_idx(arr, (int)i);
-                                json_object* idv = nullptr;
-                                if (!e || !json_object_object_get_ex(e, "id", &idv) || !idv) continue;
-                                if (!conn.empty() && conn != json_object_get_string(idv)) continue;
-                                conn_known = true;
-                                json_object* q = nullptr;
-                                if (json_object_object_get_ex(e, "maxWidth", &q) && q) lim_w = json_object_get_int(q);
-                                if (json_object_object_get_ex(e, "maxHeight", &q) && q) lim_h = json_object_get_int(q);
-                                if (json_object_object_get_ex(e, "maxRefreshHz", &q) && q) lim_z = json_object_get_int(q);
-                                break;
+                            if (json_object_array_length(arr) == 0) {
+                                fail_code = "INVALID_ARGUMENT";
+                                fail_reason = "无可用输出口（节点上报零端口）";
+                            } else {
+                                for (size_t i = 0; i < (size_t)json_object_array_length(arr); i++) {
+                                    json_object* e = json_object_array_get_idx(arr, (int)i);
+                                    json_object* idv = nullptr;
+                                    if (!e || !json_object_object_get_ex(e, "id", &idv) || !idv) continue;
+                                    if (!conn.empty() && conn != json_object_get_string(idv)) continue;
+                                    conn_known = true;
+                                    json_object* q = nullptr;
+                                    if (json_object_object_get_ex(e, "maxWidth", &q) && q) lim_w = json_object_get_int(q);
+                                    if (json_object_object_get_ex(e, "maxHeight", &q) && q) lim_h = json_object_get_int(q);
+                                    if (json_object_object_get_ex(e, "maxRefreshHz", &q) && q) lim_z = json_object_get_int(q);
+                                    break;
+                                }
+                                if (!conn.empty() && !conn_known) { fail_code = "INVALID_ARGUMENT"; fail_reason = "输出口不存在"; }
                             }
-                            if (!conn.empty() && !conn_known) { fail_code = "INVALID_ARGUMENT"; fail_reason = "输出口不存在"; }
                         }
                         if (fail_code.empty()) {
                             if (w < 640 || w > lim_w || h < 480 || h > lim_h || z < 24 || z > lim_z) {
@@ -2014,6 +2046,7 @@ int main(int argc, char** argv) {
             json_object* d = json_object_new_object();
             json_object* lanes = json_object_new_array();
             bool engine_ok = false;
+            std::string eng_code, eng_msg;
             if (o) {
                 json_object* okv = nullptr;
                 json_object* data = nullptr;
@@ -2025,6 +2058,13 @@ int main(int argc, char** argv) {
                     if (json_object_object_get_ex(data, "lanes", &lj) && lj)
                         lanes = json_object_get(lj);
                     project_playback_from_data(data);
+                } else {
+                    json_object* cv = nullptr;
+                    json_object* mv = nullptr;
+                    if (json_object_object_get_ex(o, "code", &cv) && cv)
+                        eng_code = json_object_get_string(cv);
+                    if (json_object_object_get_ex(o, "msg", &mv) && mv)
+                        eng_msg = json_object_get_string(mv);
                 }
                 json_object_put(o);
             }
@@ -2040,11 +2080,20 @@ int main(int argc, char** argv) {
             else
                 json_object_object_add(d, "inputPorts", json_object_new_array());
             if (!engine_ok) {
+                /* Engine silent: honest error envelope carrying the local
+                 * input intent, never an idle-looking ok. */
                 json_object* eo = json_object_new_object();
                 json_object_object_add(eo, "engineUnreachable", json_object_new_boolean(1));
                 json_object_object_add(d, "engine", eo);
+                std::string code = eng_code.empty() ? "MEDIA_ENGINE_UNREACHABLE" : eng_code;
+                std::string msg = eng_msg.empty() ? "media engine unreachable" : eng_msg;
+                json_object* fail = envelope_fail(code.c_str(), 503, msg.c_str());
+                json_object_object_del(fail, "data");
+                json_object_object_add(fail, "data", d);
+                send_json(res, fail);
+                return;
             }
-            send_json(res, envelope_ok(d, engine_ok ? "" : "engine unreachable, input intent only"));
+            send_json(res, envelope_ok(d, ""));
             return;
         }
         if (req.method == "GET" && req.path == "/api/v1/node/media/logs") {
@@ -2064,6 +2113,12 @@ int main(int argc, char** argv) {
             long long age = (g_cap_ok_ms > 0) ? agent_now_ms() - g_cap_ok_ms : -1;
             json_object_object_add(d, "capAgeMs", json_object_new_int64(age));
             json_object_object_add(d, "capStale", json_object_new_boolean((age < 0 || age > kCapStaleMs) ? 1 : 0));
+            json_object* nsys = nullptr;
+            json_object_object_get_ex(g_store->node(), "networkSystem", &nsys);
+            json_object_object_add(d, "networkSystem", nsys ? json_object_get(nsys) : json_object_new_object());
+            json_object* lup = nullptr;
+            json_object_object_get_ex(g_store->node(), "lastUpgrade", &lup);
+            if (lup) json_object_object_add(d, "lastUpgrade", json_object_get(lup));
             send_json(res, envelope_ok(d, ""));
             return;
         }
@@ -2085,13 +2140,13 @@ int main(int argc, char** argv) {
             if (body) json_object_object_get_ex(body, "config", &cfg);
             json_object* patch = json_object_new_object();
             json_object* ignored = json_object_new_array();
+            std::string role_err;
             if (cfg && json_object_is_type(cfg, json_type_object)) {
                 json_object_object_foreach(cfg, key, val) {
                     std::string k(key);
                     if (k == "geometry") {
                         json_object_object_add(patch, "geometry", json_object_get(val));
                     } else if (k == "role") {
-                        g_store->set_desired("role", json_object_get(val), nullptr);
                         std::string want;
                         json_object* rv = nullptr;
                         if (json_object_is_type(val, json_type_object) &&
@@ -2099,7 +2154,16 @@ int main(int argc, char** argv) {
                             want = json_object_get_string(rv);
                         else if (json_object_is_type(val, json_type_string))
                             want = json_object_get_string(val);
-                        if (want == "input" || want == "output") sync_pending_role(want);
+                        if (want != "input" && want != "output") {
+                            role_err = std::string("INVALID_ARGUMENT: illegal role '") + want + "'";
+                            g_store->mark_failed("role", "INVALID_ARGUMENT", "角色取值非法");
+                            agent_audit("role", "platform-sync", "failed", role_err);
+                        } else {
+                            g_store->set_desired("role", json_object_get(val), nullptr);
+                            sync_pending_role(want);
+                            agent_audit("role", "platform-sync", "pending",
+                                        std::string("pending ") + want);
+                        }
                     } else {
                         json_object_array_add(ignored, json_object_new_string(k.c_str()));
                     }
@@ -2108,6 +2172,11 @@ int main(int argc, char** argv) {
             json_object_object_add(patch, "configSource", json_object_new_string("platform"));
             g_store->update_node(patch);
             json_object_put(patch);
+            if (!role_err.empty()) {
+                if (body) json_object_put(body);
+                send_json(res, envelope_fail("INVALID_ARGUMENT", 400, role_err.c_str()));
+                return;
+            }
             json_object* d = json_object_new_object();
             json_object_object_add(d, "applied", json_object_new_boolean(1));
             json_object_object_add(d, "source", json_object_new_string("platform"));

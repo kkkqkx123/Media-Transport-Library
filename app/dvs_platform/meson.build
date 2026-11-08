@@ -31,6 +31,17 @@ platform_lib_src = files(
   'ops.cpp',
   'http_json.cpp',
   'docs_routes.cpp',
+  'channels.cpp',
+  'node_state.cpp',
+  'layout_fanout.cpp',
+  'barrier.cpp',
+  'ws_channel.cpp',
+  'node_routes.cpp',
+  'op_routes.cpp',
+  'media_routes.cpp',
+  'upgrade_jobs.cpp',
+  'ops_sweeper.cpp',
+  'platform_server.cpp',
 ) + common_sources
 
 dvs_platform = executable('dvs_platform',

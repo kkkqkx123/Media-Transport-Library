@@ -40,6 +40,13 @@ std::string body_str(json_object* o, const char* key) {
     return "";
 }
 
+int rect_int(json_object* o, const char* k) {
+    json_object* v = nullptr;
+    if (o && json_object_object_get_ex(o, k, &v) && v)
+        return json_object_get_int(v);
+    return 0;
+}
+
 std::string now_iso() {
     char b[32];
     time_t t = time(nullptr);
@@ -77,4 +84,15 @@ void send_json(HttpResponse& res, json_object* o) {
     res.body = s ? s : "{}";
     res.content_type = "application/json; charset=utf-8";
     json_object_put(o);
+}
+
+bool http_bearer_ok(const HttpRequest& req, const std::string& token) {
+    return ct::bearer_ok(ct::extract_bearer(req.headers), token);
+}
+
+bool require_bearer(const HttpRequest& req, HttpResponse& res,
+                    const std::string& token) {
+    if (http_bearer_ok(req, token)) return true;
+    send_json(res, fail_envelope("UNAUTHORIZED", 401, "missing or bad token"));
+    return false;
 }

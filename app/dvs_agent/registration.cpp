@@ -294,14 +294,31 @@ bool Registration::ws_loop_once() {
     return register_state() == "registered";
 }
 
+static void barrier_frame_fill(json_object* o, const Registration::BarrierFrame& fr) {
+    if (!o) return;
+    if (fr.has_frame)
+        json_object_object_add(o, "frameIndex",
+                               json_object_new_int64(fr.frame_index));
+    if (fr.has_applied_at)
+        json_object_object_add(o, "appliedAtTaiNs",
+                               json_object_new_int64(fr.applied_at_ns));
+    if (fr.late)
+        json_object_object_add(o, "late", json_object_new_boolean(1));
+    if (!fr.reason.empty())
+        json_object_object_add(o, "reason",
+                               json_object_new_string(fr.reason.c_str()));
+}
+
 bool Registration::uplink_barrier_ack(const std::string& opid, const std::string& node,
-                            const std::string& status, json_object* lanes) {
+                            const std::string& status, json_object* lanes,
+                            const BarrierFrame& frame) {
     namespace ct = dvs::contract;
     json_object* d = json_object_new_object();
     json_object_object_add(d, "operationId", json_object_new_string(opid.c_str()));
     json_object_object_add(d, "node", json_object_new_string(node.c_str()));
     json_object_object_add(d, "status", json_object_new_string(status.c_str()));
     if (lanes) json_object_object_add(d, "lanes", json_object_get(lanes));
+    barrier_frame_fill(d, frame);
     if (!ct::validate_barrier_ack(d).empty()) { json_object_put(d); return false; }
     if (ws_.is_open() && ws_send_wrapped(ct::kBarrierAck, d)) return true;
     json_object_put(d);
@@ -312,6 +329,7 @@ bool Registration::uplink_barrier_ack(const std::string& opid, const std::string
     json_object_object_add(c, "node", json_object_new_string(node.c_str()));
     json_object_object_add(c, "status", json_object_new_string(status.c_str()));
     if (lanes) json_object_object_add(c, "lanes", json_object_get(lanes));
+    barrier_frame_fill(c, frame);
     const char* cb = json_object_to_json_string(c);
     std::string resp;
     int sc = cli.post_json(platform_url_ + "/api/v1/ops/commit", std::string(cb ? cb : "{}"),

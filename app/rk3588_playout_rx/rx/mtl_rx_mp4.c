@@ -137,6 +137,21 @@ mtl_rx_mp4* mtl_rx_mp4_create(const mtl_rx_mp4_params* params) {
         ops.ip_addr[0][2] = (uint8_t)c;
         ops.ip_addr[0][3] = (uint8_t)d;
     }
+    /* Optional SSM source filter (validated IPv4 from the control plane).
+     * Absent means any-source multicast. */
+    if (params->src_filter && params->src_filter[0]) {
+        unsigned int a, b, c, d;
+        if (sscanf(params->src_filter, "%u.%u.%u.%u", &a, &b, &c, &d) != 4 ||
+            a > 255 || b > 255 || c > 255 || d > 255) {
+            fprintf(stderr, "mtl_rx: invalid src_filter\n");
+            free(rx);
+            return NULL;
+        }
+        ops.mcast_sip_addr[0][0] = (uint8_t)a;
+        ops.mcast_sip_addr[0][1] = (uint8_t)b;
+        ops.mcast_sip_addr[0][2] = (uint8_t)c;
+        ops.mcast_sip_addr[0][3] = (uint8_t)d;
+    }
     strncpy(ops.port[0], params->port_name, MTL_PORT_MAX_LEN - 1);
 
     rx->handle = st22_rx_create(params->st, &ops);

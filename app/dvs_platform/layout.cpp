@@ -50,6 +50,28 @@ int rect_int(json_object* o, const char* k) {
         return json_object_get_int(v);
     return 0;
 }
+bool valid_ip4_addr(const std::string& s) {
+    if (s.empty() || s.size() > 15) return false;
+    int parts = 0;
+    const char* p = s.c_str();
+    while (true) {
+        if (*p < '0' || *p > '9') return false;
+        int v = 0, digits = 0;
+        while (*p >= '0' && *p <= '9') {
+            v = v * 10 + (*p - '0');
+            digits++;
+            p++;
+            if (digits > 3) return false;
+        }
+        if (v > 255) return false;
+        parts++;
+        if (*p == '\0') break;
+        if (*p != '.') return false;
+        p++;
+        if (*p == '\0') return false;
+    }
+    return parts == 4;
+}
 }  // namespace
 
 json_object* fragment_for_node(json_object* windows, const Rect& node) {
@@ -311,6 +333,14 @@ std::string validate_whitelist_shape(json_object* doc) {
     if (sig.empty()) return "INVALID_ARGUMENT:whitelist missing sig";
     std::string addr = jstr(doc, "address");
     if (addr.empty()) return "INVALID_ARGUMENT:whitelist missing address";
+    // Optional SSM source filter: when present the receivers join the group
+    // with a source check instead of any-source multicast.
+    json_object* sipv = nullptr;
+    if (json_object_object_get_ex(doc, "sourceIp", &sipv) && sipv) {
+        if (!json_object_is_type(sipv, json_type_string) ||
+            !valid_ip4_addr(json_object_get_string(sipv)))
+            return "INVALID_ARGUMENT:whitelist sourceIp must be IPv4";
+    }
     int port = 0;
     json_object* v = nullptr;
     if (json_object_object_get_ex(doc, "port", &v) && v) port = json_object_get_int(v);
@@ -373,6 +403,199 @@ std::string validate_whitelist_shape(json_object* doc) {
         }
     }
     return "";
+}
+
+std::string validate_image_adjust(json_object* doc) {
+    if (!doc || !json_object_is_type(doc, json_type_object))
+        return "INVALID_ARGUMENT:imageAdjust must be object";
+    static const char* kKeys[] = {"brightness", "contrast", "saturation",
+                                  "hue"};
+    bool any = false;
+    for (auto k : kKeys) {
+        json_object* kv = nullptr;
+        if (json_object_object_get_ex(doc, k, &kv) && kv) {
+            if (!json_object_is_type(kv, json_type_int))
+                return std::string("INVALID_ARGUMENT:imageAdjust.") + k +
+                       " must be int";
+            int n = json_object_get_int(kv);
+            if (n < -100 || n > 100)
+                return std::string("INVALID_ARGUMENT:imageAdjust.") + k +
+                       " must be -100..100";
+            any = true;
+        }
+    }
+    if (!any) return "INVALID_ARGUMENT:imageAdjust needs at least one key";
+    return "";
+}
+
+std::string validate_base_image(json_object* doc) {
+    if (!doc || !json_object_is_type(doc, json_type_object))
+        return "INVALID_ARGUMENT:baseImage must be object";
+    json_object* v = nullptr;
+    if (!json_object_object_get_ex(doc, "revision", &v) || !v ||
+        !json_object_is_type(v, json_type_int) || json_object_get_int(v) < 0)
+        return "INVALID_ARGUMENT:baseImage revision must be int >= 0";
+    std::string url = jstr(doc, "url");
+    if (url.empty() || url.size() > 1024)
+        return "INVALID_ARGUMENT:baseImage url required";
+    for (const char* k : {"width", "height"}) {
+        json_object* vv = nullptr;
+        if (json_object_object_get_ex(doc, k, &vv) && vv) {
+            if (!json_object_is_type(vv, json_type_int) ||
+                json_object_get_int(vv) <= 0)
+                return std::string("INVALID_ARGUMENT:baseImage ") + k +
+                       " must be positive";
+        }
+    }
+    json_object* sub = nullptr;
+    if (json_object_object_get_ex(doc, "sub", &sub) && sub) {
+        if (!json_object_is_type(sub, json_type_object))
+            return "INVALID_ARGUMENT:baseImage sub must be object";
+        for (const char* k : {"x", "y", "w", "h"}) {
+            json_object* kv = nullptr;
+            if (!json_object_object_get_ex(sub, k, &kv) || !kv ||
+                !json_object_is_type(kv, json_type_int))
+                return "INVALID_ARGUMENT:baseImage sub must be {x,y,w,h}";
+        }
+        if (rect_int(sub, "w") <= 0 || rect_int(sub, "h") <= 0)
+            return "INVALID_ARGUMENT:baseImage sub must be {x,y,w,h}";
+    }
+    return "";
+}
+
+int node_decode_budget(json_object* node) {
+    if (!node || !json_object_is_type(node, json_type_object)) return -1;
+    json_object* cap = nullptr;
+    if (!json_object_object_get_ex(node, "capability", &cap) || !cap ||
+        !json_object_is_type(cap, json_type_object))
+        return -1;
+    json_object* v = nullptr;
+    if (!json_object_object_get_ex(cap, "maxDecodeSessions", &v) || !v ||
+        !json_object_is_type(v, json_type_int))
+        return -1;
+    int n = json_object_get_int(v);
+    return n > 0 ? n : -1;
+}
+
+int count_node_signals(json_object* windows, const Rect& node) {
+    json_object* frag = fragment_for_node(windows, node);
+    std::set<std::string> sigs;
+    if (frag && json_object_is_type(frag, json_type_array)) {
+        for (size_t i = 0; i < json_object_array_length(frag); i++) {
+            json_object* w = json_object_array_get_idx(frag, i);
+            if (!w) continue;
+            std::string sig = jstr(w, "sig");
+            if (!sig.empty()) sigs.insert(sig);
+        }
+    }
+    if (frag) json_object_put(frag);
+    return (int)sigs.size();
+}
+
+json_object* snap_windows_to_cells(
+    json_object* windows,
+    const std::vector<std::pair<std::string, Rect>>& cells) {
+    json_object* out = json_object_new_array();
+    if (!windows || !json_object_is_type(windows, json_type_array) || cells.empty()) {
+        if (windows && json_object_is_type(windows, json_type_array)) {
+            for (size_t i = 0; i < json_object_array_length(windows); i++)
+                json_object_array_add(out,
+                    json_object_get(json_object_array_get_idx(windows, i)));
+        }
+        return out;
+    }
+    for (size_t i = 0; i < json_object_array_length(windows); i++) {
+        json_object* w = json_object_array_get_idx(windows, i);
+        json_object* c = json_object_new_object();
+        if (!w || !json_object_is_type(w, json_type_object)) {
+            json_object_array_add(out, c);
+            continue;
+        }
+        int x = rect_int(w, "x"), y = rect_int(w, "y");
+        int ww = rect_int(w, "w"), hh = rect_int(w, "h");
+        if (ww > 0 && hh > 0) {
+            int cx = x + ww / 2, cy = y + hh / 2;
+            for (const auto& kv : cells) {
+                const Rect& r = kv.second;
+                if (cx >= r.x && cx < r.x + r.w && cy >= r.y && cy < r.y + r.h) {
+                    x = r.x;
+                    y = r.y;
+                    ww = r.w;
+                    hh = r.h;
+                    break;
+                }
+            }
+        }
+        json_object_object_foreach(w, key, val) {
+            std::string k(key);
+            if (k == "x")
+                json_object_object_add(c, "x", json_object_new_int(x));
+            else if (k == "y")
+                json_object_object_add(c, "y", json_object_new_int(y));
+            else if (k == "w")
+                json_object_object_add(c, "w", json_object_new_int(ww));
+            else if (k == "h")
+                json_object_object_add(c, "h", json_object_new_int(hh));
+            else
+                json_object_object_add(c, key, json_object_get(val));
+        }
+        json_object_array_add(out, c);
+    }
+    return out;
+}
+
+int wall_min_window_side(json_object* wall, int wall_w, int wall_h) {
+    std::vector<std::pair<std::string, Rect>> cells;
+    wall_cells(wall, wall_w, wall_h, &cells);
+    int side = 0;
+    for (const auto& kv : cells) {
+        int m = std::min(kv.second.w, kv.second.h);
+        if (m > 0 && (side == 0 || m < side)) side = m;
+    }
+    if (side <= 0) return 64;
+    int floor = side / 4;
+    return floor < 64 ? 64 : floor;
+}
+
+void wall_cells(json_object* wall, int wall_w, int wall_h,
+                std::vector<std::pair<std::string, Rect>>* out) {
+    if (!out) return;
+    out->clear();
+    if (!wall || !json_object_is_type(wall, json_type_object)) return;
+    json_object* cg = nullptr;
+    if (json_object_object_get_ex(wall, "cell_grid", &cg) && cg &&
+        json_object_is_type(cg, json_type_array) &&
+        json_object_array_length(cg) > 0) {
+        for (size_t i = 0; i < json_object_array_length(cg); i++) {
+            json_object* e = json_object_array_get_idx(cg, i);
+            if (!e || !json_object_is_type(e, json_type_object)) continue;
+            int x = rect_int(e, "x"), y = rect_int(e, "y");
+            int w = rect_int(e, "w"), h = rect_int(e, "h");
+            if (w <= 0 || h <= 0) continue;
+            std::string id = jstr(e, "id");
+            if (id.empty()) {
+                char b[32];
+                snprintf(b, sizeof(b), "%d:%d", rect_int(e, "r"),
+                         rect_int(e, "c"));
+                id = b;
+            }
+            out->emplace_back(id, Rect{x, y, w, h});
+        }
+        return;
+    }
+    int rows = jint(wall, "rows", 0), cols = jint(wall, "cols", 0);
+    if (rows <= 0 || cols <= 0 || wall_w <= 0 || wall_h <= 0) return;
+    int cw = wall_w / cols, ch = wall_h / rows;
+    if (cw <= 0 || ch <= 0) return;
+    for (int r = 0; r < rows; r++) {
+        for (int c = 0; c < cols; c++) {
+            char b[32];
+            snprintf(b, sizeof(b), "%d:%d", r, c);
+            int w = (c == cols - 1) ? (wall_w - cw * c) : cw;
+            int h = (r == rows - 1) ? (wall_h - ch * r) : ch;
+            out->emplace_back(b, Rect{c * cw, r * ch, w, h});
+        }
+    }
 }
 
 bool multicast_pool_next(const std::set<std::pair<std::string, int>>& used,

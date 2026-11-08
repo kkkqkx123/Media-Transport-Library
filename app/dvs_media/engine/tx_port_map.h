@@ -73,6 +73,9 @@ int dvs_tx_bitrate_to_bps(int kbps, int* bps_out);
 /* GOP tracks the frame rate; fps<=0 falls back to 60. */
 int dvs_tx_default_gop(int fps);
 
+/* Explicit GOP interval (ms) to encoder frame count (see .c). */
+int dvs_tx_gop_ms_to_frames(int gop_ms, int fps);
+
 /* Rescan /dev/video0..7 into the array form used by table_build.
  * Fills device paths, stable IDs (QUERYCAP card|bus|input, device fallback),
  * and per-device signal flags (G_FMT placeholder check). Returns device

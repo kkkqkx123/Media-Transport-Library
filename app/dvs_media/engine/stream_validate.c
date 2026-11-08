@@ -25,6 +25,34 @@ int dvs_stream_shape_valid(const char* sip, uint16_t udp_port, int width,
     return 0;
 }
 
+int dvs_stream_src_valid(const char* src_ip, char* err, size_t errlen) {
+    if (!src_ip || !src_ip[0]) return 0;
+    int parts = 0;
+    const char* p = src_ip;
+    while (1) {
+        if (*p < '0' || *p > '9') break;
+        int v = 0, digits = 0;
+        while (*p >= '0' && *p <= '9') {
+            v = v * 10 + (*p - '0');
+            digits++;
+            p++;
+            if (digits > 3) break;
+        }
+        if (digits == 0 || digits > 3 || v > 255) break;
+        parts++;
+        if (*p == '\0') {
+            if (parts == 4) return 0;
+            break;
+        }
+        if (*p != '.') break;
+        p++;
+        if (*p == '\0') break;
+    }
+    if (err && errlen > 0)
+        snprintf(err, errlen, "stream bad source filter '%s'", src_ip);
+    return -1;
+}
+
 int dvs_stream_crop_valid(int width, int height, int src_x, int src_y,
                           int src_w, int src_h, char* err, size_t errlen) {
     int cw = src_w > 0 ? src_w : width;

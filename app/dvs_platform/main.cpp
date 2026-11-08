@@ -522,6 +522,45 @@ bool route_docs(const std::string& kind, const HttpRequest& req, HttpResponse& r
                     if (dup) { verr = "CONFLICT:wall name already exists in group"; break; }
                 }
             }
+            if (verr.empty()) {
+                // Epoch freeze: the frame time base never moves once set.
+                // Updates that drop it inherit the stored one; updates that
+                // move it are rejected so frame numbers stay stable.
+                json_object* oldw = g_store->get_doc("walls", id);
+                int64_t old_epoch = 0;
+                if (oldw) {
+                    json_object* oev = nullptr;
+                    if (json_object_object_get_ex(oldw, "epochTaiNs", &oev) && oev &&
+                        json_object_is_type(oev, json_type_int))
+                        old_epoch = json_object_get_int64(oev);
+                    json_object_put(oldw);
+                }
+                json_object* ev = nullptr;
+                bool has_epoch =
+                    json_object_object_get_ex(b, "epochTaiNs", &ev) && ev &&
+                    json_object_is_type(ev, json_type_int);
+                int64_t want_epoch = has_epoch ? json_object_get_int64(ev) : 0;
+                if (has_epoch && want_epoch <= 0)
+                    verr = "INVALID_ARGUMENT:wall epochTaiNs must be positive";
+                else if (has_epoch && old_epoch > 0 && want_epoch != old_epoch)
+                    verr = "INVALID_ARGUMENT:wall epochTaiNs frozen";
+                else if (!has_epoch || want_epoch <= 0) {
+                    int64_t use = old_epoch > 0 ? old_epoch : (int64_t)now_ns();
+                    json_object_object_del(b, "epochTaiNs");
+                    json_object_object_add(b, "epochTaiNs",
+                                           json_object_new_int64(use));
+                }
+            }
+            if (verr.empty()) {
+                json_object* biv = nullptr;
+                if (json_object_object_get_ex(b, "baseImage", &biv) && biv)
+                    verr = validate_base_image(biv);
+            }
+            if (verr.empty()) {
+                json_object* iav = nullptr;
+                if (json_object_object_get_ex(b, "imageAdjust", &iav) && iav)
+                    verr = validate_image_adjust(iav);
+            }
         } else if (kind == "scenes") {
             int ww = 0, hh = 0;
             std::string wall_id = body_str(b, "wallId");
@@ -535,6 +574,31 @@ bool route_docs(const std::string& kind, const HttpRequest& req, HttpResponse& r
                 if (w) json_object_put(w);
             }
             if (verr.empty()) verr = validate_scene_shape(b, ww, hh);
+            if (verr.empty()) {
+                json_object* mv = nullptr;
+                bool fixed = json_object_object_get_ex(b, "layoutMode", &mv) && mv &&
+                             json_object_is_type(mv, json_type_string) &&
+                             std::string(json_object_get_string(mv)) == "fixed";
+                if (fixed && !wall_id.empty()) {
+                    // Fixed mode: the platform snaps windows to cell bounds;
+                    // the snapped geometry is what gets stored and fanned out.
+                    json_object* wdoc = g_store->get_doc("walls", wall_id);
+                    if (wdoc && !wall_is_deleted(wdoc)) {
+                        int sw = 0, sh = 0;
+                        wall_px_of(wdoc, &sw, &sh);
+                        std::vector<std::pair<std::string, Rect>> cells;
+                        wall_cells(wdoc, sw, sh, &cells);
+                        json_object* wins = nullptr;
+                        if (!cells.empty() &&
+                            json_object_object_get_ex(b, "windows", &wins) && wins) {
+                            json_object* snapped = snap_windows_to_cells(wins, cells);
+                            json_object_object_del(b, "windows");
+                            json_object_object_add(b, "windows", snapped);
+                        }
+                    }
+                    if (wdoc) json_object_put(wdoc);
+                }
+            }
         } else if (kind == "bindings") {
             verr = validate_binding_shape(b);
             std::string w = binding_wall_of(b);
@@ -643,7 +707,47 @@ bool route_docs(const std::string& kind, const HttpRequest& req, HttpResponse& r
                 }
             }
         } else if (kind == "playback-tasks") {
-            verr = validate_playback_shape(b);
+            // Alias normalization at the boundary (frontend/test dialects):
+            // wall/scene/node and targetNodeIds[] fold to the canonical
+            // wallId/sceneId/targetNodeId before the strict validator runs.
+            // A multi-node targetNodeIds is rejected loudly: one playback
+            // task drives exactly one output box.
+            {
+                json_object* av = nullptr;
+                if (!body_str(b, "wallId").size() &&
+                    json_object_object_get_ex(b, "wall", &av) && av &&
+                    json_object_is_type(av, json_type_string)) {
+                    json_object_object_add(b, "wallId", json_object_get(av));
+                    json_object_object_del(b, "wall");
+                }
+                if (!body_str(b, "sceneId").size() &&
+                    json_object_object_get_ex(b, "scene", &av) && av &&
+                    json_object_is_type(av, json_type_string)) {
+                    json_object_object_add(b, "sceneId", json_object_get(av));
+                    json_object_object_del(b, "scene");
+                }
+                if (!body_str(b, "targetNodeId").size()) {
+                    if (json_object_object_get_ex(b, "node", &av) && av &&
+                        json_object_is_type(av, json_type_string)) {
+                        json_object_object_add(b, "targetNodeId",
+                                               json_object_get(av));
+                        json_object_object_del(b, "node");
+                    } else if (json_object_object_get_ex(b, "targetNodeIds", &av) &&
+                               av && json_object_is_type(av, json_type_array)) {
+                        size_t tn = json_object_array_length(av);
+                        if (tn == 1) {
+                            json_object* e0 = json_object_array_get_idx(av, 0);
+                            if (e0 && json_object_is_type(e0, json_type_string))
+                                json_object_object_add(b, "targetNodeId",
+                                                       json_object_get(e0));
+                            json_object_object_del(b, "targetNodeIds");
+                        } else if (tn > 1) {
+                            verr = "INVALID_ARGUMENT:playback task takes one targetNodeId";
+                        }
+                    }
+                }
+            }
+            if (verr.empty()) verr = validate_playback_shape(b);
             std::string want_st = playback_status_of(b);
             if (want_st.empty()) want_st = "pending_check";
             json_object* old = verr.empty() ? g_store->get_doc("playback-tasks", id) : nullptr;
@@ -964,7 +1068,8 @@ void apply_heartbeat_doc(const std::string& id, json_object* data) {
 
 std::string handle_barrier_ack(const std::string& opid, const std::string& node,
                               std::string st, json_object* lanes,
-                              std::set<std::string>& missing_out) {
+                              std::set<std::string>& missing_out,
+                              json_object* ack) {
     if (st.empty()) st = "ready";
     if (st != "ready") st = "blocked";
     if (!barrier_lanes_ready(lanes)) st = "blocked";
@@ -983,6 +1088,52 @@ std::string handle_barrier_ack(const std::string& opid, const std::string& node,
                 g_store->audit("{\"commit-clock-blocked\":\"" + json_escape(node) +
                                "\",\"reason\":\"" + json_escape(reason) + "\"}");
         }
+    }
+    // Frame-anchored verification: when the op carries a frame base and the
+    // ack carries a frame report, they must agree. A node that committed a
+    // different frame or missed its window fails the same-frame invariant
+    // and the wall rolls back instead of showing a mixed scene.
+    if (ack) {
+        int64_t want_frame = -2;
+        uint64_t want_epoch = 0;
+        {
+            std::lock_guard<std::mutex> lk(g_ops_mu);
+            const Operation* op = g_ops.find(opid);
+            if (op && op->epoch_ns > 0) {
+                want_epoch = op->epoch_ns;
+                want_frame = op->frame_index;
+            }
+        }
+        json_object* fv = nullptr;
+        if (want_epoch > 0 && want_frame >= 0 &&
+            json_object_object_get_ex(ack, "frameIndex", &fv) && fv &&
+            json_object_is_type(fv, json_type_int)) {
+            int64_t got = json_object_get_int64(fv);
+            if (got != want_frame) {
+                st = "blocked";
+                if (g_store)
+                    g_store->audit("{\"commit-frame-mismatch\":\"" +
+                                   json_escape(node) + "\",\"want\":" +
+                                   std::to_string(want_frame) + ",\"got\":" +
+                                   std::to_string(got) + "}");
+            }
+        }
+        json_object* late = nullptr;
+        if (json_object_object_get_ex(ack, "late", &late) && late) {
+            bool is_late = json_object_is_type(late, json_type_boolean)
+                                ? (json_object_get_boolean(late) != 0)
+                                : (json_object_get_int(late) != 0);
+            if (is_late) {
+                st = "blocked";
+                if (g_store)
+                    g_store->audit("{\"commit-frame-late\":\"" +
+                                   json_escape(node) + "\"}");
+            }
+        }
+        std::string why = body_str(ack, "reason");
+        if (!why.empty() && g_store)
+            g_store->audit("{\"commit-reason\":\"" + json_escape(node) +
+                           "\",\"reason\":\"" + json_escape(why) + "\"}");
     }
     std::string state;
     std::string commit_wall, commit_scene, commit_hash;
@@ -1039,7 +1190,13 @@ static LayoutDelivery deliver_layout_prepare(const std::string& node_id,
                                              const std::string& token,
                                              const std::string& wall_id = "",
                                              const std::string& scene_id = "",
-                                             const std::string& layout_hash = "") {
+                                             const std::string& layout_hash = "",
+                                             int64_t epoch_ns = 0,
+                                             double fps = 60.0,
+                                             int64_t frame_index = -1,
+                                             int wall_w = 0, int wall_h = 0,
+                                             const std::string& base_json = "",
+                                             const std::string& adjust_json = "") {
     LayoutDelivery d;
     json_object* nd = g_store->get_doc("node", node_id);
     if (!nd) { d.skipped = true; d.skip_reason = "no node doc"; return d; }
@@ -1099,6 +1256,10 @@ static LayoutDelivery deliver_layout_prepare(const std::string& node_id,
             std::string mode = body_str(wl, "mode");
             json_object_object_add(ep, "mode",
                                    json_object_new_string(mode.empty() ? "multicast" : mode.c_str()));
+            std::string ssrc = body_str(wl, "sourceIp");
+            if (!ssrc.empty())
+                json_object_object_add(ep, "sourceIp",
+                                       json_object_new_string(ssrc.c_str()));
             json_object_array_add(endpoints, ep);
             json_object_put(wl);
         }
@@ -1122,6 +1283,41 @@ static LayoutDelivery deliver_layout_prepare(const std::string& node_id,
     json_object_object_add(payload, "operationId", json_object_new_string(opid.c_str()));
     json_object_object_add(payload, "revision", json_object_new_int(revision));
     json_object_object_add(payload, "applyAtNs", json_object_new_int64(apply_at_ns));
+    if (epoch_ns > 0) {
+        json_object_object_add(payload, "epochTaiNs",
+                               json_object_new_int64(epoch_ns));
+        if (fps > 0.0)
+            json_object_object_add(payload, "fps", json_object_new_double(fps));
+        if (frame_index >= 0)
+            json_object_object_add(payload, "frameIndex",
+                                   json_object_new_int64(frame_index));
+    }
+    // Wall still for this member: the platform names the image and the
+    // node-local sub-rectangle; the node fetches, crops and paints it.
+    if (!base_json.empty()) {
+        json_object* bi = json_tokener_parse(base_json.c_str());
+        if (bi && json_object_is_type(bi, json_type_object)) {
+            Rect sub;
+            if (base_subrect(wall_w, wall_h, node, &sub)) {
+                json_object* subo = json_object_new_object();
+                json_object_object_add(subo, "x", json_object_new_int(sub.x));
+                json_object_object_add(subo, "y", json_object_new_int(sub.y));
+                json_object_object_add(subo, "w", json_object_new_int(sub.w));
+                json_object_object_add(subo, "h", json_object_new_int(sub.h));
+                json_object_object_add(bi, "sub", subo);
+            }
+            json_object_object_add(payload, "baseImage", bi);
+        } else if (bi) {
+            json_object_put(bi);
+        }
+    }
+    if (!adjust_json.empty()) {
+        json_object* ia = json_tokener_parse(adjust_json.c_str());
+        if (ia && json_object_is_type(ia, json_type_object))
+            json_object_object_add(payload, "imageAdjust", ia);
+        else if (ia)
+            json_object_put(ia);
+    }
     json_object_object_add(payload, "geometry", json_object_get(geo));
     json_object_object_add(payload, "windows", frag);
     json_object_object_add(payload, "endpoints", endpoints);
@@ -1167,6 +1363,10 @@ static void fanout_layout_parallel(const std::set<std::string>& members,
                                    const std::string& windows_json, int volume,
                                    const std::string& token, const std::string& wall_id,
                                    const std::string& scene_id, const std::string& hash,
+                                   int64_t epoch_ns, double fps, int64_t frame_index,
+                                   int wall_w, int wall_h,
+                                   const std::string& base_json,
+                                   const std::string& adjust_json,
                                    bool is_rollback) {
     if (members.empty()) return;
     std::vector<std::string> ids(members.begin(), members.end());
@@ -1176,14 +1376,16 @@ static void fanout_layout_parallel(const std::set<std::string>& members,
     std::vector<std::thread> workers;
     for (int s = 0; s < shards; s++) {
         workers.emplace_back([s, shards, ids, opid, rev, apply_at, windows_json,
-                              volume, token, wall_id, scene_id, hash,
-                              is_rollback]() {
+                              volume, token, wall_id, scene_id, hash, epoch_ns,
+                              fps, frame_index, wall_w, wall_h, base_json,
+                              adjust_json, is_rollback]() {
             json_object* wins = json_tokener_parse(windows_json.c_str());
             for (size_t i = (size_t)s; i < ids.size(); i += (size_t)shards) {
                 const std::string& mid = ids[i];
                 LayoutDelivery d = deliver_layout_prepare(
                     mid, opid, rev, apply_at, wins, volume, token, wall_id,
-                    scene_id, hash);
+                    scene_id, hash, epoch_ns, fps, frame_index, wall_w, wall_h,
+                    base_json, adjust_json);
                 if (is_rollback) {
                     if (d.skipped && d.skip_reason == "no geometry") continue;
                     if (d.via_ws) {
@@ -1250,6 +1452,8 @@ static void execute_rollback(const std::string& rollback_op_id, int to_revision,
     std::string hash_c = snap->layout_hash;
     int wall_w_c = snap->wall_w;
     int wall_h_c = snap->wall_h;
+    int64_t epoch_c = (int64_t)snap->epoch_ns;
+    double fps_c = snap->fps;
     std::string token_c = g_api_token;
     {
         std::lock_guard<std::mutex> lk(g_ops_mu);
@@ -1262,13 +1466,17 @@ static void execute_rollback(const std::string& rollback_op_id, int to_revision,
         rb.layout_hash = hash_c;
         rb.wall_w = wall_w_c;
         rb.wall_h = wall_h_c;
+        rb.epoch_ns = snap->epoch_ns;
+        rb.fps = snap->fps;
+        rb.frame_index = -1;
         rb.created_ns = now_ns();
         g_ops.persist(opid_c);
     }
     std::thread([opid_c, rev_c, windows_json, members, token_c, vol_c, wall_c,
-                 scene_c, hash_c]() {
+                 scene_c, hash_c, epoch_c, fps_c, wall_w_c, wall_h_c]() {
         fanout_layout_parallel(members, opid_c, rev_c, 0, windows_json, vol_c,
-                               token_c, wall_c, scene_c, hash_c, true);
+                               token_c, wall_c, scene_c, hash_c, epoch_c, fps_c,
+                               -1, wall_w_c, wall_h_c, "", "", true);
     }).detach();
 }
 
@@ -1391,7 +1599,7 @@ void ws_channel_loop(int fd, HttpRequest hs_req) {
                 json_object_object_get_ex(dd, "lanes", &lanes);
                 std::set<std::string> miss;
                 std::string state = handle_barrier_ack(opid, node, st,
-                    (lanes && json_object_is_type(lanes, json_type_array)) ? lanes : nullptr, miss);
+                    (lanes && json_object_is_type(lanes, json_type_array)) ? lanes : nullptr, miss, dd);
                 const Operation* op = nullptr;
                 { std::lock_guard<std::mutex> lk(g_ops_mu); op = g_ops.find(opid); }
                 json_object* ack = json_object_new_object();
@@ -1868,6 +2076,10 @@ int main(int argc, char** argv) {
             int wall_w = 0, wall_h = 0;
             double fps = 60.0;
             int wall_applied = 0;
+            int64_t wall_epoch = 0;
+            int wall_min_side = kMinWindowSize;
+            std::string wall_base_json;
+            std::string wall_adjust_json;
             std::set<std::string> pending;
             if (!wall_id.empty()) {
                 json_object* wdoc = g_store->get_doc("walls", wall_id);
@@ -1879,6 +2091,36 @@ int main(int argc, char** argv) {
                 }
                 wall_px_of(wdoc, &wall_w, &wall_h);
                 fps = wall_fps_of(wdoc);
+                wall_min_side = wall_min_window_side(wdoc, wall_w, wall_h);
+                {
+                    json_object* ev = nullptr;
+                    if (json_object_object_get_ex(wdoc, "epochTaiNs", &ev) && ev &&
+                        json_object_is_type(ev, json_type_int))
+                        wall_epoch = json_object_get_int64(ev);
+                    if (wall_epoch <= 0) {
+                        // Self-heal for walls created before the frame base
+                        // existed: stamp once, then freeze like any epoch.
+                        wall_epoch = (int64_t)now_ns();
+                        json_object_object_del(wdoc, "epochTaiNs");
+                        json_object_object_add(wdoc, "epochTaiNs",
+                                               json_object_new_int64(wall_epoch));
+                        g_store->put_doc("walls", wall_id, wdoc);
+                    }
+                    json_object* biv = nullptr;
+                    if (json_object_object_get_ex(wdoc, "baseImage", &biv) && biv &&
+                        json_object_is_type(biv, json_type_object) &&
+                        validate_base_image(biv).empty()) {
+                        const char* bs = json_object_to_json_string(biv);
+                        if (bs) wall_base_json = bs;
+                    }
+                    json_object* iav = nullptr;
+                    if (json_object_object_get_ex(wdoc, "imageAdjust", &iav) && iav &&
+                        json_object_is_type(iav, json_type_object) &&
+                        validate_image_adjust(iav).empty()) {
+                        const char* as = json_object_to_json_string(iav);
+                        if (as) wall_adjust_json = as;
+                    }
+                }
                 json_object* av = nullptr;
                 if (json_object_object_get_ex(wdoc, "appliedRevision", &av) && av)
                     wall_applied = json_object_get_int(av);
@@ -1989,15 +2231,34 @@ int main(int argc, char** argv) {
                         send_json(res, fail_envelope("INVALID_ARGUMENT", 400, budget_err));
                         return;
                     }
+                    // Decode budget: no member may be asked for more distinct
+                    // signals than its reported decode ceiling. Unknown
+                    // budgets never gate (capability not yet reported).
+                    for (const auto& kv : known) {
+                        json_object* nd = g_store->get_doc("node", kv.first);
+                        int budget = node_decode_budget(nd);
+                        if (nd) json_object_put(nd);
+                        if (budget <= 0) continue;
+                        int sigs = count_node_signals(windows, kv.second);
+                        if (sigs > budget) {
+                            if (b) json_object_put(b);
+                            send_json(res, fail_envelope(ct::media_err::kCapabilityExceeded,
+                                422, std::string("node ") + kv.first + " needs " +
+                                std::to_string(sigs) + " decodes, budget " +
+                                std::to_string(budget)));
+                            return;
+                        }
+                    }
                 }
                 bool need_wall = win_n > 0;
                 for (int i = 0; i < win_n; i++) {
                     json_object* w = json_object_array_get_idx(windows, i);
                     int wx = rect_int(w, "x"), wy = rect_int(w, "y");
                     int ww = rect_int(w, "w"), wh = rect_int(w, "h");
-                    // Minimal size: same floor as the per-cell pixel range
-                    // (64~7680) so a degenerate window can never reach a node.
-                    if (ww < kMinWindowSize || wh < kMinWindowSize) {
+                    // Minimal size: wall floor (64px, or 1/16 of the smallest
+                    // cell by area) so a degenerate window can never reach a
+                    // node.
+                    if (ww < wall_min_side || wh < wall_min_side) {
                         if (b) json_object_put(b);
                         send_json(res, fail_envelope(
                                            "INVALID_ARGUMENT", 400,
@@ -2034,6 +2295,13 @@ int main(int argc, char** argv) {
             }
             uint64_t apply_ns = layout_apply_at_ns(now_ns(), fps);
             uint64_t deadline = now_ns() + (uint64_t)ct::barrier_timeout_ms() * 1000000ULL;
+            // Frame anchor: every member maps the same applyAtNs to the same
+            // target frame through the shared wall epoch. Rollback reissues
+            // use immediate commits (frame_index -1, node takes current).
+            int64_t frame_index = -1;
+            if (!wall_id.empty() && wall_epoch > 0)
+                frame_index = ct::frame_index_for_apply_at((uint64_t)wall_epoch,
+                                                            fps, apply_ns);
             std::string op_id_copy; uint64_t apply_copy = 0;
             {
                 std::lock_guard<std::mutex> lk(g_ops_mu);
@@ -2069,6 +2337,9 @@ int main(int argc, char** argv) {
                     op2->scene_id = scene_c;
                     op2->layout_hash = hash_c;
                     op2->volume = volume_c;
+                    op2->epoch_ns = (uint64_t)wall_epoch;
+                    op2->fps = fps;
+                    op2->frame_index = frame_index;
                 }
                 g_ops.persist(opid_c);
             }
@@ -2091,10 +2362,14 @@ int main(int argc, char** argv) {
                 if (nd) json_object_put(nd);
             }
             std::thread([opid_c, rev, apply_at, members, windows_json, volume_c,
-                           token_c, wall_c, scene_c, hash_c]() {
+                           token_c, wall_c, scene_c, hash_c, wall_epoch, fps,
+                           frame_index, wall_w, wall_h, wall_base_json,
+                           wall_adjust_json]() {
                 fanout_layout_parallel(members, opid_c, rev, (int64_t)apply_at,
                                        windows_json, volume_c, token_c,
-                                       wall_c, scene_c, hash_c, false);
+                                       wall_c, scene_c, hash_c, wall_epoch, fps,
+                                       frame_index, wall_w, wall_h, wall_base_json,
+                                       wall_adjust_json, false);
             }).detach();
 
             if (b) json_object_put(b);
@@ -2106,6 +2381,9 @@ int main(int argc, char** argv) {
             json_object_object_add(d, "missing", missing);
             json_object_object_add(d, "layoutHash",
                                    json_object_new_string(hash_c.c_str()));
+            if (frame_index >= 0)
+                json_object_object_add(d, "frameIndex",
+                                       json_object_new_int64(frame_index));
             if (!pending.empty()) {
                 json_object* pa = json_object_new_array();
                 for (auto& p : pending)
@@ -2130,13 +2408,18 @@ int main(int argc, char** argv) {
             json_object* lanes = nullptr;
             if (b) json_object_object_get_ex(b, "lanes", &lanes);
             std::set<std::string> still_missing;
-            std::string state = handle_barrier_ack(opid, node, st, lanes, still_missing);
+            std::string state = handle_barrier_ack(opid, node, st, lanes, still_missing, b);
             uint64_t apply_ns = 0;
+            int64_t frame_index = -1;
             bool known = false;
             {
                 std::lock_guard<std::mutex> lk(g_ops_mu);
                 const Operation* op = g_ops.find(opid);
-                if (op) { apply_ns = op->apply_at_ns; known = true; }
+                if (op) {
+                    apply_ns = op->apply_at_ns;
+                    frame_index = op->frame_index;
+                    known = true;
+                }
             }
             if (b) json_object_put(b);
             if (!known) { send_json(res, fail_envelope("NOT_FOUND", 404, "op unknown")); return; }
@@ -2161,6 +2444,9 @@ int main(int argc, char** argv) {
             json_object_object_add(d, "state", json_object_new_string(state.c_str()));
             json_object_object_add(d, "applyAt",
                                    json_object_new_int64((int64_t)apply_ns));
+            if (frame_index >= 0)
+                json_object_object_add(d, "frameIndex",
+                                       json_object_new_int64(frame_index));
             json_object* miss = json_object_new_array();
             for (const auto& m : still_missing)
                 json_object_array_add(miss, json_object_new_string(m.c_str()));
@@ -2268,6 +2554,12 @@ int main(int argc, char** argv) {
                     json_object_new_string(op->layout_hash.c_str()));
                 json_object_object_add(d, "volume",
                     json_object_new_int(op->volume));
+                json_object_object_add(d, "epochTaiNs",
+                    json_object_new_int64((int64_t)op->epoch_ns));
+                json_object_object_add(d, "fps",
+                    json_object_new_double(op->fps));
+                json_object_object_add(d, "frameIndex",
+                    json_object_new_int64(op->frame_index));
                 json_object* ma = json_object_new_array();
                 for (auto& m : miss)
                     json_object_array_add(ma, json_object_new_string(m.c_str()));

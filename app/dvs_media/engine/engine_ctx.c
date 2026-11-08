@@ -9,6 +9,7 @@
 #include "display_layout.h" /* file_playout_pip_validate, MP4_PIP_MAX_LANES */
 #include "session_admit.h"         /* whitelist + LRU admission */
 #include "audio_arbiter.h"         /* ALSA audio routing */
+#include "base_image.h"            /* wall still decode */
 #include "capability.h"
 
 #include <mtl_api.h> /* mtl_ptp_read_time, mtl_stop, mtl_uninit */
@@ -72,6 +73,8 @@ void dvs_engine_destroy(dvs_engine* e) {
     if (!e) return;
     dvs_engine_stop(e);
     pthread_mutex_destroy(&e->mu);
+    free(e->base_px);
+    e->base_px = NULL;
     free(e);
 }
 
@@ -155,6 +158,7 @@ static void engine_push_tx_ctx(dvs_engine* e) {
     memset(&bc, 0, sizeof(bc));
     snprintf(bc.tx_port, sizeof(bc.tx_port), "%s", e->cfg.tx_port);
     snprintf(bc.drm_device, sizeof(bc.drm_device), "%s", e->cfg.drm_device);
+    snprintf(bc.alsa_device, sizeof(bc.alsa_device), "%s", e->cfg.alsa_device);
     /* No capture/encode affinity in file_playout_cfg; 0 selects the backend
      * engineering defaults. */
     bc.cpu_capture = 0;
@@ -184,24 +188,33 @@ static rx_compositor* build_compositor(dvs_engine* e,
                                        const file_playout_pip_stream* streams,
                                        int count) {
     file_playout_cfg* cfg = &e->cfg;
-    memcpy(cfg->pip_streams, streams, (size_t)count * sizeof(*streams));
+    if (count > 0) {
+        if (!streams) return NULL;
+        memcpy(cfg->pip_streams, streams, (size_t)count * sizeof(*streams));
+    }
     cfg->pip_stream_count = count;
 
     if (cfg->width <= 0) cfg->width = 1920;
     if (cfg->height <= 0) cfg->height = 1080;
-    if (cfg->fps <= 0.0f)
-        cfg->fps = streams[0].fps > 0 ? streams[0].fps : 24.0f;
+    if (cfg->fps <= 0.0f) {
+        if (count > 0 && streams)
+            cfg->fps = streams[0].fps > 0 ? streams[0].fps : 24.0f;
+        else
+            cfg->fps = 24.0f;
+    }
     file_playout_apply_drm_mode(cfg);
 
     int mode_w = 0, mode_h = 0;
     file_playout_mode_dims(cfg, &mode_w, &mode_h);
-    if (file_playout_pip_validate(cfg->pip_streams, count, mode_w, mode_h) < 0) {
+    if (count > 0 &&
+        file_playout_pip_validate(cfg->pip_streams, count, mode_w, mode_h) < 0) {
         fprintf(stderr, "dvs_engine: layout validation failed\n");
         return NULL;
     }
 
     /* Admission after validation: a rejected layout never pollutes the LRU.
-     * Any source failing the whitelist rejects the whole layout. */
+     * Any source failing the whitelist rejects the whole layout. Empty
+     * layouts skip both (backdrop-only: nothing to receive). */
     dvs_session_tick();
     for (int i = 0; i < count; i++) {
         int lane = 0;
@@ -247,12 +260,132 @@ int dvs_engine_apply_layout(dvs_engine* e, const file_playout_pip_stream* stream
 int dvs_engine_apply_layout_at(dvs_engine* e,
                                const file_playout_pip_stream* streams, int count,
                                uint64_t apply_at_ns) {
+    return dvs_engine_apply_layout_frame(e, streams, count, apply_at_ns,
+                                          0, 60.0, -1);
+}
+
+/* Frame number math shared with the platform (same truncation):
+ * frame(t) = floor((t - epoch) * fps). */
+static int64_t engine_frame_at_ns(uint64_t epoch_ns, double fps,
+                                  uint64_t now_ns) {
+    if (epoch_ns == 0 || !(fps > 0.0) || now_ns <= epoch_ns) return 0;
+    double f = (double)(now_ns - epoch_ns) / 1000000000.0 * fps;
+    if (!(f >= 0.0)) return 0;
+    if (f > 9007199254740991.0) return 9007199254740991LL;
+    return (int64_t)f;
+}
+
+static uint64_t engine_frame_start_ns(uint64_t epoch_ns, double fps,
+                                      int64_t frame) {
+    if (epoch_ns == 0 || !(fps > 0.0) || frame <= 0) return epoch_ns;
+    double s = (double)frame / fps;
+    if (!(s >= 0.0)) return epoch_ns;
+    /* Round like the platform helper so both sides name the same instant. */
+    return epoch_ns + (uint64_t)(s * 1000000000.0 + 0.5);
+}
+
+static void engine_set_fail(dvs_engine* e, const char* code) {
+    if (!e) return;
+    snprintf(e->last_fail, sizeof(e->last_fail), "%s", code ? code : "");
+}
+
+/* Push the cached still + adjustment to the current compositor. Called
+ * after every successful swap (the renderer is recreated each time).
+ * Caller holds mu. */
+static void engine_push_display_locked(dvs_engine* e) {
+    if (!e || !e->comp) return;
+    /* Still: reload when the staged revision moved, else re-push the cache
+     * (a fresh renderer starts black). */
+    if (e->pending_base.revision > 0 &&
+        e->pending_base.revision != e->base_revision) {
+        snprintf(e->base_state, sizeof(e->base_state), "loading");
+        e->base_error[0] = '\0';
+        int mw = 0, mh = 0;
+        file_playout_mode_dims(&e->cfg, &mw, &mh);
+        if (mw <= 0) mw = 1920;
+        if (mh <= 0) mh = 1080;
+        /* The agent downloads to a file and passes its path; the url alone
+         * is not fetchable from C. */
+        unsigned char* px = NULL;
+        char err[128] = {0};
+        int rc = -1;
+        if (e->pending_base.path[0])
+            rc = dvs_base_decode(e->pending_base.path, e->pending_base.sub_x,
+                                 e->pending_base.sub_y, e->pending_base.sub_w,
+                                 e->pending_base.sub_h, mw, mh, &px,
+                                 err, sizeof(err));
+        else
+            snprintf(err, sizeof(err), "still path missing, fetch pending");
+        if (rc == 0 && px) {
+            free(e->base_px);
+            e->base_px = px;
+            e->base_px_w = mw;
+            e->base_px_h = mh;
+            e->base_revision = e->pending_base.revision;
+            snprintf(e->base_state, sizeof(e->base_state), "ready");
+        } else {
+            snprintf(e->base_state, sizeof(e->base_state), "failed");
+            snprintf(e->base_error, sizeof(e->base_error), "%s",
+                     err[0] ? err : "still decode failed");
+        }
+    }
+    if (e->base_px && e->base_px_w > 0 && e->base_px_h > 0) {
+        if (rx_compositor_set_background(e->comp, e->base_px, e->base_px_w,
+                                         e->base_px_h) != 0) {
+            snprintf(e->base_state, sizeof(e->base_state), "unsupported");
+            snprintf(e->base_error, sizeof(e->base_error),
+                     "display backend refused still");
+        } else if (strcmp(e->base_state, "ready") != 0 &&
+                   e->base_revision > 0) {
+            snprintf(e->base_state, sizeof(e->base_state), "ready");
+            e->base_error[0] = '\0';
+        }
+    }
+    /* Adjustment: recorded for query; the dumb-buffer background path has
+     * no plane properties, so application is reported as unsupported. */
+    if (e->pending_adjust.has_value) {
+        e->applied_adjust = e->pending_adjust;
+        e->adjust_supported = 0;
+        e->pending_adjust.has_value = 0;
+    }
+}
+
+/* Record the commit report right after a successful swap. */
+static void engine_record_commit_locked(dvs_engine* e, uint64_t epoch_ns,
+                                        double fps, int64_t target_frame) {
+    uint64_t now = engine_now_ns(e);
+    e->commit_applied_at = now;
+    if (epoch_ns > 0 && target_frame >= 0) {
+        int64_t actual = engine_frame_at_ns(epoch_ns, fps, now);
+        e->commit_frame = actual;
+        e->commit_late = (actual != target_frame) ? 1 : 0;
+    } else {
+        e->commit_frame = 0;
+        e->commit_late = 0;
+    }
+    e->last_fail[0] = '\0';
+}
+
+int dvs_engine_apply_layout_frame(dvs_engine* e,
+                                  const file_playout_pip_stream* streams,
+                                  int count, uint64_t apply_at_ns,
+                                  uint64_t epoch_ns, double fps,
+                                  int64_t frame_index) {
     if (!e) return -1;
     if (count < 0 || count > MP4_PIP_MAX_LANES) return -1;
+    if (count > 0 && !streams) return -1;
+
+    /* Resolve the wait target: an anchored commit fires at its frame start
+     * so every node swaps on the same instant; a legacy commit keeps the
+     * bare-timestamp wait. */
+    uint64_t wait_ns = apply_at_ns;
+    if (epoch_ns > 0 && fps > 0.0 && frame_index >= 0)
+        wait_ns = engine_frame_start_ns(epoch_ns, fps, frame_index);
 
     pthread_mutex_lock(&e->mu);
 
     if (count > 0 && strcmp(e->role, "input") == 0) {
+        engine_set_fail(e, "LAYOUT_CONFLICT");
         pthread_mutex_unlock(&e->mu);
         fprintf(stderr, "dvs_engine: layout rejected in input role\n");
         return -1;
@@ -270,7 +403,9 @@ int dvs_engine_apply_layout_at(dvs_engine* e,
     }
 
     if (count <= 0) {
-        /* clear: media off, keep MTL up for fast future commits */
+        /* backdrop-only commit: drop the sessions and swap to a 0-lane
+         * compositor so the still (or black) keeps scanning out. MTL stays
+         * up for fast future commits. */
 #ifdef HAVE_TX_BACKEND
         dvs_tx_backend_stop();
 #endif
@@ -278,28 +413,63 @@ int dvs_engine_apply_layout_at(dvs_engine* e,
         file_playout_pip_stream old[MP4_PIP_MAX_LANES];
         int old_n = e->cfg.pip_stream_count;
         if (old_n > MP4_PIP_MAX_LANES) old_n = MP4_PIP_MAX_LANES;
-        memcpy(old, e->cfg.pip_streams, (size_t)old_n * sizeof(*old));
-        if (e->comp) {
-            rx_compositor_stop(e->comp);
-            rx_compositor_free(e->comp);
-            e->comp = NULL;
+        if (old_n > 0)
+            memcpy(old, e->cfg.pip_streams, (size_t)old_n * sizeof(*old));
+        rx_compositor* shadow = build_compositor(e, NULL, 0);
+        if (!shadow) {
+            engine_set_fail(e, "MEDIA_SESSION_FAILED");
+            pthread_mutex_unlock(&e->mu);
+            fprintf(stderr, "dvs_engine: empty compositor create failed\n");
+            return -1;
         }
+        if (rx_compositor_start(shadow) != 0) {
+            rx_compositor_free(shadow);
+            engine_set_fail(e, "MEDIA_SESSION_FAILED");
+            pthread_mutex_unlock(&e->mu);
+            fprintf(stderr, "dvs_engine: empty compositor start failed\n");
+            return -1;
+        }
+        if (wait_ns != 0) {
+            pthread_mutex_unlock(&e->mu);
+            engine_wait_until(e, wait_ns);
+            pthread_mutex_lock(&e->mu);
+        }
+        rx_compositor* prev = e->comp;
+        e->comp = shadow;
         e->cfg.pip_stream_count = 0;
         for (int i = 0; i < old_n; i++)
             dvs_session_release(old[i].sip, old[i].udp_port);
         engine_refresh_counts_locked(e);
+        engine_record_commit_locked(e, epoch_ns, fps, frame_index);
+        engine_push_display_locked(e);
         pthread_mutex_unlock(&e->mu);
+        if (prev) {
+            rx_compositor_stop(prev);
+            rx_compositor_free(prev);
+        }
+        /* clear mutes: no lane carries audio anymore */
+        dvs_audio_set(e, "", 0);
+        fprintf(stderr, "dvs_engine: layout cleared to backdrop\n");
+        if (!atomic_load(&e->running)) {
+            atomic_store(&e->running, true);
+            if (pthread_create(&e->loop_tid, NULL, engine_loop, e) != 0) {
+                atomic_store(&e->running, false);
+                fprintf(stderr, "dvs_engine: loop thread create failed\n");
+                return -1;
+            }
+        }
         return 0;
     }
 
     if (e->comp) {
         int fr = rx_compositor_try_fast_apply(e->comp, streams, count);
         if (fr == 0) {
-            if (apply_at_ns != 0) {
+            if (wait_ns != 0) {
                 pthread_mutex_unlock(&e->mu);
-                engine_wait_until(e, apply_at_ns);
+                engine_wait_until(e, wait_ns);
                 pthread_mutex_lock(&e->mu);
                 if (!e->comp) {
+                    engine_set_fail(e, "MEDIA_SESSION_FAILED");
                     pthread_mutex_unlock(&e->mu);
                     return -1;
                 }
@@ -308,6 +478,8 @@ int dvs_engine_apply_layout_at(dvs_engine* e,
                    (size_t)count * sizeof(*streams));
             e->cfg.pip_stream_count = count;
             engine_refresh_counts_locked(e);
+            engine_record_commit_locked(e, epoch_ns, fps, frame_index);
+            engine_push_display_locked(e);
             pthread_mutex_unlock(&e->mu);
             dvs_audio_set(e, e->audio_owner, e->audio_volume);
             if (!atomic_load(&e->running)) {
@@ -321,6 +493,7 @@ int dvs_engine_apply_layout_at(dvs_engine* e,
             return 0;
         }
         if (fr < 0) {
+            engine_set_fail(e, "LAYOUT_CONFLICT");
             pthread_mutex_unlock(&e->mu);
             fprintf(stderr, "dvs_engine: layout validation failed\n");
             return -1;
@@ -347,6 +520,7 @@ int dvs_engine_apply_layout_at(dvs_engine* e,
             int lane = 0;
             dvs_session_admit(old[i].sip, old[i].udp_port, &lane);
         }
+        engine_set_fail(e, "MEDIA_SESSION_FAILED");
         pthread_mutex_unlock(&e->mu);
         fprintf(stderr, "dvs_engine: shadow prepare failed, picture kept\n");
         return -1;
@@ -355,6 +529,7 @@ int dvs_engine_apply_layout_at(dvs_engine* e,
         rx_compositor_free(shadow);
         memcpy(e->cfg.pip_streams, old, (size_t)old_n * sizeof(*old));
         e->cfg.pip_stream_count = old_n;
+        engine_set_fail(e, "MEDIA_SESSION_FAILED");
         pthread_mutex_unlock(&e->mu);
         fprintf(stderr, "dvs_engine: shadow start failed, picture kept\n");
         return -1;
@@ -374,13 +549,14 @@ int dvs_engine_apply_layout_at(dvs_engine* e,
         pthread_mutex_lock(&e->mu);
         memcpy(e->cfg.pip_streams, old, (size_t)old_n * sizeof(*old));
         e->cfg.pip_stream_count = old_n;
+        engine_set_fail(e, "DECODE_NOT_READY");
         pthread_mutex_unlock(&e->mu);
         fprintf(stderr, "dvs_engine: shadow no first frame, picture kept\n");
         return -1;
     }
-    if (apply_at_ns != 0) {
+    if (wait_ns != 0) {
         pthread_mutex_unlock(&e->mu);
-        engine_wait_until(e, apply_at_ns);
+        engine_wait_until(e, wait_ns);
         pthread_mutex_lock(&e->mu);
         if (!e->comp && old_n > 0) {
             pthread_mutex_unlock(&e->mu);
@@ -395,6 +571,8 @@ int dvs_engine_apply_layout_at(dvs_engine* e,
     e->cfg.pip_stream_count = count;
     engine_release_gone(old, old_n, saved_new, count);
     engine_refresh_counts_locked(e);
+    engine_record_commit_locked(e, epoch_ns, fps, frame_index);
+    engine_push_display_locked(e);
     pthread_mutex_unlock(&e->mu);
 
     if (prev) {
@@ -447,7 +625,9 @@ int dvs_engine_set_output(dvs_engine* e, const char* connector, int width,
     if (cur_n > MP4_PIP_MAX_LANES) cur_n = MP4_PIP_MAX_LANES;
     if (cur_n > 0) memcpy(cur, e->cfg.pip_streams, (size_t)cur_n * sizeof(*cur));
     pthread_mutex_unlock(&e->mu);
-    if (has_comp && cur_n > 0) return dvs_engine_apply_layout(e, cur, cur_n);
+    /* Rebuild through the frame path so a backdrop-only compositor survives
+     * a mode change instead of being torn down. */
+    if (has_comp) return dvs_engine_apply_layout_frame(e, cur, cur_n, 0, 0, 60.0, -1);
     return 0;
 }
 
@@ -459,7 +639,9 @@ const char* dvs_engine_role(const dvs_engine* e) {
 int dvs_engine_media_idle(dvs_engine* e) {
     if (!e) return 1;
     pthread_mutex_lock(&e->mu);
-    int idle = (e->comp == NULL) && (e->cfg.pip_stream_count == 0) &&
+    /* An empty (backdrop-only) compositor counts as idle display: no
+     * session is admitted and no TX runs. */
+    int idle = (e->cfg.pip_stream_count == 0) &&
                (e->tx.state == DVS_TX_IDLE);
     pthread_mutex_unlock(&e->mu);
     return idle;
@@ -602,6 +784,75 @@ void dvs_engine_stop(dvs_engine* e) {
     atomic_store(&e->rx_sessions, 0);
     atomic_store(&e->decoding, 0);
     atomic_store(&e->layers, 0);
+}
+
+struct json_object* dvs_engine_commit_report(dvs_engine* e) {
+    struct json_object* o = json_object_new_object();
+    if (!o) return NULL;
+    int64_t frame = 0;
+    uint64_t at = 0;
+    int late = 0;
+    if (e) {
+        pthread_mutex_lock(&e->mu);
+        frame = e->commit_frame;
+        at = e->commit_applied_at;
+        late = e->commit_late;
+        pthread_mutex_unlock(&e->mu);
+    }
+    json_object_object_add(o, "frameIndex", json_object_new_int64(frame));
+    json_object_object_add(o, "appliedAtTaiNs", json_object_new_int64((int64_t)at));
+    json_object_object_add(o, "late", json_object_new_int(late));
+    return o;
+}
+
+const char* dvs_engine_last_fail(dvs_engine* e) {
+    if (!e || !e->last_fail[0]) return "";
+    return e->last_fail;
+}
+
+void dvs_engine_set_pending_base(dvs_engine* e,
+                                 const dvs_base_image_desc_t* base) {
+    if (!e || !base) return;
+    pthread_mutex_lock(&e->mu);
+    e->pending_base = *base;
+    pthread_mutex_unlock(&e->mu);
+}
+
+void dvs_engine_set_pending_adjust(dvs_engine* e,
+                                   const dvs_image_adjust_t* adjust) {
+    if (!e || !adjust) return;
+    pthread_mutex_lock(&e->mu);
+    e->pending_adjust = *adjust;
+    pthread_mutex_unlock(&e->mu);
+}
+
+struct json_object* dvs_engine_display_status(dvs_engine* e) {
+    struct json_object* o = json_object_new_object();
+    if (!o) return NULL;
+    struct json_object* bi = json_object_new_object();
+    struct json_object* ia = json_object_new_object();
+    if (e) {
+        pthread_mutex_lock(&e->mu);
+        json_object_object_add(bi, "revision", json_object_new_int(e->base_revision));
+        json_object_object_add(bi, "state",
+            json_object_new_string(e->base_state[0] ? e->base_state : "none"));
+        if (e->base_error[0])
+            json_object_object_add(bi, "error",
+                json_object_new_string(e->base_error));
+        json_object_object_add(ia, "brightness",
+            json_object_new_int(e->applied_adjust.brightness));
+        json_object_object_add(ia, "contrast",
+            json_object_new_int(e->applied_adjust.contrast));
+        json_object_object_add(ia, "saturation",
+            json_object_new_int(e->applied_adjust.saturation));
+        json_object_object_add(ia, "hue", json_object_new_int(e->applied_adjust.hue));
+        json_object_object_add(ia, "supported",
+            json_object_new_boolean(e->adjust_supported));
+        pthread_mutex_unlock(&e->mu);
+    }
+    json_object_object_add(o, "baseImage", bi);
+    json_object_object_add(o, "imageAdjust", ia);
+    return o;
 }
 
 void dvs_engine_set_audio(dvs_engine* e, const char* owner, int volume) {

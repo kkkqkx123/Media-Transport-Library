@@ -44,6 +44,12 @@ void drm_renderer_free(struct drm_renderer* r);
 int drm_renderer_display(struct drm_renderer* r, int dma_fd, uint32_t hor_stride,
                          uint32_t ver_stride);
 
+/** Paint the background plane with XRGB8888 pixels, stretched to the mode
+ * when dimensions differ (nearest neighbor). The still coexists with video
+ * planes and survives compositor rebuilds until repainted. */
+int drm_renderer_set_background(struct drm_renderer* r, const uint8_t* px,
+                                 int w, int h);
+
 /** Phase B: commit up to layer_count planes in one vsync generation. */
 int drm_renderer_display_layers(struct drm_renderer* r,
                                 const drm_layer_frame* frames, int frame_count);

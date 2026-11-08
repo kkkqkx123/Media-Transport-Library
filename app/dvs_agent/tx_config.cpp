@@ -86,6 +86,7 @@ bool tx_parse(json_object* val, TxParams& out, std::string& err) {
         out.enc.height = int_field(enc, "height", out.enc.height);
         out.enc.fps = int_field(enc, "fps", out.enc.fps);
         out.enc.bitrate = int_field(enc, "bitrateKbps", out.enc.bitrate);
+        out.enc.gopMs = int_field(enc, "gopMs", out.enc.gopMs);
     }
     json_object* tgt = nullptr;
     if (json_object_object_get_ex(val, "target", &tgt) && tgt &&
@@ -93,6 +94,7 @@ bool tx_parse(json_object* val, TxParams& out, std::string& err) {
         out.hasTarget = true;
         out.tgt.sip = trim_str(str_field(tgt, "sip"));
         out.tgt.udpPort = int_field(tgt, "udpPort", out.tgt.udpPort);
+        out.tgt.audioUdpPort = int_field(tgt, "audioUdpPort", out.tgt.audioUdpPort);
     }
     return true;
 }
@@ -127,6 +129,12 @@ bool tx_validate(const TxParams& p, const TxCaps& caps, std::string& err) {
             err = "编码码率超出本机能力范围";
             return false;
         }
+        // GOP 间隔：0 取编码器默认（跟随帧率），显式值 250..4000ms。
+        // 短间隔换场景切换速度，长间隔省带宽，由平台按墙策略下发。
+        if (p.enc.gopMs != 0 && (p.enc.gopMs < 250 || p.enc.gopMs > 4000)) {
+            err = "编码 GOP 间隔超出范围 (250..4000ms, 0=默认)";
+            return false;
+        }
     }
     if (p.hasTarget) {
         if (!valid_ip4(p.tgt.sip)) {
@@ -135,6 +143,11 @@ bool tx_validate(const TxParams& p, const TxCaps& caps, std::string& err) {
         }
         if (p.tgt.udpPort < 1 || p.tgt.udpPort > 65535) {
             err = "发送目标端口非法";
+            return false;
+        }
+        if (p.tgt.audioUdpPort != 0 &&
+            (p.tgt.audioUdpPort < 1 || p.tgt.audioUdpPort > 65535)) {
+            err = "发送音频端口非法";
             return false;
         }
     }
@@ -151,10 +164,15 @@ json_object* tx_start_payload(const TxParams& p) {
     json_object_object_add(enc, "height", json_object_new_int(p.enc.height));
     json_object_object_add(enc, "fps", json_object_new_int(p.enc.fps));
     json_object_object_add(enc, "bitrateKbps", json_object_new_int(p.enc.bitrate));
+    if (p.enc.gopMs != 0)
+        json_object_object_add(enc, "gopMs", json_object_new_int(p.enc.gopMs));
     json_object_object_add(o, "encode", enc);
     json_object* tgt = json_object_new_object();
     json_object_object_add(tgt, "sip", json_object_new_string(p.tgt.sip.c_str()));
     json_object_object_add(tgt, "udpPort", json_object_new_int(p.tgt.udpPort));
+    if (p.tgt.audioUdpPort != 0)
+        json_object_object_add(tgt, "audioUdpPort",
+                               json_object_new_int(p.tgt.audioUdpPort));
     json_object_object_add(o, "target", tgt);
     return o;
 }

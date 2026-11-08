@@ -19,6 +19,11 @@ static int g_failures = 0;
     else { printf("ok:   %s\n", msg); } \
   } while (0)
 
+// Forward declarations: JSON field readers used across test functions.
+static int tget(json_object* o, const char* k);
+static int tget64(json_object* o, const char* k);
+static std::string tgets(json_object* o, const char* k);
+
 static std::string sha256_hex(const std::string& s) {
   uint8_t out[32];
   dvs::sha256((const uint8_t*)s.data(), s.size(), out);
@@ -414,6 +419,40 @@ static void test_tx_config() {
   json_object* pt = nullptr;
   CHECK(pl && json_object_object_get_ex(pl, "target", &pt) && pt, "payload carries target");
   json_object_put(pl);
+
+  /* GOP interval + audio port: defaults omitted, explicit values validated. */
+  v = json_object_new_object();
+  json_object_object_add(v, "port", json_object_new_string("HDMI1"));
+  json_object* enc2 = json_object_new_object();
+  json_object_object_add(enc2, "codec", json_object_new_string("h264"));
+  json_object_object_add(enc2, "width", json_object_new_int(1920));
+  json_object_object_add(enc2, "height", json_object_new_int(1080));
+  json_object_object_add(enc2, "fps", json_object_new_int(30));
+  json_object_object_add(enc2, "bitrateKbps", json_object_new_int(4000));
+  json_object_object_add(enc2, "gopMs", json_object_new_int(500));
+  json_object_object_add(v, "encode", enc2);
+  json_object* tgt2 = json_object_new_object();
+  json_object_object_add(tgt2, "sip", json_object_new_string("239.0.0.1"));
+  json_object_object_add(tgt2, "udpPort", json_object_new_int(5000));
+  json_object_object_add(tgt2, "audioUdpPort", json_object_new_int(6000));
+  json_object_object_add(v, "target", tgt2);
+  CHECK(tx_parse(v, tp, err) && tp.enc.gopMs == 500 && tp.tgt.audioUdpPort == 6000,
+        "gopMs and audioUdpPort parse");
+  CHECK(tx_validate(tp, frozen, err), "gopMs/audio validates");
+  json_object* pl2 = tx_start_payload(tp);
+  json_object* pe2 = nullptr;
+  CHECK(pl2 && json_object_object_get_ex(pl2, "encode", &pe2) && pe2 &&
+            tget(pe2, "gopMs") == 500, "payload carries gopMs");
+  json_object* pt2 = nullptr;
+  CHECK(pl2 && json_object_object_get_ex(pl2, "target", &pt2) && pt2 &&
+            tget(pt2, "audioUdpPort") == 6000, "payload carries audioUdpPort");
+  json_object_put(pl2);
+  tp.enc.gopMs = 100;
+  CHECK(!tx_validate(tp, frozen, err), "short gop rejected");
+  tp.enc.gopMs = 0;
+  tp.tgt.audioUdpPort = 70000;
+  CHECK(!tx_validate(tp, frozen, err), "bad audio port rejected");
+  json_object_put(v);
 }
 
 static void test_role_pending_projection() {
@@ -511,6 +550,13 @@ static json_object* mk_body() {
   json_object_object_add(b, "endpoints", eps);
   json_object_object_add(b, "windows", json_object_new_array());
   return b;
+}
+static int tget64(json_object* o, const char* k) {
+  json_object* v = nullptr;
+  if (o && json_object_object_get_ex(o, k, &v) && v &&
+      json_object_is_type(v, json_type_int))
+    return (int)json_object_get_int64(v);
+  return -1;
 }
 static int tget(json_object* o, const char* k) {
   json_object* v = nullptr;
@@ -696,6 +742,43 @@ static void test_translate_platform_layout() {
   json_object* sa = json_object_array_get_idx(st, 0);
   CHECK(tget(sa, "fps") == 30, "per-signal fps honored");
   CHECK(tget(sa, "audioUdpPort") == 6002, "audio port forwarded");
+  if (prep) json_object_put(prep);
+  prep = nullptr;
+  json_object_put(b);
+  // Frame anchor + source filter + still + adjust pass through untouched.
+  b = mk_body();
+  json_object_object_add(b, "epochTaiNs", json_object_new_int64(900));
+  json_object_object_add(b, "fps", json_object_new_double(60.0));
+  json_object_object_add(b, "frameIndex", json_object_new_int64(6));
+  json_object_object_get_ex(b, "endpoints", &eps);
+  json_object* se = json_object_new_object();
+  json_object_object_add(se, "sig", json_object_new_string("s9"));
+  json_object_object_add(se, "address", json_object_new_string("239.0.0.9"));
+  json_object_object_add(se, "port", json_object_new_int(5009));
+  json_object_object_add(se, "fps", json_object_new_int(30));
+  json_object_object_add(se, "sourceIp", json_object_new_string("192.168.1.9"));
+  json_object_array_add(eps, se);
+  json_object_object_get_ex(b, "windows", &wins);
+  json_object_array_add(wins, mk_subwin("w1", "s1", 0, 0, 960, 540, 0, 0, 960, 540));
+  json_object_array_add(wins, mk_subwin("w9", "s9", 0, 0, 100, 100, 0, 0, 100, 100));
+  json_object* bi = json_object_new_object();
+  json_object_object_add(bi, "revision", json_object_new_int(2));
+  json_object_object_add(bi, "url", json_object_new_string("http://x/b.png"));
+  json_object_object_add(b, "baseImage", bi);
+  json_object* ia = json_object_new_object();
+  json_object_object_add(ia, "brightness", json_object_new_int(5));
+  json_object_object_add(b, "imageAdjust", ia);
+  CHECK(translate_platform_layout(b, &prep, err), "anchored layout translates");
+  CHECK(prep && tget64(prep, "epochTaiNs") == 900, "epoch passes through");
+  CHECK(tget(prep, "frameIndex") == 6, "frame passes through");
+  CHECK(prep && json_object_object_get_ex(prep, "baseImage", &bi) && bi,
+        "still passes through");
+  CHECK(prep && json_object_object_get_ex(prep, "imageAdjust", &ia) && ia,
+        "adjust passes through");
+  CHECK(prep && json_object_object_get_ex(prep, "streams", &st) && st &&
+            json_object_array_length(st) == 2, "two streams emitted");
+  json_object* s9 = json_object_array_get_idx(st, 1);
+  CHECK(tgets(s9, "srcIp") == "192.168.1.9", "source filter forwarded");
   if (prep) json_object_put(prep);
   prep = nullptr;
   json_object_put(b);

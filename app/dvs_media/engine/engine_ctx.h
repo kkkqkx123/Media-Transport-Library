@@ -19,6 +19,43 @@
  * layout. Layout changes are applied by recreating the compositor
  * (stop + free + create + start) — a pragmatic "commit" that is correct but not
  * yet frame-boundary atomic. */
+/* Frame anchor carried with a staged layout. epoch_ns == 0 marks a legacy
+ * payload without frame semantics: commit at the current frame. */
+typedef struct {
+    uint64_t epoch_ns;
+    double fps;
+    int64_t frame_index; /* < 0 = immediate (current frame) */
+} dvs_frame_anchor_t;
+
+/* Wall still carried with a staged layout. The node fetches the bytes from
+ * url itself; sub is the node-local rectangle inside the wall image (wall
+ * pixels). revision == 0 marks absence. */
+typedef struct {
+    int revision;
+    char url[1024];
+    /* Local file staged by the node agent (downloaded from url). Empty
+     * means not fetched yet; the engine reports loading/failed instead of
+     * guessing. */
+    char path[1024];
+    int img_w;
+    int img_h;
+    int sub_x;
+    int sub_y;
+    int sub_w;
+    int sub_h;
+} dvs_base_image_desc_t;
+
+/* Image adjustment targets (-100..100 per axis). has_value distinguishes an
+ * explicit all-zero adjust from absence. Applied by the display backend when
+ * supported; otherwise reported back as unsupported (never silently dropped). */
+typedef struct {
+    int has_value;
+    int brightness;
+    int contrast;
+    int saturation;
+    int hue;
+} dvs_image_adjust_t;
+
 typedef struct dvs_engine {
     mtl_handle      st;        /* MTL instance (NULL until inited) */
     rx_compositor*  comp;      /* current compositor (NULL when media off) */
@@ -47,6 +84,30 @@ typedef struct dvs_engine {
     /* input-box capture/send session (params + state machine; the engine
      * installs the live_ingest data-plane backend when linked with it). */
     dvs_tx_session_t tx;
+
+    /* Last commit report for the barrier: the frame actually committed,
+     * when (TAI ns), and whether the target window was missed. */
+    int64_t         commit_frame;
+    uint64_t        commit_applied_at;
+    int             commit_late;
+    /* Short failure code for the last failed commit
+     * (DECODE_NOT_READY / LAYOUT_APPLY_FAILED / MEDIA_SESSION_FAILED). */
+    char            last_fail[32];
+
+    /* Pending still + adjustment staged by prepare; applied on commit. */
+    dvs_base_image_desc_t pending_base;
+    dvs_image_adjust_t pending_adjust;
+    /* Applied still state (honest query, never pending echo). */
+    int             base_revision;
+    char            base_state[16]; /* none|loading|ready|failed|unsupported */
+    char            base_error[128];
+    uint8_t*        base_px; /* cached XRGB8888 canvas pixels, repushed after
+                              * every compositor rebuild (renderer is new). */
+    int             base_px_w;
+    int             base_px_h;
+    /* Applied adjustment targets + backend support flag. */
+    dvs_image_adjust_t applied_adjust;
+    int             adjust_supported; /* 1 when the backend applied them */
 } dvs_engine;
 
 /* Create an engine from a base config (network/DRM/MTL params). Media is not
@@ -71,6 +132,32 @@ int  dvs_engine_apply_layout(dvs_engine* e,
 int  dvs_engine_apply_layout_at(dvs_engine* e,
                                 const file_playout_pip_stream* streams, int count,
                                 uint64_t apply_at_ns);
+
+/* Frame-anchored apply: the target frame is derived from (epoch, fps,
+ * frame_index); a negative frame_index (or zero epoch) commits at the
+ * current frame. The commit report (frame actually shown, when, late) is
+ * readable via dvs_engine_commit_report(). */
+int  dvs_engine_apply_layout_frame(dvs_engine* e,
+                                   const file_playout_pip_stream* streams,
+                                   int count, uint64_t apply_at_ns,
+                                   uint64_t epoch_ns, double fps,
+                                   int64_t frame_index);
+
+/* Last commit report as a new JSON object (never NULL):
+ * {frameIndex, appliedAtTaiNs, late}. Zero frame/epoch means legacy. */
+struct json_object* dvs_engine_commit_report(dvs_engine* e);
+
+/* Short code for the last failed commit ("" when the last commit worked). */
+const char* dvs_engine_last_fail(dvs_engine* e);
+
+/* Stage the still / adjustment parsed from prepare; applied on commit. */
+void dvs_engine_set_pending_base(dvs_engine* e,
+                                 const dvs_base_image_desc_t* base);
+void dvs_engine_set_pending_adjust(dvs_engine* e,
+                                   const dvs_image_adjust_t* adjust);
+
+/* Base image + adjustment status fragment for query_state (new ref). */
+struct json_object* dvs_engine_display_status(dvs_engine* e);
 
 /* Set the desired audio owner/volume; applied on the next layout commit. */
 void dvs_engine_set_audio(dvs_engine* e, const char* owner, int volume);

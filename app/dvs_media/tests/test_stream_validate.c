@@ -88,6 +88,22 @@ int main(void) {
               "crop failure reports the offending window");
     }
 
+    /* SSM source filter: empty means any-source, otherwise dotted IPv4. */
+    CHECK(dvs_stream_src_valid(NULL, err, sizeof(err)) == 0,
+          "src filter accepts NULL as any-source");
+    CHECK(dvs_stream_src_valid("", err, sizeof(err)) == 0,
+          "src filter accepts empty as any-source");
+    CHECK(dvs_stream_src_valid("192.168.10.11", err, sizeof(err)) == 0,
+          "src filter accepts IPv4");
+    CHECK(dvs_stream_src_valid("999.1.1.1", err, sizeof(err)) != 0,
+          "src filter rejects bad octet");
+    CHECK(dvs_stream_src_valid("1.2.3", err, sizeof(err)) != 0,
+          "src filter rejects short address");
+    CHECK(dvs_stream_src_valid("1.2.3.4.5", err, sizeof(err)) != 0,
+          "src filter rejects long address");
+    CHECK(dvs_stream_src_valid("abc", NULL, 0) != 0,
+          "src filter tolerates a NULL error buffer");
+
     printf("%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);
     return failures ? 1 : 0;
 }

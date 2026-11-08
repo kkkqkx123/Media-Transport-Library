@@ -582,7 +582,18 @@ static int handle_line(dvs_client_t* c, char* line) {
       goto done;
     }
     if (res.engine_failed) {
-      respond_cached(c, rid, cacheable, 500, "INTERNAL", "layout apply failed",
+      /* Surface the engine's own failure code (DECODE_NOT_READY and friends)
+       * instead of a generic INTERNAL so the barrier can audit and the
+       * platform can tell a sick signal from a broken commit. */
+      const char* ecode =
+          (g_hooks.commit_error) ? g_hooks.commit_error() : "";
+      int status = 500;
+      const char* code = "INTERNAL";
+      if (ecode && ecode[0]) {
+        code = ecode;
+        if (strcmp(ecode, "DECODE_NOT_READY") == 0) status = 422;
+      }
+      respond_cached(c, rid, cacheable, status, code, "layout apply failed",
                      NULL);
       goto done;
     }
@@ -598,7 +609,15 @@ static int handle_line(dvs_client_t* c, char* line) {
       respond_cached(c, rid, cacheable, status, code, err, NULL);
       goto done;
     }
-    snprintf(data, sizeof(data), "{\"revision\":%d}", applied);
+    json_object* cinfo = (g_hooks.commit_info) ? g_hooks.commit_info() : NULL;
+    if (cinfo) {
+      json_object_object_add(cinfo, "revision", json_object_new_int(applied));
+      const char* cs = json_object_to_json_string(cinfo);
+      snprintf(data, sizeof(data), "%s", cs ? cs : "{}");
+      json_object_put(cinfo);
+    } else {
+      snprintf(data, sizeof(data), "{\"revision\":%d}", applied);
+    }
     respond_cached(c, rid, cacheable, 200, "OK", "committed", data);
     char ev[256];
     snprintf(ev, sizeof(ev),
@@ -701,6 +720,9 @@ static int handle_line(dvs_client_t* c, char* line) {
       json_object_object_add(audio, "applied", json_object_new_boolean(0));
     }
     json_object_object_add(datao, "audio", audio);
+    /* Still + adjustment status. NULL hook (unit test) means no display. */
+    json_object* display = (g_hooks.display_status) ? g_hooks.display_status() : NULL;
+    if (display) json_object_object_add(datao, "display", display);
     json_object_object_add(datao, "rxSessions", json_object_new_int(rx_sessions));
     json_object_object_add(datao, "decoding", json_object_new_int(decoding));
     json_object_object_add(datao, "layers", json_object_new_int(layers));

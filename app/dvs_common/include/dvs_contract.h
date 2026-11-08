@@ -44,6 +44,27 @@ bool bearer_ok(const std::string& provided, const std::string& expected);
 std::string extract_bearer(const std::map<std::string, std::string>& headers);
 std::string strip_bearer(const std::string& v);
 
+// 媒体面规范错误码（与 docs/req/06 第 4 节对齐）。通道 data 中出现
+// reason/message 字段时优先使用这些码，调用方只做透传与审计。
+namespace media_err {
+inline constexpr const char* kDecodeNotReady = "DECODE_NOT_READY";
+inline constexpr const char* kClockUnsynced = "CLOCK_UNSYNCED";
+inline constexpr const char* kApplyAtTooSoon = "APPLY_AT_TOO_SOON";
+inline constexpr const char* kFrameDeadlineMissed = "FRAME_DEADLINE_MISSED";
+inline constexpr const char* kLayoutConflict = "LAYOUT_CONFLICT";
+inline constexpr const char* kCapabilityExceeded = "CAPABILITY_EXCEEDED";
+inline constexpr const char* kMediaSessionFailed = "MEDIA_SESSION_FAILED";
+inline constexpr const char* kRollbackFailed = "ROLLBACK_FAILED";
+}  // namespace media_err
+
+// 全局帧号数学（平台与节点共用同一套取整）：frame(t) =
+// floor((t - epoch) * fps / 1e9)。epoch 为墙级时间纪元（TAI 纳秒），
+// fps 为墙输出帧率。apply_at 落在过去时返回第 0 帧，调用方此时应
+// 视为立即提交。frame < 0 的起始时刻按第 0 帧计。
+int64_t frame_index_for_apply_at(uint64_t epoch_ns, double fps,
+                                  uint64_t apply_at_ns);
+uint64_t frame_start_ns(uint64_t epoch_ns, double fps, int64_t frame);
+
 // 六类消息校验：data 为通道消息的 data 对象。返回空串表示通过，
 // 否则返回 "CODE:reason"（调用方据此直接拒绝，不做猜测补齐）。
 std::string validate_hello(json_object* data);

@@ -38,6 +38,10 @@ const char* dvs_tx_state_name(dvs_tx_state_t s);
 #define DVS_TX_MIN_FPS    24
 #define DVS_TX_MIN_BR_KBPS 500
 
+/* GOP interval bounds (ms). 0 selects the encoder default (follows fps). */
+#define DVS_TX_GOP_MS_MIN 250
+#define DVS_TX_GOP_MS_MAX 4000
+
 typedef struct {
     char port[32];        /* capture port id, e.g. "HDMI1" */
     char codec[16];       /* "h264" | "h265" */
@@ -45,8 +49,10 @@ typedef struct {
     int  height;          /* 480..2160 */
     int  fps;            /* 24..60 */
     int  bitrate_kbps;   /* 500..20000 */
+    int  gop_ms;         /* 0 = encoder default, else 250..4000 */
     char target_sip[64]; /* single IPv4 destination */
     int  target_port;    /* 1..65535 */
+    int  audio_port;     /* 0 = no audio TX, else 1..65535 (ST2110-30) */
 } dvs_tx_params_t;
 
 /* Data-plane backend. Returns 0 when packets flow, 1 when the backend is

@@ -183,6 +183,31 @@ std::string validate_heartbeat(json_object* data) {
     return "";
 }
 
+namespace {
+bool valid_ip4_literal(const std::string& s) {
+    if (s.empty() || s.size() > 15) return false;
+    int parts = 0;
+    const char* p = s.c_str();
+    while (true) {
+        if (*p < '0' || *p > '9') return false;
+        int v = 0, digits = 0;
+        while (*p >= '0' && *p <= '9') {
+            v = v * 10 + (*p - '0');
+            digits++;
+            p++;
+            if (digits > 3) return false;
+        }
+        if (v > 255) return false;
+        parts++;
+        if (*p == '\0') break;
+        if (*p != '.') return false;
+        p++;
+        if (*p == '\0') return false;
+    }
+    return parts == 4;
+}
+}  // namespace
+
 std::string validate_layout_prepare(json_object* data) {
     if (!is_obj(data)) return "INVALID_ARGUMENT:layout.prepare must be object";
     std::string op;
@@ -194,6 +219,30 @@ std::string validate_layout_prepare(json_object* data) {
     json_object* at = field(data, "applyAtNs");
     if (!at || !json_object_is_type(at, json_type_int))
         return "INVALID_ARGUMENT:layout.prepare applyAtNs must be int";
+    // Frame-anchored commit (optional, additive): when present the node maps
+    // applyAtNs to the target frame instead of sleeping to a bare timestamp.
+    json_object* ep = field(data, "epochTaiNs");
+    if (ep) {
+        if (!json_object_is_type(ep, json_type_int) || json_object_get_int64(ep) < 0)
+            return "INVALID_ARGUMENT:layout.prepare epochTaiNs must be int >= 0";
+    }
+    json_object* fp = field(data, "fps");
+    if (fp) {
+        double f = 0.0;
+        if (json_object_is_type(fp, json_type_int))
+            f = (double)json_object_get_int(fp);
+        else if (json_object_is_type(fp, json_type_double))
+            f = json_object_get_double(fp);
+        else
+            return "INVALID_ARGUMENT:layout.prepare fps must be numeric";
+        if (!(f > 0.0) || f > 240.0)
+            return "INVALID_ARGUMENT:layout.prepare fps must be 0 < fps <= 240";
+    }
+    json_object* fi = field(data, "frameIndex");
+    if (fi) {
+        if (!json_object_is_type(fi, json_type_int) || json_object_get_int64(fi) < 0)
+            return "INVALID_ARGUMENT:layout.prepare frameIndex must be int >= 0";
+    }
     json_object* wins = field(data, "windows");
     if (!is_arr(wins)) return "INVALID_ARGUMENT:layout.prepare windows must be array";
     // Per-fragment window shape (platform fragment_for_node output): each
@@ -215,8 +264,60 @@ std::string validate_layout_prepare(json_object* data) {
     json_object* eps = field(data, "endpoints");
     if (eps && !is_arr(eps))
         return "INVALID_ARGUMENT:layout.prepare endpoints must be array";
+    if (eps) {
+        for (size_t i = 0; i < json_object_array_length(eps); i++) {
+            json_object* e = json_object_array_get_idx(eps, i);
+            if (!is_obj(e))
+                return "INVALID_ARGUMENT:layout.prepare endpoint must be object";
+            json_object* sip = field(e, "sourceIp");
+            if (sip) {
+                if (!json_object_is_type(sip, json_type_string) ||
+                    !valid_ip4_literal(json_object_get_string(sip)))
+                    return "INVALID_ARGUMENT:layout.prepare endpoint sourceIp must be IPv4";
+            }
+        }
+    }
     json_object* geo = field(data, "geometry");
     if (!rect_ok(geo)) return "INVALID_ARGUMENT:layout.prepare geometry must be {x,y,w,h}";
+    // Base image descriptor (optional, additive): wall-level still plus the
+    // node-local sub-rectangle to paint. The node fetches the bytes itself;
+    // the payload only names them.
+    json_object* bi = field(data, "baseImage");
+    if (bi) {
+        if (!is_obj(bi))
+            return "INVALID_ARGUMENT:layout.prepare baseImage must be object";
+        json_object* brev = field(bi, "revision");
+        if (!brev || !json_object_is_type(brev, json_type_int) ||
+            json_object_get_int(brev) < 0)
+            return "INVALID_ARGUMENT:layout.prepare baseImage revision must be int >= 0";
+        std::string url;
+        if (!str_field(bi, "url", url) || url.empty() || url.size() > 1024)
+            return "INVALID_ARGUMENT:layout.prepare baseImage url required";
+        json_object* sub = field(bi, "sub");
+        if (sub && !rect_ok(sub))
+            return "INVALID_ARGUMENT:layout.prepare baseImage sub must be {x,y,w,h}";
+    }
+    // Image adjustment targets (optional, additive): the node applies what
+    // its display backend supports and reports the rest as unsupported.
+    json_object* ia = field(data, "imageAdjust");
+    if (ia) {
+        if (!is_obj(ia))
+            return "INVALID_ARGUMENT:layout.prepare imageAdjust must be object";
+        static const char* kKeys[] = {"brightness", "contrast", "saturation",
+                                      "hue"};
+        for (auto k : kKeys) {
+            json_object* kv = field(ia, k);
+            if (kv) {
+                if (!json_object_is_type(kv, json_type_int))
+                    return std::string("INVALID_ARGUMENT:layout.prepare imageAdjust.") +
+                           k + " must be int";
+                int n = json_object_get_int(kv);
+                if (n < -100 || n > 100)
+                    return std::string("INVALID_ARGUMENT:layout.prepare imageAdjust.") +
+                           k + " must be -100..100";
+            }
+        }
+    }
     return "";
 }
 
@@ -234,7 +335,52 @@ std::string validate_barrier_ack(json_object* data) {
     json_object* lanes = field(data, "lanes");
     if (lanes && !is_arr(lanes))
         return "INVALID_ARGUMENT:barrier.ack lanes must be array";
+    // Frame-anchored commit report (optional, additive): the node echoes the
+    // frame it actually committed plus when, so the platform can verify the
+    // same-frame invariant instead of trusting bare status strings.
+    json_object* fi = field(data, "frameIndex");
+    if (fi) {
+        if (!json_object_is_type(fi, json_type_int) || json_object_get_int64(fi) < 0)
+            return "INVALID_ARGUMENT:barrier.ack frameIndex must be int >= 0";
+    }
+    json_object* aat = field(data, "appliedAtTaiNs");
+    if (aat) {
+        if (!json_object_is_type(aat, json_type_int) || json_object_get_int64(aat) < 0)
+            return "INVALID_ARGUMENT:barrier.ack appliedAtTaiNs must be int >= 0";
+    }
+    json_object* lh = field(data, "layoutHash");
+    if (lh && (!json_object_is_type(lh, json_type_string) ||
+                json_object_get_string(lh)[0] == '\0'))
+        return "INVALID_ARGUMENT:barrier.ack layoutHash must be non-empty string";
+    json_object* late = field(data, "late");
+    if (late && !json_object_is_type(late, json_type_boolean) &&
+        !json_object_is_type(late, json_type_int))
+        return "INVALID_ARGUMENT:barrier.ack late must be boolean|int";
+    json_object* reason = field(data, "reason");
+    if (reason && (!json_object_is_type(reason, json_type_string) ||
+                    json_object_get_string(reason)[0] == '\0'))
+        return "INVALID_ARGUMENT:barrier.ack reason must be non-empty string";
     return "";
+}
+
+int64_t frame_index_for_apply_at(uint64_t epoch_ns, double fps,
+                                  uint64_t apply_at_ns) {
+    if (!(fps > 0.0) || apply_at_ns <= epoch_ns) return 0;
+    double elapsed_s = (double)(apply_at_ns - epoch_ns) / 1000000000.0;
+    double frame = elapsed_s * fps;
+    if (!(frame >= 0.0)) return 0;
+    if (frame > 9007199254740991.0) return 9007199254740991LL;
+    return (int64_t)frame;
+}
+
+uint64_t frame_start_ns(uint64_t epoch_ns, double fps, int64_t frame) {
+    if (!(fps > 0.0) || frame <= 0) return epoch_ns;
+    double start_s = (double)frame / fps;
+    if (!(start_s >= 0.0) || start_s > 18446744073.0) return epoch_ns;
+    // Round (not truncate): a truncated start can land a nanosecond before
+    // the true boundary and map back to frame-1, breaking the round-trip
+    // the barrier relies on for the same-frame check.
+    return epoch_ns + (uint64_t)(start_s * 1000000000.0 + 0.5);
 }
 
 std::string validate_config_update(json_object* data) {

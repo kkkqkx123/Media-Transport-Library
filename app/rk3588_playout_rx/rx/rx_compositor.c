@@ -233,6 +233,18 @@ static void* render_thread(void* arg) {
 #if defined(__linux__) && defined(_GNU_SOURCE)
     pthread_setname_np(pthread_self(), "rx_render");
 #endif
+    if (comp->lane_count == 0) {
+        /* Backdrop-only: no frames to composite. Reassert the background
+         * plane periodically so the still (or black) survives display
+         * hiccups; planes stay empty by construction. */
+        while (atomic_load(&comp->render_running)) {
+            if (drm_renderer_display_layers(comp->renderer, NULL, 0) != 0)
+                break;
+            struct timespec idle = {.tv_sec = 0, .tv_nsec = 200000000L};
+            nanosleep(&idle, NULL);
+        }
+        return NULL;
+    }
     rx_video_lane* main_lane = &comp->lanes[comp->main_lane_idx];
     float fps = main_lane->stream.fps > 0 ? main_lane->stream.fps : 24.0f;
     uint64_t frame_period_ns = (uint64_t)(1000000000.0 / (double)fps);
@@ -373,6 +385,7 @@ static int lane_init(rx_compositor* comp, int idx, const file_playout_pip_stream
         .fps                 = fps,
         .udp_port            = stream->udp_port,
         .sip_addr            = stream->sip,
+        .src_filter          = stream->src_ip[0] ? stream->src_ip : NULL,
         .port_name           = comp->cfg.rx_port,
         .codestream_max_size = blk,
         .time_fn             = time_fn,
@@ -417,7 +430,13 @@ static int lane_init(rx_compositor* comp, int idx, const file_playout_pip_stream
 }
 
 rx_compositor* rx_compositor_create(const rx_compositor_params* params) {
-    if (!params || !params->streams || params->stream_count <= 0)
+    if (!params)
+        return NULL;
+    int stream_count = params->stream_count;
+    if (stream_count < 0 || stream_count > MP4_PIP_MAX_LANES)
+        return NULL;
+    const file_playout_pip_stream* streams = params->streams;
+    if (stream_count > 0 && !streams)
         return NULL;
 
     rx_compositor* comp = calloc(1, sizeof(*comp));
@@ -426,29 +445,41 @@ rx_compositor* rx_compositor_create(const rx_compositor_params* params) {
     comp->cfg = *params;
 
     int mode_w, mode_h;
-    mode_dims_from_str(params->drm_mode, params->streams[0].width,
-                       params->streams[0].height, &mode_w, &mode_h);
+    /* Backdrop-only (zero lanes): no stream to size from, use the mode. */
+    mode_dims_from_str(params->drm_mode,
+                       stream_count > 0 ? streams[0].width : 1920,
+                       stream_count > 0 ? streams[0].height : 1080,
+                       &mode_w, &mode_h);
 
-    int n = display_layout_from_pip_streams(params->streams, params->stream_count,
-                                            mode_w, mode_h, &comp->layout);
-    if (n < 0) {
-        free(comp);
-        return NULL;
+    const file_playout_pip_stream* main_s = NULL;
+    if (stream_count == 0) {
+        memset(&comp->layout, 0, sizeof(comp->layout));
+        comp->layout.mode_w = mode_w;
+        comp->layout.mode_h = mode_h;
+        comp->layout.compositor = true;
+        comp->lane_count = 0;
+        comp->main_lane_idx = 0;
+    } else {
+        int n = display_layout_from_pip_streams(streams, stream_count,
+                                                mode_w, mode_h, &comp->layout);
+        if (n < 0) {
+            free(comp);
+            return NULL;
+        }
+        comp->lane_count = n;
+
+        for (int i = 0; i < stream_count && i < n; i++) {
+            if (streams[i].main)
+                comp->main_lane_idx = i;
+        }
+        main_s = &streams[comp->main_lane_idx];
     }
-    comp->lane_count = n;
-
-    for (int i = 0; i < params->stream_count && i < n; i++) {
-        if (params->streams[i].main)
-            comp->main_lane_idx = i;
-    }
-
-    const file_playout_pip_stream* main_s = &params->streams[comp->main_lane_idx];
     comp->renderer = drm_renderer_create(&(drm_renderer_params){
         .device            = params->drm_device,
         .connector         = params->drm_connector,
         .mode_str          = params->drm_mode,
-        .content_width     = main_s->width,
-        .content_height    = main_s->height,
+        .content_width     = main_s ? main_s->width : mode_w,
+        .content_height    = main_s ? main_s->height : mode_h,
         .fourcc            = DRM_FORMAT_NV12,
         .buf_count         = params->drm_buf_count,
         .compositor_layout = &comp->layout,
@@ -466,11 +497,20 @@ rx_compositor* rx_compositor_create(const rx_compositor_params* params) {
     }
 
     for (int i = 0; i < comp->lane_count; i++) {
-        if (lane_init(comp, i, &params->streams[i], params->mt,
+        if (lane_init(comp, i, &streams[i], params->mt,
                       time_fn, time_priv, params->default_codestream_size) < 0) {
             rx_compositor_free(comp);
             return NULL;
         }
+    }
+
+    if (comp->lane_count == 0) {
+        /* Backdrop-only: no lanes, no audio subscription. The sync clock
+         * still initializes (mutex + thresholds) with no frame source. */
+        av_sync_init(&comp->sync, NULL, NULL, params->playout_delay_ms,
+                     params->time_now, params->time_priv);
+        printf("rx_comp: backdrop-only (0 lanes)\n");
+        return comp;
     }
 
     if (alsa_audio_open(params->alsa_device, &comp->alsa) != 0) {
@@ -561,7 +601,8 @@ void rx_compositor_stop(rx_compositor* comp) {
         mtl_rx_audio_stop(comp->audio_rx);
 
     if (atomic_exchange(&comp->render_running, false)) {
-        playout_buffer_wake_all(&comp->lanes[comp->main_lane_idx].pb);
+        if (comp->lane_count > 0)
+            playout_buffer_wake_all(&comp->lanes[comp->main_lane_idx].pb);
         if (comp->render_thd)
             pthread_join(comp->render_thd, NULL);
         comp->render_thd = 0;
@@ -600,6 +641,9 @@ int rx_compositor_try_fast_apply(rx_compositor* comp,
         if (strncmp(a->sip, b->sip, sizeof(a->sip)) != 0) return 1;
         if (a->udp_port != b->udp_port) return 1;
         if (a->width != b->width || a->height != b->height) return 1;
+        /* Source filter selects the multicast sender; a change rejoins the
+         * session, so it forces the shadow path like any source change. */
+        if (strncmp(a->src_ip, b->src_ip, sizeof(a->src_ip)) != 0) return 1;
         /* Source crop is a plane attribute consumed per frame, so it rides
          * the fast layout update below instead of forcing a rebuild. */
     }
@@ -697,9 +741,17 @@ int rx_compositor_audio_running(const rx_compositor* comp) {
     return comp->audio_rx ? 1 : 0;
 }
 
+int rx_compositor_set_background(rx_compositor* comp, const uint8_t* px,
+                                  int w, int h) {
+    if (!comp || !comp->renderer) return -1;
+    return drm_renderer_set_background(comp->renderer, px, w, h);
+}
+
 int rx_compositor_audio_select(rx_compositor* comp, const char* sip,
                                uint16_t audio_port) {
     if (!comp) return -1;
+    if (comp->lane_count == 0)
+        return (!sip || !sip[0] || audio_port == 0) ? 0 : -1;
     if (!sip || !sip[0] || audio_port == 0) {
         if (comp->audio_rx) {
             mtl_rx_audio_stop(comp->audio_rx);

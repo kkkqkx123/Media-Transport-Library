@@ -198,6 +198,18 @@ int dvs_tx_default_gop(int fps) {
     return fps;
 }
 
+/* Explicit GOP interval (ms) to encoder frame count. Non-positive input
+ * selects the fps-following default; the result is clamped to one frame
+ * minimum so a degenerate interval can never disable keyframes. */
+int dvs_tx_gop_ms_to_frames(int gop_ms, int fps) {
+    if (gop_ms <= 0) return dvs_tx_default_gop(fps);
+    if (fps <= 0) fps = 60;
+    long frames = ((long)gop_ms * (long)fps + 999L) / 1000L;
+    if (frames < 1) frames = 1;
+    if (frames > 600) frames = 600;
+    return (int)frames;
+}
+
 #ifdef __linux__
 static int query_signal(int fd) {
     struct v4l2_format fmt;

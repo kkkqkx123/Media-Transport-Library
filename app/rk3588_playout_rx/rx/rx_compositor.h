@@ -67,6 +67,11 @@ int rx_compositor_layer_count(const rx_compositor* comp);
  * Empty sip or zero port stops audio (mute). Returns 0 on success. */
 int rx_compositor_audio_select(rx_compositor* comp, const char* sip,
                                uint16_t audio_port);
+/* Paint the background plane with XRGB8888 pixels (stretched to the mode
+ * when dimensions differ). The still survives lane swaps; clear to black is
+ * the renderer's default. Returns 0 on success. */
+int rx_compositor_set_background(rx_compositor* comp, const uint8_t* px,
+                                  int w, int h);
 int rx_compositor_audio_running(const rx_compositor* comp);
 unsigned long long rx_compositor_lane_lost_frames(const rx_compositor* comp, int idx);
 unsigned long long rx_compositor_lane_last_pts_ns(const rx_compositor* comp, int idx);

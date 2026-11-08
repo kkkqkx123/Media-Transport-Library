@@ -1,10 +1,12 @@
 #include "media_ipc.h"
 #include "dvs_node_bundle.h"
+#include "http_client.h"
 
 #include <errno.h>
 #include <poll.h>
 #include <fcntl.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
@@ -496,6 +498,7 @@ bool translate_platform_layout(json_object* body, json_object** prep_out,
      * (0/absent = the signal carries no subscribable audio). */
     struct Endpoint {
         std::string addr;
+        std::string src_ip;
         int port = 0;
         int fps = 0;
         int audio_port = 0;
@@ -509,12 +512,15 @@ bool translate_platform_layout(json_object* body, json_object** prep_out,
             json_object* e = json_object_array_get_idx(eps, i);
             if (!e || !json_object_is_type(e, json_type_object)) continue;
             json_object* v = nullptr;
-            std::string sig, addr;
+            std::string sig, addr, src_ip;
             int port = 0, fps = 0, aport = 0;
             if (json_object_object_get_ex(e, "sig", &v) && v)
                 sig = json_object_get_string(v);
             if (json_object_object_get_ex(e, "address", &v) && v)
                 addr = json_object_get_string(v);
+            if (json_object_object_get_ex(e, "sourceIp", &v) && v &&
+                json_object_is_type(v, json_type_string))
+                src_ip = json_object_get_string(v);
             if (json_object_object_get_ex(e, "port", &v) && v)
                 port = json_object_get_int(v);
             if (json_object_object_get_ex(e, "fps", &v) && v)
@@ -524,6 +530,7 @@ bool translate_platform_layout(json_object* body, json_object** prep_out,
             if (!sig.empty() && !addr.empty() && port > 0) {
                 Endpoint ep;
                 ep.addr = addr;
+                ep.src_ip = src_ip;
                 ep.port = port;
                 ep.fps = fps;
                 ep.audio_port = aport;
@@ -616,6 +623,9 @@ bool translate_platform_layout(json_object* body, json_object** prep_out,
         json_object_object_add(s, "lane", json_object_new_int(lane));
         json_object_object_add(s, "main", json_object_new_boolean(lane == 0));
         json_object_object_add(s, "sip", json_object_new_string(it->second.addr.c_str()));
+        if (!it->second.src_ip.empty())
+            json_object_object_add(s, "srcIp",
+                                   json_object_new_string(it->second.src_ip.c_str()));
         json_object_object_add(s, "udpPort", json_object_new_int(it->second.port));
         json_object_object_add(s, "fps", json_object_new_int(it->second.fps));
         if (it->second.audio_port > 0)
@@ -643,6 +653,61 @@ bool translate_platform_layout(json_object* body, json_object** prep_out,
     json_object* av = nullptr;
     if (json_object_object_get_ex(body, "applyAtNs", &av) && av)
         json_object_object_add(prep, "applyAtNs", json_object_get(av));
+    // Frame anchor travels untouched to the engine; a legacy payload without
+    // one commits immediately at the current frame (frameIndex < 0).
+    for (const char* k : {"epochTaiNs", "fps", "frameIndex"}) {
+        json_object* kv = nullptr;
+        if (json_object_object_get_ex(body, k, &kv) && kv)
+            json_object_object_add(prep, k, json_object_get(kv));
+    }
+    json_object* biv = nullptr;
+    if (json_object_object_get_ex(body, "baseImage", &biv) && biv &&
+        json_object_is_type(biv, json_type_object)) {
+        json_object* staged = json_object_get(biv);
+        // The engine decodes from a file: fetch the platform-named still
+        // once per revision into a local cache and pass the path. A failed
+        // fetch keeps the descriptor without a path so the engine reports
+        // the failure instead of silently dropping the still.
+        json_object* uv = nullptr;
+        json_object* rv = nullptr;
+        std::string url;
+        int rev = -1;
+        if (json_object_object_get_ex(staged, "url", &uv) && uv &&
+            json_object_is_type(uv, json_type_string))
+            url = json_object_get_string(uv);
+        if (json_object_object_get_ex(staged, "revision", &rv) && rv)
+            rev = json_object_get_int(rv);
+        if (!url.empty() && rev >= 0) {
+            char path[256];
+            snprintf(path, sizeof(path), "/tmp/dvs_base_%d.img", rev);
+            struct stat st;
+            bool cached = (stat(path, &st) == 0 && st.st_size > 0);
+            if (!cached) {
+                HttpClient cli;
+                std::string bytes;
+                if (cli.get(url, bytes, 10000) == 200 && !bytes.empty() &&
+                    bytes.size() <= 8 * 1024 * 1024) {
+                    FILE* f = fopen(path, "wb");
+                    if (f) {
+                        fwrite(bytes.data(), 1, bytes.size(), f);
+                        fclose(f);
+                        cached = true;
+                    }
+                }
+                if (!cached)
+                    fprintf(stderr, "dvs_agent: base image fetch failed (%s)\n",
+                            url.c_str());
+            }
+            if (cached)
+                json_object_object_add(staged, "path",
+                                       json_object_new_string(path));
+        }
+        json_object_object_add(prep, "baseImage", staged);
+    }
+    json_object* iav = nullptr;
+    if (json_object_object_get_ex(body, "imageAdjust", &iav) && iav &&
+        json_object_is_type(iav, json_type_object))
+        json_object_object_add(prep, "imageAdjust", json_object_get(iav));
     /* Empty array = explicit clear (keep backdrop); it must still be staged
      * so the commit applies an empty layout instead of keeping the picture. */
     json_object_object_add(prep, "streams", streams);

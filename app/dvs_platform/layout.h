@@ -30,6 +30,15 @@ std::string validate_wall_shape(json_object* doc);
 std::string validate_scene_shape(json_object* doc, int wall_w, int wall_h);
 std::string validate_binding_shape(json_object* doc);
 std::string validate_whitelist_shape(json_object* doc);
+// Optional image adjustment targets carried on wall settings and layout
+// payloads: {brightness,contrast,saturation,hue}, each -100..100 when
+// present, at least one key required. Returns "" on success else
+// "CODE:reason" (loud fail).
+std::string validate_image_adjust(json_object* doc);
+// Optional wall base image descriptor: {revision>=0, url non-empty,
+// width/height positive when present, sub rect optional}. Returns "" on
+// success else "CODE:reason".
+std::string validate_base_image(json_object* doc);
 // Optional binding dimensions: output port name (string) or numeric port.
 // Empty means "no port dimension" — such bindings never collide on ports.
 std::string binding_output_of(json_object* doc);
@@ -62,6 +71,28 @@ bool base_subrect(int wall_w, int wall_h, const Rect& node, Rect* out);
 // origin (window rect maps 1:1 onto the signal frame). Caller owns the
 // returned array. Pure pixel math; node never rounds (platform owns rounding).
 json_object* fragment_for_node(json_object* windows, const Rect& node);
+// Reported per-node decode budget from a node doc capability object.
+// Returns the maxDecodeSessions value when positive, -1 when unknown
+// (caller must not gate on unknown budgets).
+int node_decode_budget(json_object* node);
+// Distinct signal count inside one member canvas (platform fragment math).
+int count_node_signals(json_object* windows, const Rect& node);
+// Fixed-mode snap: clamp every window into the single cell containing its
+// center (dominant cell), in wall pixels. Windows with non-positive size
+// are left untouched for the caller-side validator to reject.
+// Caller owns the returned array (same length/order as the input).
+json_object* snap_windows_to_cells(json_object* windows,
+                                    const std::vector<std::pair<std::string, Rect>>& cells);
+// Minimum window side for a wall: the largest of the 64px floor and one
+// quarter of the smallest cell side (1/16 of a cell by area). Falls back to
+// 64 when the wall carries no usable cell table.
+int wall_min_window_side(json_object* wall, int wall_w, int wall_h);
+// Wall cell table for fixed-mode snap: {cellId, rect} in wall pixels.
+// Prefers the stored cell_grid array (entries {id?,r,c,x,y,w,h}), else falls
+// back to a uniform rows x cols split of the wall canvas. Empty when the
+// wall carries no usable geometry.
+void wall_cells(json_object* wall, int wall_w, int wall_h,
+                std::vector<std::pair<std::string, Rect>>* out);
 // Per-node window budget: at most this many windows may land on one member
 // canvas (mirrors MP4_PIP_V1_NV12_LANES without pulling the rk3588 dep).
 // The wall-global window count is intentionally unbounded: a 16-window wall

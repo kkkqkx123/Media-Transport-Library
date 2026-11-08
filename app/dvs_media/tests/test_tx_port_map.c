@@ -141,6 +141,10 @@ int main(void) {
     }
     CHECK(dvs_tx_default_gop(30) == 30, "default gop tracks fps");
     CHECK(dvs_tx_default_gop(0) == 60, "default gop falls back");
+    CHECK(dvs_tx_gop_ms_to_frames(0, 30) == 30, "gop 0 selects default");
+    CHECK(dvs_tx_gop_ms_to_frames(500, 60) == 30, "gop 500ms at 60fps is 30f");
+    CHECK(dvs_tx_gop_ms_to_frames(500, 30) == 15, "gop 500ms at 30fps is 15f");
+    CHECK(dvs_tx_gop_ms_to_frames(250, 60) >= 1, "gop floor keeps keyframes");
 
     /* scan on this host never fails hard (0 when no capture hardware) */
     {

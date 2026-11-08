@@ -883,6 +883,7 @@ static void agent_report_commit(const std::string& opid, int rev,
      * idle; otherwise the next prepare is rejected as "another operation
      * in progress". Commit on ready, abort otherwise, before uplinking.
      * Abort always bypasses the version gate: it is the escape hatch. */
+    Registration::BarrierFrame fr;
     {
         json_object* term = json_object_new_object();
         json_object_object_add(term, "operationId", json_object_new_string(opid.c_str()));
@@ -896,6 +897,30 @@ static void agent_report_commit(const std::string& opid, int rev,
             json_object* okv = nullptr;
             if (json_object_object_get_ex(to, "ok", &okv) && okv)
                 ok = json_object_get_boolean(okv) != 0;
+            json_object* dd = nullptr;
+            if (json_object_object_get_ex(to, "data", &dd) && dd) {
+                json_object* fv = nullptr;
+                if (json_object_object_get_ex(dd, "frameIndex", &fv) && fv &&
+                    json_object_is_type(fv, json_type_int)) {
+                    fr.has_frame = true;
+                    fr.frame_index = json_object_get_int64(fv);
+                }
+                json_object* atv = nullptr;
+                if (json_object_object_get_ex(dd, "appliedAtTaiNs", &atv) && atv &&
+                    json_object_is_type(atv, json_type_int)) {
+                    fr.has_applied_at = true;
+                    fr.applied_at_ns = json_object_get_int64(atv);
+                }
+                json_object* lv = nullptr;
+                if (json_object_object_get_ex(dd, "late", &lv) && lv)
+                    fr.late = json_object_get_boolean(lv) != 0;
+            }
+            if (!ok) {
+                json_object* msgv = nullptr;
+                if (json_object_object_get_ex(to, "msg", &msgv) && msgv &&
+                    json_object_is_type(msgv, json_type_string))
+                    fr.reason = json_object_get_string(msgv);
+            }
             json_object_put(to);
         }
         if (!ok && status == "ready") {
@@ -909,7 +934,7 @@ static void agent_report_commit(const std::string& opid, int rev,
         return;
     }
     // 单次投递语义：上行 helper 内已含 WS 优先加短连接回退，此处不再二次补发。
-    if (g_reg) g_reg->uplink_barrier_ack(opid, nodeId, status, lanes);
+    if (g_reg) g_reg->uplink_barrier_ack(opid, nodeId, status, lanes, fr);
     if (lanes) json_object_put(lanes);
 }
 

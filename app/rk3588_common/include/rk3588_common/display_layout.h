@@ -24,6 +24,10 @@ typedef struct file_playout_pip_stream {
     int      lane;
     bool     main;
     char     sip[MP4_PIP_SIP_LEN];
+    /* Optional SSM source filter for the multicast group in sip. Empty
+     * means any-source multicast. Validated IPv4 only; anything else is
+     * rejected at the control plane before it reaches the RX session. */
+    char     src_ip[MP4_PIP_SIP_LEN];
     uint16_t udp_port;
     uint16_t audio_udp_port;
     int      width;

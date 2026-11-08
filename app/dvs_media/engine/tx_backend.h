@@ -18,6 +18,7 @@ typedef void* dvs_mtl_handle_t;
 typedef struct {
     char tx_port[64];      /* MTL TX port name, e.g. "native_af_xdp:enP3p49s0" */
     char drm_device[256];  /* "/dev/dri/card0" for RGA DMA allocation */
+    char alsa_device[128]; /* ALSA capture device for audio TX, "" = default */
     int  cpu_capture;
     int  cpu_encode;
 } dvs_tx_backend_cfg;

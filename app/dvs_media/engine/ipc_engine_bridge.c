@@ -256,6 +256,10 @@ static int hook_prepare(struct json_object* req, char* err, size_t errlen) {
                 }
                 {
                     char cerr[128] = {0};
+                    if (dvs_stream_src_valid(vs[i].src_ip, cerr, sizeof(cerr)) != 0) {
+                        snprintf(err, errlen, "stream %d: %s", i, cerr);
+                        return -1;
+                    }
                     if (dvs_stream_crop_valid(vs[i].width, vs[i].height,
                                               vs[i].src_x, vs[i].src_y,
                                               vs[i].src_w, vs[i].src_h,
@@ -374,10 +378,14 @@ static int hook_tx_start(struct json_object* req, char* err, size_t errlen) {
         p.fps = json_object_get_int(v);
     if (enc && json_object_object_get_ex(enc, "bitrateKbps", &v) && v)
         p.bitrate_kbps = json_object_get_int(v);
+    if (enc && json_object_object_get_ex(enc, "gopMs", &v) && v)
+        p.gop_ms = json_object_get_int(v);
     const char* sip = tgt ? json_str(tgt, "sip") : NULL;
     if (sip) snprintf(p.target_sip, sizeof(p.target_sip), "%s", sip);
     if (tgt && json_object_object_get_ex(tgt, "udpPort", &v) && v)
         p.target_port = json_object_get_int(v);
+    if (tgt && json_object_object_get_ex(tgt, "audioUdpPort", &v) && v)
+        p.audio_port = json_object_get_int(v);
     if (!p.port[0] || !p.codec[0] || !p.width || !p.height || !p.fps ||
         !p.bitrate_kbps || !p.target_sip[0] || !p.target_port) {
         if (err && errlen > 0)
@@ -419,6 +427,21 @@ static json_object* hook_audio_status(void) {
     return dvs_engine_audio_status(s_eng);
 }
 
+static json_object* hook_commit_info(void) {
+    if (!s_eng) return NULL;
+    return dvs_engine_commit_report(s_eng);
+}
+
+static const char* hook_commit_error(void) {
+    if (!s_eng) return "";
+    return dvs_engine_last_fail(s_eng);
+}
+
+static json_object* hook_display_status(void) {
+    if (!s_eng) return NULL;
+    return dvs_engine_display_status(s_eng);
+}
+
 void dvs_ipc_attach_engine(dvs_engine* e) {
     s_eng = e;
     dvs_ipc_engine_hooks_t h = {
@@ -432,6 +455,9 @@ void dvs_ipc_attach_engine(dvs_engine* e) {
         .backend = hook_backend,
         .lane_stats = hook_lane_stats,
         .audio_status = hook_audio_status,
+        .commit_info = hook_commit_info,
+        .commit_error = hook_commit_error,
+        .display_status = hook_display_status,
         .tx_start = hook_tx_start,
         .tx_stop = hook_tx_stop,
         .tx_status = hook_tx_status,

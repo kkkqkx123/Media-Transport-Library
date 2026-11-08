@@ -18,6 +18,10 @@ json_object* operation_to_json(const Operation& op) {
     json_object_object_add(o, "layoutHash",
                            json_object_new_string(op.layout_hash.c_str()));
     json_object_object_add(o, "volume", json_object_new_int(op.volume));
+    json_object_object_add(o, "epochNs", json_object_new_int64((int64_t)op.epoch_ns));
+    json_object_object_add(o, "fps", json_object_new_double(op.fps));
+    json_object_object_add(o, "frameIndex",
+                           json_object_new_int64(op.frame_index));
     json_object* members = json_object_new_array();
     for (const auto& m : op.members)
         json_object_array_add(members, json_object_new_string(m.c_str()));
@@ -77,6 +81,25 @@ bool operation_from_json(json_object* o, Operation* out) {
         if (json_object_object_get_ex(o, "volume", &vv) && vv &&
             json_object_is_type(vv, json_type_int))
             out->volume = json_object_get_int(vv);
+    }
+    out->epoch_ns = (uint64_t)jint64(o, "epochNs");
+    out->fps = 60.0;
+    {
+        json_object* fv = nullptr;
+        if (json_object_object_get_ex(o, "fps", &fv) && fv) {
+            if (json_object_is_type(fv, json_type_double))
+                out->fps = json_object_get_double(fv);
+            else if (json_object_is_type(fv, json_type_int))
+                out->fps = (double)json_object_get_int(fv);
+        }
+        if (!(out->fps > 0.0)) out->fps = 60.0;
+    }
+    out->frame_index = -1;
+    {
+        json_object* qv = nullptr;
+        if (json_object_object_get_ex(o, "frameIndex", &qv) && qv &&
+            json_object_is_type(qv, json_type_int))
+            out->frame_index = json_object_get_int64(qv);
     }
     json_object* arr = nullptr;
     out->members.clear();
@@ -149,6 +172,9 @@ Operation& OpCoordinator::begin_with_deadline(const std::string& op_id, int revi
     op.scene_id.clear();
     op.layout_hash.clear();
     op.volume = 80;
+    op.epoch_ns = 0;
+    op.fps = 60.0;
+    op.frame_index = -1;
     persist(op);
     return op;
 }

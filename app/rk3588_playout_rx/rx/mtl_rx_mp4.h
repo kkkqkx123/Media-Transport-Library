@@ -18,7 +18,8 @@ typedef struct mtl_rx_mp4_params {
     int             height;
     float           fps;
     uint16_t        udp_port;
-    const char*     sip_addr;          /* source filter IP */
+    const char*     sip_addr;          /* local interface IP (see MTL ip_addr) */
+    const char*     src_filter;        /* optional SSM source filter, NULL = any */
     const char*     port_name;         /* NIC port name */
     size_t          codestream_max_size; /* must match TX codestream_size */
     /** PTP anchor for MEDIA_CLK → TAI (NULL = monotonic fallback). */

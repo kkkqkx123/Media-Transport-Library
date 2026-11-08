@@ -16,9 +16,16 @@
 #include "pipeline/tx_pipeline.h"
 
 #include <mtl_api.h>
+#include <st30_pipeline_api.h>
 
+#include <alsa/asoundlib.h>
+
+#include <arpa/inet.h>
 #include <errno.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdint.h>
+#include <time.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -30,6 +37,166 @@ static struct mtl_tx* g_mtx = NULL;
 static struct tx_pipeline* g_tp = NULL;
 static struct tx_mtl_sink_ops g_sink;
 static char g_vdev[DVS_TX_DEV_LEN];
+
+/* Audio TX (ST2110-30): ALSA capture thread feeding one st30p session.
+ * 48kHz stereo PCM16, 1ms packets, 10ms frames. Started only when the TX
+ * params carry a non-zero audio port; a failed audio bring-up fails the
+ * whole TX start loudly instead of sending silent video. */
+#define DVS_TX_AUDIO_RATE 48000
+#define DVS_TX_AUDIO_CH 2
+#define DVS_TX_AUDIO_FRAME_MS 10
+#define DVS_TX_AUDIO_FB_CNT 4
+
+static st30p_tx_handle g_atx = NULL;
+static pthread_t g_atx_tid;
+static atomic_bool g_atx_running;
+static atomic_bool g_atx_ready;
+static char g_adev[128];
+
+static void audio_tx_stop(void);
+
+static void* audio_tx_thread(void* arg) {
+    (void)arg;
+#ifdef __linux__
+    pthread_setname_np(pthread_self(), "dvs_txau");
+#endif
+    snd_pcm_t* pcm = NULL;
+    const char* dev = g_adev[0] ? g_adev : "default";
+    if (snd_pcm_open(&pcm, dev, SND_PCM_STREAM_CAPTURE, 0) != 0) {
+        fprintf(stderr, "dvs_tx: audio capture open failed (%s)\n", dev);
+        atomic_store(&g_atx_running, false);
+        return NULL;
+    }
+    snd_pcm_hw_params_t* hw = NULL;
+    snd_pcm_hw_params_alloca(&hw);
+    int prc = 0;
+    prc |= snd_pcm_hw_params_any(pcm, hw);
+    prc |= snd_pcm_hw_params_set_access(pcm, hw, SND_PCM_ACCESS_RW_INTERLEAVED);
+    prc |= snd_pcm_hw_params_set_format(pcm, hw, SND_PCM_FORMAT_S16_LE);
+    prc |= snd_pcm_hw_params_set_channels(pcm, hw, DVS_TX_AUDIO_CH);
+    {
+        unsigned int rate = DVS_TX_AUDIO_RATE;
+        prc |= snd_pcm_hw_params_set_rate_near(pcm, hw, &rate, NULL);
+    }
+    {
+        snd_pcm_uframes_t period = DVS_TX_AUDIO_RATE / 100;
+        prc |= snd_pcm_hw_params_set_period_size_near(pcm, hw, &period, NULL);
+    }
+    prc |= snd_pcm_hw_params(pcm, hw);
+    if (prc != 0) {
+        fprintf(stderr, "dvs_tx: audio hw params failed (%s)\n", dev);
+        snd_pcm_close(pcm);
+        atomic_store(&g_atx_running, false);
+        return NULL;
+    }
+    atomic_store(&g_atx_ready, true);
+    while (atomic_load(&g_atx_running)) {
+        struct st30_frame* f = st30p_tx_get_frame(g_atx);
+        if (!f) continue;
+        size_t want = f->data_size ? f->data_size : f->buffer_size;
+        size_t got = 0;
+        while (got < want && atomic_load(&g_atx_running)) {
+            size_t left = want - got;
+            /* 10ms frames at 48k stereo S16: bounded stack scratch. */
+            unsigned char scratch[8192];
+            size_t chunk = left > sizeof(scratch) ? sizeof(scratch) : left;
+            snd_pcm_sframes_t n =
+                snd_pcm_readi(pcm, scratch, chunk / (DVS_TX_AUDIO_CH * 2));
+            if (n < 0) {
+                snd_pcm_recover(pcm, (int)n, 0);
+                continue;
+            }
+            if (n == 0) continue;
+            memcpy((unsigned char*)f->addr + got, scratch,
+                   (size_t)n * DVS_TX_AUDIO_CH * 2);
+            got += (size_t)n * DVS_TX_AUDIO_CH * 2;
+        }
+        if (got < want) {
+            st30p_tx_put_frame_abort(g_atx, f);
+        } else {
+            f->data_size = got;
+            st30p_tx_put_frame(g_atx, f);
+        }
+    }
+    snd_pcm_drain(pcm);
+    snd_pcm_close(pcm);
+    return NULL;
+}
+
+static int audio_tx_start(mtl_handle st, const char* tx_port,
+                          const char* dip, uint16_t udp_port,
+                          char* err, size_t errlen) {
+    struct st30p_tx_ops ops;
+    memset(&ops, 0, sizeof(ops));
+    ops.port.num_port = 1;
+    snprintf(ops.port.port[MTL_SESSION_PORT_P], MTL_PORT_MAX_LEN, "%s",
+             tx_port);
+    if (inet_pton(AF_INET, dip, ops.port.dip_addr[MTL_SESSION_PORT_P]) != 1) {
+        if (err && errlen > 0) snprintf(err, errlen, "bad audio target ip");
+        return -1;
+    }
+    ops.port.udp_port[MTL_SESSION_PORT_P] = udp_port;
+    ops.port.payload_type = 98;
+    ops.fmt = ST30_FMT_PCM16;
+    ops.channel = DVS_TX_AUDIO_CH;
+    ops.sampling = ST30_SAMPLING_48K;
+    ops.ptime = ST30_PTIME_1MS;
+    ops.framebuff_cnt = DVS_TX_AUDIO_FB_CNT;
+    {
+        int fbsize = st30_calculate_framebuff_size(
+            ops.fmt, ops.ptime, ops.sampling, ops.channel,
+            (uint64_t)DVS_TX_AUDIO_FRAME_MS * 1000000ULL, NULL);
+        if (fbsize <= 0) {
+            if (err && errlen > 0) snprintf(err, errlen, "bad audio frame size");
+            return -1;
+        }
+        ops.framebuff_size = (uint32_t)fbsize;
+    }
+    ops.flags = ST30P_TX_FLAG_BLOCK_GET;
+    ops.name = "dvs_tx_audio";
+    g_atx = st30p_tx_create(st, &ops);
+    if (!g_atx) {
+        if (err && errlen > 0)
+            snprintf(err, errlen, "ST30 TX create failed (%s:%u)", dip,
+                     (unsigned)udp_port);
+        return -1;
+    }
+    atomic_store(&g_atx_running, true);
+    atomic_store(&g_atx_ready, false);
+    if (pthread_create(&g_atx_tid, NULL, audio_tx_thread, NULL) != 0) {
+        atomic_store(&g_atx_running, false);
+        st30p_tx_free(g_atx);
+        g_atx = NULL;
+        if (err && errlen > 0) snprintf(err, errlen, "audio thread failed");
+        return -1;
+    }
+    /* Bring-up handshake: a dead capture device fails the start loudly
+     * here instead of sending video with a dead audio chain. */
+    for (int i = 0; i < 100; i++) {
+        if (atomic_load(&g_atx_ready)) break;
+        if (!atomic_load(&g_atx_running)) break;
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = 10000000L};
+        nanosleep(&ts, NULL);
+    }
+    if (!atomic_load(&g_atx_ready)) {
+        audio_tx_stop();
+        if (err && errlen > 0)
+            snprintf(err, errlen, "audio capture not ready (%s)",
+                     g_adev[0] ? g_adev : "default");
+        return -1;
+    }
+    return 0;
+}
+
+static void audio_tx_stop(void) {
+    if (g_atx) {
+        atomic_store(&g_atx_running, false);
+        st30p_tx_wake_block(g_atx);
+        pthread_join(g_atx_tid, NULL);
+        st30p_tx_free(g_atx);
+        g_atx = NULL;
+    }
+}
 
 static dvs_tx_port_entry g_table[DVS_TX_PORT_MAX];
 static int g_table_n = 0;
@@ -62,6 +229,7 @@ int dvs_tx_backend_running(void) {
 }
 
 void dvs_tx_backend_stop(void) {
+    audio_tx_stop();
     if (g_tp) {
         tx_pipeline_stop(g_tp);
         tx_pipeline_free(g_tp);
@@ -100,9 +268,6 @@ int dvs_tx_backend_entry(const dvs_tx_params_t* p, char* err, size_t errlen) {
         if (err && errlen > 0) snprintf(err, errlen, "bad bitrate");
         return -1;
     }
-    /* Audio TX (ST2110-30) is out of scope: dvs_tx_params_t carries video
-     * only, so there is nothing to reject here yet. When an audio sub-object
-     * lands, this entry must fail it explicitly without breaking video. */
 
     char cur_devs[DVS_TX_PORT_MAX][DVS_TX_DEV_LEN];
     char cur_stables[DVS_TX_PORT_MAX][DVS_TX_STABLE_LEN];
@@ -198,7 +363,7 @@ int dvs_tx_backend_entry(const dvs_tx_params_t* p, char* err, size_t errlen) {
     txp.rga_pool_size = DVS_TX_DEF_RGA_POOL;
     txp.codec = (codec == 1) ? CODEC_FMT_H265 : CODEC_FMT_H264;
     txp.bitrate_bps = bitrate_bps;
-    txp.gop_size = dvs_tx_default_gop(p->fps);
+    txp.gop_size = dvs_tx_gop_ms_to_frames(p->gop_ms, p->fps);
     txp.num_slices = DVS_TX_DEF_SLICES;
     txp.intra_refresh_mode = 0;
     txp.intra_refresh_arg = 0;
@@ -237,6 +402,17 @@ int dvs_tx_backend_entry(const dvs_tx_params_t* p, char* err, size_t errlen) {
         g_mtx = NULL;
         memset(&g_sink, 0, sizeof(g_sink));
         return -1;
+    }
+    /* Audio TX shares the video destination; a requested but failed audio
+     * chain fails the whole start instead of sending silent video. */
+    if (p->audio_port > 0) {
+        snprintf(g_adev, sizeof(g_adev), "%s",
+                 g_be_cfg.alsa_device[0] ? g_be_cfg.alsa_device : "default");
+        if (audio_tx_start(g_st, g_be_cfg.tx_port, p->target_sip,
+                           (uint16_t)p->audio_port, err, errlen) != 0) {
+            dvs_tx_backend_stop();
+            return -1;
+        }
     }
     return 0;
 }

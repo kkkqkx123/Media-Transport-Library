@@ -767,6 +767,194 @@ static void test_ops_persistence() {
     std::remove(db);
 }
 
+static void test_frame_anchor() {
+    namespace ct = dvs::contract;
+    // Frame math: applyAt maps to the containing frame; frame start inverts.
+    assert(ct::frame_index_for_apply_at(1000000000ULL, 60.0, 1000000000ULL) == 0);
+    assert(ct::frame_index_for_apply_at(1000000000ULL, 60.0,
+                                        1000000000ULL + 16666666ULL) == 0);
+    assert(ct::frame_index_for_apply_at(1000000000ULL, 60.0,
+                                        1000000000ULL + 16666667ULL) == 1);
+    assert(ct::frame_index_for_apply_at(1000000000ULL, 60.0, 999ULL) == 0);
+    assert(ct::frame_index_for_apply_at(0ULL, 60.0, 5000000000ULL) == 300);
+    assert(ct::frame_start_ns(1000000000ULL, 60.0, 0) == 1000000000ULL);
+    uint64_t s1 = ct::frame_start_ns(1000000000ULL, 60.0, 1);
+    assert(s1 > 1000000000ULL && s1 < 1000000000ULL + 20000000ULL);
+    assert(ct::frame_index_for_apply_at(1000000000ULL, 60.0, s1) == 1);
+    assert(ct::frame_index_for_apply_at(0ULL, 0.0, 5000ULL) == 0);
+    // Contract accepts the anchored payloads.
+    {
+        json_object* lp = json_object_new_object();
+        json_object_object_add(lp, "operationId", json_object_new_string("op-1"));
+        json_object_object_add(lp, "revision", json_object_new_int(3));
+        json_object_object_add(lp, "applyAtNs", json_object_new_int64(1000));
+        json_object_object_add(lp, "epochTaiNs", json_object_new_int64(900));
+        json_object_object_add(lp, "fps", json_object_new_double(60.0));
+        json_object_object_add(lp, "frameIndex", json_object_new_int64(6));
+        json_object_object_add(lp, "windows", json_object_new_array());
+        json_object* g = json_object_new_object();
+        json_object_object_add(g, "x", json_object_new_int(0));
+        json_object_object_add(g, "y", json_object_new_int(0));
+        json_object_object_add(g, "w", json_object_new_int(10));
+        json_object_object_add(g, "h", json_object_new_int(10));
+        json_object_object_add(lp, "geometry", g);
+        json_object* eps = json_object_new_array();
+        json_object* e = json_object_new_object();
+        json_object_object_add(e, "sig", json_object_new_string("s"));
+        json_object_object_add(e, "address", json_object_new_string("239.0.0.1"));
+        json_object_object_add(e, "sourceIp", json_object_new_string("192.168.1.2"));
+        json_object_array_add(eps, e);
+        json_object_object_add(lp, "endpoints", eps);
+        json_object* bi = json_object_new_object();
+        json_object_object_add(bi, "revision", json_object_new_int(2));
+        json_object_object_add(bi, "url", json_object_new_string("http://x/b.png"));
+        json_object_object_add(lp, "baseImage", bi);
+        json_object* ia = json_object_new_object();
+        json_object_object_add(ia, "brightness", json_object_new_int(10));
+        json_object_object_add(lp, "imageAdjust", ia);
+        assert(ct::validate_layout_prepare(lp).empty());
+        json_object* bad = json_object_get(e);
+        json_object_object_add(bad, "sourceIp", json_object_new_string("999.1.1.1"));
+        assert(!ct::validate_layout_prepare(lp).empty());
+        json_object_put(bad);
+        json_object_put(lp);
+    }
+    {
+        json_object* lp = json_object_new_object();
+        json_object_object_add(lp, "operationId", json_object_new_string("op-1"));
+        json_object_object_add(lp, "revision", json_object_new_int(1));
+        json_object_object_add(lp, "applyAtNs", json_object_new_int64(1));
+        json_object_object_add(lp, "epochTaiNs", json_object_new_int64(-5));
+        json_object_object_add(lp, "windows", json_object_new_array());
+        json_object* g = json_object_new_object();
+        json_object_object_add(g, "x", json_object_new_int(0));
+        json_object_object_add(g, "y", json_object_new_int(0));
+        json_object_object_add(g, "w", json_object_new_int(1));
+        json_object_object_add(g, "h", json_object_new_int(1));
+        json_object_object_add(lp, "geometry", g);
+        assert(!ct::validate_layout_prepare(lp).empty());
+        json_object_put(lp);
+    }
+    // Barrier ack carries the commit report.
+    {
+        json_object* ba = json_object_new_object();
+        json_object_object_add(ba, "operationId", json_object_new_string("op-1"));
+        json_object_object_add(ba, "node", json_object_new_string("n1"));
+        json_object_object_add(ba, "status", json_object_new_string("ready"));
+        json_object_object_add(ba, "frameIndex", json_object_new_int64(9));
+        json_object_object_add(ba, "appliedAtTaiNs", json_object_new_int64(1234));
+        json_object_object_add(ba, "layoutHash", json_object_new_string("abc"));
+        assert(ct::validate_barrier_ack(ba).empty());
+        json_object_object_add(ba, "frameIndex", json_object_new_int64(-1));
+        assert(!ct::validate_barrier_ack(ba).empty());
+        json_object_put(ba);
+    }
+    // Canonical media error codes exist.
+    assert(std::string(ct::media_err::kDecodeNotReady) == "DECODE_NOT_READY");
+    assert(std::string(ct::media_err::kFrameDeadlineMissed) == "FRAME_DEADLINE_MISSED");
+    // Whitelist source filter.
+    {
+        json_object* w = json_object_new_object();
+        json_object_object_add(w, "sig", json_object_new_string("s1"));
+        json_object_object_add(w, "address", json_object_new_string("239.0.0.1"));
+        assert(validate_whitelist_shape(w).empty());
+        json_object_object_add(w, "sourceIp",
+                               json_object_new_string("192.168.10.11"));
+        assert(validate_whitelist_shape(w).empty());
+        json_object_object_add(w, "sourceIp", json_object_new_string("nope"));
+        assert(!validate_whitelist_shape(w).empty());
+        json_object_put(w);
+    }
+    // Image adjust + base image shapes.
+    {
+        json_object* ia = json_object_new_object();
+        assert(!validate_image_adjust(ia).empty());
+        json_object_object_add(ia, "contrast", json_object_new_int(200));
+        assert(!validate_image_adjust(ia).empty());
+        json_object_object_add(ia, "contrast", json_object_new_int(-20));
+        assert(validate_image_adjust(ia).empty());
+        json_object_put(ia);
+        json_object* bi = json_object_new_object();
+        assert(!validate_base_image(bi).empty());
+        json_object_object_add(bi, "revision", json_object_new_int(1));
+        json_object_object_add(bi, "url", json_object_new_string("http://x/b.png"));
+        assert(validate_base_image(bi).empty());
+        json_object* sub = json_object_new_object();
+        json_object_object_add(sub, "x", json_object_new_int(0));
+        json_object_object_add(sub, "y", json_object_new_int(0));
+        json_object_object_add(bi, "sub", sub);
+        assert(!validate_base_image(bi).empty());
+        json_object_put(bi);
+    }
+    // Decode budget + signal counting + fixed snap + wall cells.
+    {
+        json_object* nd = json_object_new_object();
+        assert(node_decode_budget(nd) < 0);
+        json_object* cap = json_object_new_object();
+        json_object_object_add(cap, "maxDecodeSessions", json_object_new_int(2));
+        json_object_object_add(nd, "capability", cap);
+        assert(node_decode_budget(nd) == 2);
+        json_object_put(nd);
+        json_object* wins = json_object_new_array();
+        for (int i = 0; i < 3; i++) {
+            json_object* w = json_object_new_object();
+            char id[8];
+            snprintf(id, sizeof(id), "w%d", i);
+            json_object_object_add(w, "id", json_object_new_string(id));
+            json_object_object_add(w, "sig", json_object_new_string(i < 2 ? "s1" : "s2"));
+            json_object_object_add(w, "x", json_object_new_int(i * 100));
+            json_object_object_add(w, "y", json_object_new_int(0));
+            json_object_object_add(w, "w", json_object_new_int(100));
+            json_object_object_add(w, "h", json_object_new_int(100));
+            json_object_array_add(wins, w);
+        }
+        assert(count_node_signals(wins, Rect{0, 0, 1000, 1000}) == 2);
+        json_object* wall = json_object_new_object();
+        json_object_object_add(wall, "rows", json_object_new_int(1));
+        json_object_object_add(wall, "cols", json_object_new_int(2));
+        std::vector<std::pair<std::string, Rect>> cells;
+        wall_cells(wall, 3840, 2160, &cells);
+        assert(cells.size() == 2);
+        assert(cells[1].second.x == 1920);
+        assert(wall_min_window_side(wall, 3840, 2160) == 480);
+        json_object* snapped = snap_windows_to_cells(wins, cells);
+        assert(json_object_array_length(snapped) == 3);
+        json_object* s0 = json_object_array_get_idx(snapped, 0);
+        json_object* xv = nullptr;
+        assert(json_object_object_get_ex(s0, "x", &xv) && xv &&
+               json_object_get_int(xv) == 0);
+        json_object* s2 = json_object_array_get_idx(snapped, 2);
+        assert(json_object_object_get_ex(s2, "x", &xv) && xv &&
+               json_object_get_int(xv) == 0);
+        json_object_put(snapped);
+        json_object_put(wall);
+        json_object_put(wins);
+    }
+    // Operation persistence carries the frame base (legacy docs stay readable).
+    {
+        Operation op;
+        op.op_id = "op-f";
+        op.revision = 5;
+        op.apply_at_ns = 777;
+        op.state = "preparing";
+        op.epoch_ns = 700;
+        op.fps = 50.0;
+        op.frame_index = 3;
+        json_object* j = operation_to_json(op);
+        Operation back;
+        assert(operation_from_json(j, &back));
+        assert(back.epoch_ns == 700 && back.fps == 50.0 && back.frame_index == 3);
+        json_object_put(j);
+        json_object* legacy = json_object_new_object();
+        json_object_object_add(legacy, "opId", json_object_new_string("op-l"));
+        json_object_object_add(legacy, "state", json_object_new_string("preparing"));
+        Operation old;
+        assert(operation_from_json(legacy, &old));
+        assert(old.epoch_ns == 0 && old.frame_index == -1 && old.fps == 60.0);
+        json_object_put(legacy);
+    }
+}
+
 static void test_common() {
     uint8_t out[32];
     dvs::sha256(nullptr, 0, out);
@@ -1879,6 +2067,7 @@ int main() {
     test_validation_gaps();
     test_p3_barrier_and_scale();
     test_common();
+    test_frame_anchor();
 
     printf("dvs_platform_basic OK\n");
     return 0;

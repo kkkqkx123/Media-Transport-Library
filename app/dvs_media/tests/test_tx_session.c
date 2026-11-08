@@ -66,6 +66,24 @@ int main(void) {
     good_params(&p);
     p.width = 8192;
     CHECK(dvs_tx_validate(&p, err, sizeof(err)) != 0, "validate rejects width");
+    /* GOP interval: 0 = default, 250..4000 explicit; audio port optional. */
+    good_params(&p);
+    p.gop_ms = 500;
+    p.audio_port = 6000;
+    CHECK(dvs_tx_validate(&p, err, sizeof(err)) == 0,
+          "validate accepts gopMs + audio port");
+    good_params(&p);
+    p.gop_ms = 100;
+    CHECK(dvs_tx_validate(&p, err, sizeof(err)) != 0,
+          "validate rejects short gop");
+    good_params(&p);
+    p.gop_ms = 99999;
+    CHECK(dvs_tx_validate(&p, err, sizeof(err)) != 0,
+          "validate rejects long gop");
+    good_params(&p);
+    p.audio_port = 70000;
+    CHECK(dvs_tx_validate(&p, err, sizeof(err)) != 0,
+          "validate rejects audio port");
     good_params(&p);
     p.fps = 120;
     CHECK(dvs_tx_validate(&p, err, sizeof(err)) != 0, "validate rejects fps");

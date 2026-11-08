@@ -75,12 +75,21 @@ int dvs_tx_validate(const dvs_tx_params_t* p, char* err, size_t errlen) {
         if (err && errlen > 0) snprintf(err, errlen, "bitrate out of range");
         return -1;
     }
+    if (p->gop_ms != 0 &&
+        (p->gop_ms < DVS_TX_GOP_MS_MIN || p->gop_ms > DVS_TX_GOP_MS_MAX)) {
+        if (err && errlen > 0) snprintf(err, errlen, "gop interval out of range");
+        return -1;
+    }
     if (!valid_ip4(p->target_sip)) {
         if (err && errlen > 0) snprintf(err, errlen, "bad target ip");
         return -1;
     }
     if (p->target_port < 1 || p->target_port > 65535) {
         if (err && errlen > 0) snprintf(err, errlen, "bad target port");
+        return -1;
+    }
+    if (p->audio_port != 0 && (p->audio_port < 1 || p->audio_port > 65535)) {
+        if (err && errlen > 0) snprintf(err, errlen, "bad audio port");
         return -1;
     }
     return 0;
@@ -206,11 +215,15 @@ struct json_object* dvs_tx_status_json(const dvs_tx_session_t* s) {
     json_object_object_add(o, "fps", json_object_new_int(s ? s->params.fps : 0));
     json_object_object_add(o, "bitrateKbps",
                            json_object_new_int(s ? s->params.bitrate_kbps : 0));
+    json_object_object_add(o, "gopMs",
+                           json_object_new_int(s ? s->params.gop_ms : 0));
     struct json_object* t = json_object_new_object();
     json_object_object_add(t, "sip",
                            json_object_new_string(s ? s->params.target_sip : ""));
     json_object_object_add(t, "udpPort",
                            json_object_new_int(s ? s->params.target_port : 0));
+    json_object_object_add(t, "audioUdpPort",
+                           json_object_new_int(s ? s->params.audio_port : 0));
     json_object_object_add(o, "target", t);
     json_object_object_add(o, "error",
                            json_object_new_string(s ? s->error : ""));

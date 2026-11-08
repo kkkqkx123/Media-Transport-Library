@@ -1,5 +1,6 @@
 #pragma once
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <json-c/json.h>
 #include <mutex>
@@ -43,9 +44,21 @@ public:
     json_object* build_heartbeat();
     json_object* build_register();
 
+    // Frame-anchored commit report forwarded to the platform barrier.
+    // Only the signalled fields travel; a legacy engine answers without
+    // them and the platform treats the report as frame-agnostic.
+    struct BarrierFrame {
+        bool has_frame = false;
+        int64_t frame_index = -1;
+        bool has_applied_at = false;
+        int64_t applied_at_ns = 0;
+        bool late = false;
+        std::string reason;
+    };
     // 上行回执：优先 WS，WS 不可用时回退短连接。返回 true 表示已送达传输层。
     bool uplink_barrier_ack(const std::string& opid, const std::string& node,
-                            const std::string& status, json_object* lanes);
+                            const std::string& status, json_object* lanes,
+                            const BarrierFrame& frame);
     bool uplink_config_ack(const std::string& node, int applied_revision);
     bool uplink_upgrade_progress(const std::string& task_id, const std::string& node,
                                  const std::string& status,

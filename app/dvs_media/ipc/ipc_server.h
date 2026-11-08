@@ -33,6 +33,16 @@ typedef struct {
     const char* (*backend)(void);
     /* Applied audio snapshot for query_state. May be NULL. */
     struct json_object* (*audio_status)(void);
+    /* Last commit report {frameIndex,appliedAtTaiNs,late} merged into the
+     * commit response data. May be NULL; the response then carries only
+     * the revision. */
+    struct json_object* (*commit_info)(void);
+    /* Short failure code for the last failed commit ("" when none). May
+     * be NULL; the failure envelope then keeps the generic INTERNAL. */
+    const char* (*commit_error)(void);
+    /* Still + adjustment status fragment merged into query_state. May be
+     * NULL; query_state then omits the display section. */
+    struct json_object* (*display_status)(void);
     /* Per-lane readiness stats for the barrier. May be NULL; query_state
      * then reports an empty lanes array. */
     struct json_object* (*lane_stats)(void);

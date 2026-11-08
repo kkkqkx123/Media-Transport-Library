@@ -15,11 +15,13 @@ struct TxEncode {
     int height = 1080;           // 480..cap.maxHeight
     int fps = 30;                // 24..cap.maxFps
     int bitrate = 4000;          // 500..cap.maxBitrateKbps (kbps)
+    int gopMs = 0;               // 0 = encoder default; else 250..4000
 };
 
 struct TxTarget {
     std::string sip;  // IPv4
     int udpPort = 0;  // 1..65535
+    int audioUdpPort = 0;  // 0 = no audio TX; else 1..65535
 };
 
 struct TxParams {

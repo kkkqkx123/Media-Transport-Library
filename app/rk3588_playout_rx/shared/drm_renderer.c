@@ -599,6 +599,29 @@ int drm_renderer_display_layers(struct drm_renderer* r,
     return 0;
 }
 
+int drm_renderer_set_background(struct drm_renderer* r, const uint8_t* px,
+                                 int w, int h) {
+    if (!r || !px || w <= 0 || h <= 0)
+        return -EINVAL;
+    if (!r->bg.map || r->bg.map == MAP_FAILED || r->bg.pitch == 0)
+        return -ENODEV;
+    if (r->mode_w <= 0 || r->mode_h <= 0)
+        return -EINVAL;
+    /* Stretch-blit XRGB8888 into the mode-sized background buffer. */
+    for (int y = 0; y < r->mode_h; y++) {
+        int sy = (int)((long)y * h / r->mode_h);
+        if (sy >= h) sy = h - 1;
+        uint32_t* d = (uint32_t*)((uint8_t*)r->bg.map + (size_t)y * r->bg.pitch);
+        const uint8_t* s = px + ((size_t)sy * w) * 4;
+        for (int x = 0; x < r->mode_w; x++) {
+            int sx = (int)((long)x * w / r->mode_w);
+            if (sx >= w) sx = w - 1;
+            memcpy(&d[x], s + ((size_t)sx) * 4, 4);
+        }
+    }
+    return 0;
+}
+
 int drm_renderer_display(struct drm_renderer* r, int dma_fd, uint32_t hor_stride,
                          uint32_t ver_stride) {
     if (!r || dma_fd < 0) return -EINVAL;

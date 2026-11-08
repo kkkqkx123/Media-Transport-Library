@@ -22,6 +22,9 @@
 static file_playout_pip_stream g_pending[MP4_PIP_MAX_LANES];
 static uint64_t g_pending_apply_at_ns = 0;
 static int g_pending_count = 0;
+static dvs_frame_anchor_t g_pending_frame;
+static dvs_base_image_desc_t g_pending_base;
+static dvs_image_adjust_t g_pending_adjust;
 /* Set only when a prepare actually staged a layout. A refused prepare (e.g.
  * the pre-translation windows shape, rejected by hook_prepare since the agent
  * translates to streams) stages nothing and leaves this clear, so commit
@@ -61,6 +64,9 @@ int dvs_layout_from_json(struct json_object* req, file_playout_pip_stream* out,
         if (json_object_object_get_ex(s, "main", &v)) p->main = json_object_get_boolean(v);
         if (json_object_object_get_ex(s, "sip", &v))
             strncpy(p->sip, json_object_get_string(v), MP4_PIP_SIP_LEN - 1);
+        if (json_object_object_get_ex(s, "srcIp", &v) && v &&
+            json_object_is_type(v, json_type_string))
+            strncpy(p->src_ip, json_object_get_string(v), MP4_PIP_SIP_LEN - 1);
         if (json_object_object_get_ex(s, "udpPort", &v))
             p->udp_port = (uint16_t)json_object_get_int(v);
         if (json_object_object_get_ex(s, "audioUdpPort", &v))
@@ -94,6 +100,10 @@ int dvs_layout_prepare(const file_playout_pip_stream* streams, int count) {
     memcpy(g_pending, streams, (size_t)count * sizeof(*streams));
     g_pending_count = count;
     g_pending_apply_at_ns = 0;
+    memset(&g_pending_frame, 0, sizeof(g_pending_frame));
+    g_pending_frame.frame_index = -1;
+    memset(&g_pending_base, 0, sizeof(g_pending_base));
+    memset(&g_pending_adjust, 0, sizeof(g_pending_adjust));
     g_pending_valid = 1;
     pthread_mutex_unlock(&g_pending_mu);
     return 0;
@@ -121,6 +131,84 @@ int dvs_layout_prepare_from_json(struct json_object* req) {
     if (req && json_object_object_get_ex(req, "audioVolume", &v))
         volume = json_object_get_int(v);
 
+    /* Frame anchor (optional): epoch/fps/frameIndex travel the same path as
+     * applyAtNs. Absent means a legacy payload: commit at the current frame. */
+    dvs_frame_anchor_t frame;
+    memset(&frame, 0, sizeof(frame));
+    frame.frame_index = -1;
+    frame.fps = 60.0;
+    {
+        struct json_object* e = NULL, *f = NULL, *i = NULL;
+        if (req && json_object_object_get_ex(req, "epochTaiNs", &e) && e)
+            frame.epoch_ns = (uint64_t)json_object_get_int64(e);
+        if (req && json_object_object_get_ex(req, "fps", &f) && f) {
+            if (json_object_is_type(f, json_type_double))
+                frame.fps = json_object_get_double(f);
+            else
+                frame.fps = (double)json_object_get_int(f);
+        }
+        if (req && json_object_object_get_ex(req, "frameIndex", &i) && i)
+            frame.frame_index = json_object_get_int64(i);
+    }
+    /* Wall still (optional): the node fetches the bytes from url itself. */
+    dvs_base_image_desc_t base;
+    memset(&base, 0, sizeof(base));
+    {
+        struct json_object* b = NULL;
+        if (req && json_object_object_get_ex(req, "baseImage", &b) && b &&
+            json_object_is_type(b, json_type_object)) {
+            struct json_object* q = NULL;
+            if (json_object_object_get_ex(b, "revision", &q) && q)
+                base.revision = json_object_get_int(q);
+            const char* u = NULL;
+            if (json_object_object_get_ex(b, "url", &q) && q &&
+                json_object_is_type(q, json_type_string))
+                u = json_object_get_string(q);
+            if (u) strncpy(base.url, u, sizeof(base.url) - 1);
+            const char* pth = NULL;
+            if (json_object_object_get_ex(b, "path", &q) && q &&
+                json_object_is_type(q, json_type_string))
+                pth = json_object_get_string(q);
+            if (pth) strncpy(base.path, pth, sizeof(base.path) - 1);
+            if (json_object_object_get_ex(b, "width", &q) && q)
+                base.img_w = json_object_get_int(q);
+            if (json_object_object_get_ex(b, "height", &q) && q)
+                base.img_h = json_object_get_int(q);
+            struct json_object* s = NULL;
+            if (json_object_object_get_ex(b, "sub", &s) && s &&
+                json_object_is_type(s, json_type_object)) {
+                if (json_object_object_get_ex(s, "x", &q) && q)
+                    base.sub_x = json_object_get_int(q);
+                if (json_object_object_get_ex(s, "y", &q) && q)
+                    base.sub_y = json_object_get_int(q);
+                if (json_object_object_get_ex(s, "w", &q) && q)
+                    base.sub_w = json_object_get_int(q);
+                if (json_object_object_get_ex(s, "h", &q) && q)
+                    base.sub_h = json_object_get_int(q);
+            }
+        }
+    }
+    /* Image adjustment targets (optional): stored pending, applied by the
+     * display backend when supported, else reported as unsupported. */
+    dvs_image_adjust_t adjust;
+    memset(&adjust, 0, sizeof(adjust));
+    {
+        struct json_object* a = NULL;
+        if (req && json_object_object_get_ex(req, "imageAdjust", &a) && a &&
+            json_object_is_type(a, json_type_object)) {
+            static const char* keys[4] = {"brightness", "contrast",
+                                          "saturation", "hue"};
+            int* vals[4] = {&adjust.brightness, &adjust.contrast,
+                            &adjust.saturation, &adjust.hue};
+            for (int k = 0; k < 4; k++) {
+                struct json_object* q = NULL;
+                if (json_object_object_get_ex(a, keys[k], &q) && q) {
+                    *vals[k] = json_object_get_int(q);
+                    adjust.has_value = 1;
+                }
+            }
+        }
+    }
     pthread_mutex_lock(&g_pending_mu);
     memcpy(g_pending, buf, (size_t)n * sizeof(*buf));
     g_pending_count = n;
@@ -130,6 +218,9 @@ int dvs_layout_prepare_from_json(struct json_object* req) {
     if (req && json_object_object_get_ex(req, "applyAtNs", &atv) && atv)
       apply_at = (uint64_t)json_object_get_int64(atv);
     g_pending_apply_at_ns = apply_at;
+    g_pending_frame = frame;
+    g_pending_base = base;
+    g_pending_adjust = adjust;
     g_pending_valid = 1;
     strncpy(g_pending_audio_owner, owner, sizeof(g_pending_audio_owner) - 1);
     g_pending_audio_owner[sizeof(g_pending_audio_owner) - 1] = '\0';
@@ -138,12 +229,36 @@ int dvs_layout_prepare_from_json(struct json_object* req) {
     return 0;
 }
 
+void dvs_layout_pending_frame(dvs_frame_anchor_t* out) {
+    if (!out) return;
+    pthread_mutex_lock(&g_pending_mu);
+    *out = g_pending_frame;
+    pthread_mutex_unlock(&g_pending_mu);
+}
+
+void dvs_layout_pending_base(dvs_base_image_desc_t* out) {
+    if (!out) return;
+    pthread_mutex_lock(&g_pending_mu);
+    *out = g_pending_base;
+    pthread_mutex_unlock(&g_pending_mu);
+}
+
+void dvs_layout_pending_adjust(dvs_image_adjust_t* out) {
+    if (!out) return;
+    pthread_mutex_lock(&g_pending_mu);
+    *out = g_pending_adjust;
+    pthread_mutex_unlock(&g_pending_mu);
+}
+
 int dvs_layout_commit(dvs_engine* e) {
     file_playout_pip_stream buf[MP4_PIP_MAX_LANES];
     int n = 0;
     char owner[64];
     int volume;
     uint64_t apply_at;
+    dvs_frame_anchor_t frame;
+    dvs_base_image_desc_t base;
+    dvs_image_adjust_t adjust;
     pthread_mutex_lock(&g_pending_mu);
     n = g_pending_count;
     int valid = g_pending_valid;
@@ -152,6 +267,9 @@ int dvs_layout_commit(dvs_engine* e) {
     memcpy(owner, g_pending_audio_owner, sizeof(owner));
     volume = g_pending_audio_volume;
     apply_at = g_pending_apply_at_ns;
+    frame = g_pending_frame;
+    base = g_pending_base;
+    adjust = g_pending_adjust;
     pthread_mutex_unlock(&g_pending_mu);
 
     if (!valid) {
@@ -162,21 +280,33 @@ int dvs_layout_commit(dvs_engine* e) {
 
     /* push audio routing to the engine before (re)building the compositor */
     dvs_engine_set_audio(e, owner, volume);
-    int rc = dvs_engine_apply_layout_at(e, buf, n, apply_at);
+    /* still + adjustment ride the same commit; the engine resolves them
+     * after the layout swap so a failed swap keeps the old picture. */
+    dvs_engine_set_pending_base(e, &base);
+    dvs_engine_set_pending_adjust(e, &adjust);
+    int rc = dvs_engine_apply_layout_frame(e, buf, n, apply_at,
+                                            frame.epoch_ns, frame.fps,
+                                            frame.frame_index);
     if (rc == 0) {
         pthread_mutex_lock(&g_pending_mu);
         g_pending_count = 0;
         g_pending_apply_at_ns = 0;
+        memset(&g_pending_frame, 0, sizeof(g_pending_frame));
+        g_pending_frame.frame_index = -1;
+        memset(&g_pending_base, 0, sizeof(g_pending_base));
+        memset(&g_pending_adjust, 0, sizeof(g_pending_adjust));
         pthread_mutex_unlock(&g_pending_mu);
     }
     return rc;
 }
 
 void dvs_layout_clear(dvs_engine* e) {
-    /* Clear-screen keeps the platform backdrop layer: media planes go to
-     * zero windows while any decoded base image stays cached by its
-     * wall:version:node key and is repainted alone on replay. */
-    dvs_engine_apply_layout(e, NULL, 0);
+    /* Clear-screen keeps the platform backdrop: media planes go to zero
+     * windows while the decoded base image (or black when no still is set)
+     * stays on screen. The compositor is rebuilt with zero lanes instead of
+     * being freed so the backdrop plane keeps scanning out; MTL stays up
+     * for fast future commits. */
+    dvs_engine_apply_layout_frame(e, NULL, 0, 0, 0, 60.0, -1);
     pthread_mutex_lock(&g_pending_mu);
     g_pending_count = 0;
     g_pending_apply_at_ns = 0;
@@ -200,6 +330,10 @@ void dvs_layout_abort(void) {
     g_pending_count = 0;
     g_pending_apply_at_ns = 0;
     g_pending_valid = 0;
+    memset(&g_pending_frame, 0, sizeof(g_pending_frame));
+    g_pending_frame.frame_index = -1;
+    memset(&g_pending_base, 0, sizeof(g_pending_base));
+    memset(&g_pending_adjust, 0, sizeof(g_pending_adjust));
     g_pending_audio_owner[0] = '\0';
     g_pending_audio_volume = 0;
     pthread_mutex_unlock(&g_pending_mu);

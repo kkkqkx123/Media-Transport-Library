@@ -34,6 +34,14 @@ struct Operation {
     // Scene volume carried with the fanout snapshot so a rollback reissue
     // restores the previous loudness instead of keeping the failed one.
     int volume = 80;
+    // Frame-anchored commit time base: wall time epoch (TAI ns), wall frame
+    // rate, and the target frame index derived from apply_at_ns. frame_index
+    // < 0 means immediate (rollback reissue): the node commits the current
+    // frame. epoch_ns == 0 marks a legacy op without frame semantics; the
+    // frame check is then skipped instead of failing.
+    uint64_t epoch_ns = 0;
+    double fps = 60.0;
+    int64_t frame_index = -1;
 };
 
 class OpCoordinator {

@@ -24,6 +24,10 @@ int dvs_stream_shape_valid(const char* sip, uint16_t udp_port, int width,
 int dvs_stream_crop_valid(int width, int height, int src_x, int src_y,
                           int src_w, int src_h, char* err, size_t errlen);
 
+/* Optional SSM source filter. Empty/NULL means any-source multicast.
+ * Otherwise must be a dotted IPv4 literal. 0 ok, -1 with err set. */
+int dvs_stream_src_valid(const char* src_ip, char* err, size_t errlen);
+
 #ifdef __cplusplus
 }
 #endif

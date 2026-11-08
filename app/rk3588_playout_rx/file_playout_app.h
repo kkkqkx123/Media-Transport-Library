@@ -16,6 +16,14 @@ typedef enum file_playout_ptp_mode {
     FILE_PLAYOUT_PTP_MONOTONIC,    /**< no PTP — relative monotonic anchor only */
 } file_playout_ptp_mode;
 
+/** ST2110-21 TX pacing profile (app-level selection over ST21_TX_PACING_WAY_*). */
+typedef enum file_playout_pacing {
+    FILE_PLAYOUT_PACING_AUTO = 0,     /**< MTL auto-detect (legacy default) */
+    FILE_PLAYOUT_PACING_TSC,          /**< TSC linear (approximates Medium) */
+    FILE_PLAYOUT_PACING_TSC_NARROW,   /**< TSC narrow gapped (ST2110-21 Narrow, default) */
+    FILE_PLAYOUT_PACING_RL,           /**< rate-limit (needs HW rate-limit NIC) */
+} file_playout_pacing;
+
 /** ST2110-30 1ms ptime frame duration in nanoseconds */
 #define MP4_ST30_FRAME_TIME_NS  (1000000ULL)
 
@@ -98,6 +106,9 @@ typedef struct file_playout_cfg {
     /* PTP / global time (P5) */
     file_playout_ptp_mode ptp_mode;
     int               ptp_utc_offset; /* subtract from TAI when GM uses UTC domain */
+
+    /** ST2110-21 TX pacing profile (see docs/plan/rk3588/RK3588_ST2110_PROTOCOL_GAP_REMEDIATION_PLAN.md) */
+    file_playout_pacing st21_pacing;
 
     /** Periodic RX stats/E2E report interval (seconds); 0 = exit only. Default 10. */
     int stats_report_interval_s;

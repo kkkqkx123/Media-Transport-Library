@@ -27,4 +27,13 @@ dvs_media --config <cfg> --ipc-sock <path>    # 受控模式：空闲启动，�
 ## 节点包
 
 与 `dvs_agent` 同包发布（见 `../../deploy/dvs-node/`，版本见 `../dvs_common/include/dvs_node_bundle.h`）。配置下发统一走单一 `configure` 谓词；`hello` 上报协议版本、包版本与状态快照，供代理核对同包配对。
+
+### ST 2110-21 pacing profile
+
+TX pacing profile 复用 file_playout 的解析（in-tree，不复制）：
+
+- 配置文件字段 `st21_pacing`（`auto|tsc|tsc_narrow|rl`），默认 `tsc_narrow`（ST 2110-21 Narrow，广播互通首选）；
+- IPC `configure` 新增 `scope: "st21_pacing"`，`value.st21_pacing` 为同取值字符串；MTL 已初始化时拒绝（需 clear 后再配，下次 MTL init 生效）。
+
+`tsc_narrow` 不受 ST22 会话 RL→TSC 强制覆盖影响；VRX 余量校验用 `../rk3588_playout_rx/tests/verify_vrx_margin.py`。
 | `tests/` | `test_ipc` / `test_state_machine` / `test_session_admit` / `test_tx_session` / `test_tx_port_map` |

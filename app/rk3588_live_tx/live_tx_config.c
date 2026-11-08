@@ -13,6 +13,7 @@ struct live_ingest_cfg_strings {
   char v4l2_device[64];
   char drm_device[64];
   char log_level[16];
+  char pacing[16];
   char audio_device[64];
 };
 
@@ -44,6 +45,7 @@ struct live_ingest_cfg live_ingest_cfg_defaults(void) {
       .cpu_capture = 1,
       .cpu_encode = 2,
       .log_level = "info",
+      .pacing = "tsc_narrow",
       .file_source = false,
       .mp4_count = 0,
       .loop = true,
@@ -198,6 +200,9 @@ int live_ingest_config_load(const char* path, struct live_ingest_cfg* cfg) {
 
   const char* ll = json_get_string(root, "log_level");
   if (ll) dup_str(&cfg->log_level, g_str.log_level, sizeof(g_str.log_level), ll);
+
+  const char* pacing = json_get_string(root, "st21_pacing");
+  if (pacing) dup_str(&cfg->pacing, g_str.pacing, sizeof(g_str.pacing), pacing);
 
   json_object_put(root);
   printf("live_ingest_config: loaded %s\n", path);

@@ -24,4 +24,13 @@ void file_playout_apply_drm_mode(file_playout_cfg* cfg);
 /** Parse cfg->drm_mode (or width/height fallback) into mode dimensions. */
 int file_playout_mode_dims(const file_playout_cfg* cfg, int* mode_w, int* mode_h);
 
+/** Parse an st21 pacing profile string ("auto|tsc|tsc_narrow|rl"). 0 on success. */
+int file_playout_parse_pacing(const char* s, file_playout_pacing* out);
+
+/** String form of the pacing profile (for logs / IPC). */
+const char* file_playout_pacing_str(file_playout_pacing pacing);
+
+/** Map to the MTL init pacing way (applied to mtl_init_params.pacing). */
+enum st21_tx_pacing_way file_playout_pacing_to_st21(file_playout_pacing pacing);
+
 #endif /* _FILE_PLAYOUT_CONFIG_H_ */

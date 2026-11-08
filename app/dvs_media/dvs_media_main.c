@@ -58,7 +58,7 @@ int main(int argc, char** argv) {
     dvs_capability_free(&cap);
 
     file_playout_cfg cfg;
-    memset(&cfg, 0, sizeof(cfg));
+    file_playout_cfg_defaults(&cfg); /* pacing defaults to tsc_narrow */
     if (config_path) {
         if (file_playout_config_load(config_path, &cfg) != 0) {
             fprintf(stderr, "failed to load config: %s\n", config_path);

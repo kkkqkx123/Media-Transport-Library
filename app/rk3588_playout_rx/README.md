@@ -99,6 +99,24 @@ chmod +x scripts/start_ptp_dual_host.sh
 | `ptp_utc_offset` | GM 为 UTC 域时从 TAI 减去的秒数（通常 0） |
 | `--ptp-mode` / `--ptp-utc-offset` | CLI 覆盖 |
 
+### ST 2110-21 pacing profile
+
+| JSON / CLI | 说明 |
+|------------|------|
+| `st21_pacing`: `"tsc_narrow"` | **默认**；TSC narrow gapped，最接近 ST 2110-21 Narrow，广播互通首选 |
+| `st21_pacing`: `"tsc"` | TSC 线性，近似 Medium，接收端宽松时可用 |
+| `st21_pacing`: `"auto"` | MTL 自动（历史行为：AF_XDP 下回退 TSC） |
+| `st21_pacing`: `"rl"` | 硬件限速（RK3588 无对应 NIC，保留给未来 10 GbE） |
+| `--pacing <way>` | CLI 覆盖 |
+
+说明：ST22 frame-level 会话在 MTL 库内会被强制从 RL 降为 TSC（每帧包数不固定），
+`rl` 档对 ST22 实际运行在 TSC；`tsc_narrow` 不受影响，是推荐档。
+对接专业接收机后用 `tests/verify_vrx_margin.py` 校验 VRX 余量：
+
+```bash
+python3 tests/verify_vrx_margin.py --require-tx run.log
+```
+
 ### 代码路径
 
 - `rk3588_common/src/ptp_time.c` — MTL `ptp_get_time_fn` 读 TAI

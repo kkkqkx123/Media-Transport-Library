@@ -6,6 +6,7 @@
 
 #include "ipc/ipc_server.h"
 #include "engine_ctx.h"
+#include "file_playout_config.h" /* file_playout_parse_pacing (in-tree reuse) */
 #include "engine/layout_executor.h"
 #include "engine/session_mgr.h"
 #include "engine/session_admit.h"
@@ -228,6 +229,24 @@ static int hook_prepare(struct json_object* req, char* err, size_t errlen) {
             if (!role && value && json_object_is_type(value, json_type_string)) role = json_object_get_string(value);
             if (!role) { snprintf(err, errlen, "missing role"); return -1; }
             if (dvs_engine_set_role(s_eng, role) != 0) { snprintf(err, errlen, "bad role"); return -1; }
+            return 0;
+        }
+        if (scope && strcmp(scope, "st21_pacing") == 0) {
+            /* ST2110-21 TX pacing profile: applies at the next MTL init
+             * (file_playout_mtl_init_dual reads cfg.st21_pacing). */
+            const char* pacing = value ? json_str(value, "st21_pacing") : NULL;
+            if (!pacing && value && json_object_is_type(value, json_type_string))
+                pacing = json_object_get_string(value);
+            file_playout_pacing way;
+            if (!pacing || file_playout_parse_pacing(pacing, &way) != 0) {
+                snprintf(err, errlen, "bad st21_pacing (auto|tsc|tsc_narrow|rl)");
+                return -1;
+            }
+            if (s_eng && s_eng->st) {
+                snprintf(err, errlen, "st21_pacing: MTL already initialized, clear first");
+                return -1;
+            }
+            if (s_eng) s_eng->cfg.st21_pacing = way;
             return 0;
         }
     }

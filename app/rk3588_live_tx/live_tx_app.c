@@ -28,7 +28,7 @@ static void usage(const char* prog) {
   fprintf(stderr, "Usage:\n");
   fprintf(stderr,
           "  %s [sec] [--config FILE] [--port P] [--lip IP] [--dip IP] [--udp PORT] "
-          "[--audio-udp PORT] [--log-level L]\n",
+          "[--audio-udp PORT] [--log-level L] [--pacing auto|tsc|tsc_narrow|rl]\n",
           prog);
   fprintf(stderr,
           "  %s [sec] --source file --mp4 FILE [--loop/--no-loop] [--audio-udp PORT] "
@@ -81,6 +81,8 @@ static int parse_args(int argc, char** argv, struct live_ingest_cfg* cfg) {
       cfg->audio_device = argv[++i];
     } else if (strcmp(argv[i], "--log-level") == 0 && i + 1 < argc) {
       cfg->log_level = argv[++i];
+    } else if (strcmp(argv[i], "--pacing") == 0 && i + 1 < argc) {
+      cfg->pacing = argv[++i];
     } else {
       fprintf(stderr, "Unknown arg: %s\n", argv[i]);
       return -1;
@@ -95,6 +97,14 @@ static void mtl_set_common_flags(struct mtl_init_params* mtp) {
   mtp->flags |= MTL_FLAG_TX_VIDEO_MIGRATE;
   mtp->flags |= MTL_FLAG_RX_VIDEO_MIGRATE;
   mtp->flags |= MTL_FLAG_RX_SEPARATE_VIDEO_LCORE;
+}
+
+/* ST2110-21 pacing profile: auto|tsc|tsc_narrow|rl (default tsc_narrow). */
+static enum st21_tx_pacing_way parse_pacing(const char* s) {
+  if (s && strcmp(s, "auto") == 0) return ST21_TX_PACING_WAY_AUTO;
+  if (s && strcmp(s, "tsc") == 0) return ST21_TX_PACING_WAY_TSC;
+  if (s && strcmp(s, "rl") == 0) return ST21_TX_PACING_WAY_RL;
+  return ST21_TX_PACING_WAY_TSC_NARROW;
 }
 
 static void apply_log_level(mtl_handle st, const char* level) {
@@ -505,6 +515,7 @@ int main(int argc, char** argv) {
   mtl_set_common_flags(&mtp);
   mtp.flags |= MTL_FLAG_SHARED_RX_QUEUE;
   mtp.flags |= MTL_FLAG_SHARED_TX_QUEUE;
+  mtp.pacing = parse_pacing(cfg.pacing);
 
   mtl_handle st = mtl_init(&mtp);
   if (!st) return 1;

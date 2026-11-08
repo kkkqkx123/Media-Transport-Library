@@ -28,3 +28,7 @@ meson setup build && ninja -C build
 ## 回环验证（跨包）
 
 本包只运行发送端，另起 `rk3588_playout_rx` 的接收进程收流显示。两侧帧率与分辨率显式对齐后方可互通。文件源先经首文件探针（宽高/帧率）对齐会话参数，播放列表切文件时重建 TAI 锚点。
+
+## ST 2110-21 pacing profile
+
+`--pacing auto|tsc|tsc_narrow|rl`（或 JSON `st21_pacing`），默认 `tsc_narrow`：TSC narrow gapped，最接近 ST 2110-21 Narrow，广播互通首选。`tsc` 线性近似 Medium；`auto` 为 MTL 自动（历史行为）；`rl` 需硬件限速 NIC（RK3588 无，保留）。ST22 frame-level 会话在 MTL 库内被强制从 RL 降为 TSC，`tsc_narrow` 不受影响。VRX 余量校验见 `../rk3588_playout_rx/tests/verify_vrx_margin.py`。

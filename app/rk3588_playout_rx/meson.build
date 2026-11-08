@@ -118,6 +118,14 @@ test_media_clk = executable('test_media_clk',
 )
 test('media_clk', test_media_clk)
 
+test_pacing_config = executable('test_pacing_config',
+  files('tests/test_pacing_config.c', 'file_playout_config.c'),
+  c_args: common_c_args,
+  dependencies: [mtl_dep, libjson_c_dep],
+  include_directories: file_playout_inc,
+)
+test('pacing_config', test_pacing_config)
+
 executable('rx_minimal',
   files('tests/rx_minimal.c'),
   c_args: common_c_args,

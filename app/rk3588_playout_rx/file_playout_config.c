@@ -58,6 +58,7 @@ void file_playout_cfg_defaults(file_playout_cfg* cfg) {
     cfg->mtl_log_level     = MTL_LOG_LEVEL_NOTICE;
     cfg->ptp_mode          = FILE_PLAYOUT_PTP_EXTERNAL;
     cfg->ptp_utc_offset    = 0;
+    cfg->st21_pacing       = FILE_PLAYOUT_PACING_TSC_NARROW;
     cfg->stats_report_interval_s = 10;
     cfg->e2e_report_interval_s   = 0;
     file_playout_viewport_defaults(&cfg->display_viewport);
@@ -172,6 +173,14 @@ int file_playout_config_load(const char* json_path, file_playout_cfg* cfg) {
             cfg->ptp_mode = FILE_PLAYOUT_PTP_MONOTONIC;
         else
             cfg->ptp_mode = FILE_PLAYOUT_PTP_EXTERNAL;
+    }
+    if (json_object_object_get_ex(root, "st21_pacing", &val)) {
+        file_playout_pacing pacing;
+        if (file_playout_parse_pacing(json_object_get_string(val), &pacing) == 0)
+            cfg->st21_pacing = pacing;
+        else
+            fprintf(stderr, "config: unknown st21_pacing \"%s\" (keep default)\n",
+                    json_object_get_string(val));
     }
     if (json_object_object_get_ex(root, "ptp_utc_offset", &val))
         cfg->ptp_utc_offset = json_object_get_int(val);
@@ -408,6 +417,46 @@ static const char* file_playout_ptp_mode_str(file_playout_ptp_mode mode) {
     }
 }
 
+int file_playout_parse_pacing(const char* s, file_playout_pacing* out) {
+    if (!s || !s[0] || !strcmp(s, "tsc_narrow")) {
+        *out = FILE_PLAYOUT_PACING_TSC_NARROW;
+        return 0;
+    }
+    if (!strcmp(s, "auto")) {
+        *out = FILE_PLAYOUT_PACING_AUTO;
+        return 0;
+    }
+    if (!strcmp(s, "tsc")) {
+        *out = FILE_PLAYOUT_PACING_TSC;
+        return 0;
+    }
+    if (!strcmp(s, "rl")) {
+        *out = FILE_PLAYOUT_PACING_RL;
+        return 0;
+    }
+    return -1;
+}
+
+const char* file_playout_pacing_str(file_playout_pacing pacing) {
+    switch (pacing) {
+    case FILE_PLAYOUT_PACING_AUTO:       return "auto";
+    case FILE_PLAYOUT_PACING_TSC:        return "tsc";
+    case FILE_PLAYOUT_PACING_RL:         return "rl";
+    case FILE_PLAYOUT_PACING_TSC_NARROW:
+    default:                             return "tsc_narrow";
+    }
+}
+
+enum st21_tx_pacing_way file_playout_pacing_to_st21(file_playout_pacing pacing) {
+    switch (pacing) {
+    case FILE_PLAYOUT_PACING_AUTO: return ST21_TX_PACING_WAY_AUTO;
+    case FILE_PLAYOUT_PACING_TSC:  return ST21_TX_PACING_WAY_TSC;
+    case FILE_PLAYOUT_PACING_RL:   return ST21_TX_PACING_WAY_RL;
+    case FILE_PLAYOUT_PACING_TSC_NARROW:
+    default:                       return ST21_TX_PACING_WAY_TSC_NARROW;
+    }
+}
+
 static int file_playout_config_parse_args(file_playout_cfg* cfg, int argc, char** argv,
                                       int start_i) {
     int i = start_i;
@@ -447,6 +496,11 @@ static int file_playout_config_parse_args(file_playout_cfg* cfg, int argc, char*
         } else if (strcmp(argv[i], "--mtl-log-level") == 0 && i + 1 < argc) {
             if (file_playout_parse_mtl_log_level(argv[++i], &cfg->mtl_log_level) != 0) {
                 fprintf(stderr, "Invalid --mtl-log-level: %s\n", argv[i]);
+                return -1;
+            }
+        } else if (strcmp(argv[i], "--pacing") == 0 && i + 1 < argc) {
+            if (file_playout_parse_pacing(argv[++i], &cfg->st21_pacing) != 0) {
+                fprintf(stderr, "Invalid --pacing: %s (auto|tsc|tsc_narrow|rl)\n", argv[i]);
                 return -1;
             }
         } else if (strcmp(argv[i], "--ptp-mode") == 0 && i + 1 < argc) {
@@ -570,6 +624,7 @@ void file_playout_config_print(const file_playout_cfg* cfg) {
     printf("  mtl_log_level:   %d\n", cfg->mtl_log_level);
     printf("  ptp_mode:        %s (utc_offset=%d)\n",
            file_playout_ptp_mode_str(cfg->ptp_mode), cfg->ptp_utc_offset);
+    printf("  st21_pacing:     %s\n", file_playout_pacing_str(cfg->st21_pacing));
     printf("  stats_report:    %d s (0=exit only)\n", cfg->stats_report_interval_s);
     if (cfg->e2e_report_interval_s > 0)
         printf("  e2e_report:      %d s\n", cfg->e2e_report_interval_s);
@@ -659,9 +714,12 @@ mtl_handle file_playout_mtl_init(const file_playout_cfg* cfg,
                              const char* lcores) {
     file_playout_ptp_mode ptp_mode = cfg ? cfg->ptp_mode : FILE_PLAYOUT_PTP_EXTERNAL;
     int utc_offset = cfg ? cfg->ptp_utc_offset : 0;
+    file_playout_pacing pacing =
+        cfg ? cfg->st21_pacing : FILE_PLAYOUT_PACING_TSC_NARROW;
 
     struct mtl_init_params mtp;
     memset(&mtp, 0, sizeof(mtp));
+    mtp.pacing = file_playout_pacing_to_st21(pacing);
 
     mtp.num_ports = 1;
     strncpy(mtp.port[MTL_PORT_P], port_name, MTL_PORT_MAX_LEN - 1);
@@ -772,6 +830,7 @@ mtl_handle file_playout_mtl_init_dual(const file_playout_cfg* cfg,
 
     struct mtl_init_params mtp;
     memset(&mtp, 0, sizeof(mtp));
+    mtp.pacing = file_playout_pacing_to_st21(cfg->st21_pacing);
     mtp.log_level = log_level;
     mtp.flags |= MTL_FLAG_BIND_NUMA;
 

@@ -31,6 +31,8 @@ struct live_ingest_cfg {
   const char* drm_device;
   int cpu_capture, cpu_encode;
   const char* log_level;
+  /* ST2110-21 TX pacing profile: auto|tsc|tsc_narrow|rl (default tsc_narrow) */
+  const char* pacing;
   /* file frame-source plugin (phase2): hdmi (default) or file */
   bool file_source;
   char mp4_files[LIVE_INGEST_MAX_FILES][LIVE_INGEST_MAX_PATH];

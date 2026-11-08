@@ -13,6 +13,7 @@
 #include "media_ipc.h"
 #include "node_store.h"
 #include "registration.h"
+#include "dvs_http_json.h"
 
 namespace {
 json_object* node_capacity_json() {
@@ -115,7 +116,7 @@ bool agent_handle_sys(AgentContext& ctx, const HttpRequest& req,
         link, "state",
         json_object_new_string(agent_engine_link_state(ctx).c_str()));
     json_object_object_add(base, "engineLink", link);
-    agent_send_json(res, agent_envelope_ok(base, ""));
+    dvs::send_json(res, dvs::envelope_ok(base, "", "a"));
     return true;
   }
   if (req.method == "GET" && req.path == "/api/v1/node/role") {
@@ -145,7 +146,7 @@ bool agent_handle_sys(AgentContext& ctx, const HttpRequest& req,
         rev = json_object_get_int(dd);
     }
     json_object_object_add(d, "revision", json_object_new_int(rev));
-    agent_send_json(res, agent_envelope_ok(d, ""));
+    dvs::send_json(res, dvs::envelope_ok(d, "", "a"));
     return true;
   }
   if (req.method == "GET" && req.path == "/api/v1/node/capability") {
@@ -182,7 +183,7 @@ bool agent_handle_sys(AgentContext& ctx, const HttpRequest& req,
     json_object_object_add(cap_out, "capStale",
                            json_object_new_boolean(stale ? 1 : 0));
     json_object_object_add(cap_out, "capAgeMs", json_object_new_int64(age));
-    agent_send_json(res, agent_envelope_ok(cap_out, ""));
+    dvs::send_json(res, dvs::envelope_ok(cap_out, "", "a"));
     return true;
   }
   if (req.method == "POST" && req.path == "/api/v1/node/register") {
@@ -195,8 +196,8 @@ bool agent_handle_sys(AgentContext& ctx, const HttpRequest& req,
     json_object_object_add(d, "online",
                            json_object_new_boolean(
                                ctx.reg && ctx.reg->online() ? 1 : 0));
-    agent_send_json(res,
-                    agent_envelope_ok(d, ok ? "设备注册成功" : "注册失败，可修改地址后重试"));
+    dvs::send_json(res,
+                    dvs::envelope_ok(d, ok ? "设备注册成功" : "注册失败，可修改地址后重试", "a"));
     return true;
   }
   if (req.method == "POST" && req.path == "/api/v1/node/upgrade/upload") {
@@ -208,14 +209,14 @@ bool agent_handle_sys(AgentContext& ctx, const HttpRequest& req,
     size_t slash = base.find_last_of("/\\");
     if (slash != std::string::npos) base = base.substr(slash + 1);
     if (base.empty() || base.size() > 128) {
-      agent_send_json(res,
-                      agent_envelope_fail("INVALID_ARGUMENT", 400, "文件名非法"));
+      dvs::send_json(res,
+                      dvs::envelope_fail("INVALID_ARGUMENT", 400, "文件名非法", "a"));
       return true;
     }
     std::string dest = "/tmp/" + base;
     std::ofstream out(dest, std::ios::binary);
     if (!out) {
-      agent_send_json(res, agent_envelope_fail("INTERNAL", 500, "无法写入暂存"));
+      dvs::send_json(res, dvs::envelope_fail("INTERNAL", 500, "无法写入暂存", "a"));
       return true;
     }
     out.write(req.body.data(), (std::streamsize)req.body.size());
@@ -224,11 +225,11 @@ bool agent_handle_sys(AgentContext& ctx, const HttpRequest& req,
     json_object_object_add(d, "path", json_object_new_string(dest.c_str()));
     json_object_object_add(d, "size",
                            json_object_new_int64((int64_t)req.body.size()));
-    agent_send_json(res, agent_envelope_ok(d, "固件已上传"));
+    dvs::send_json(res, dvs::envelope_ok(d, "固件已上传", "a"));
     return true;
   }
   if (req.method == "GET" && req.path == "/api/v1/node/capacity") {
-    agent_send_json(res, agent_envelope_ok(node_capacity_json(), ""));
+    dvs::send_json(res, dvs::envelope_ok(node_capacity_json(), "", "a"));
     return true;
   }
   if (req.method == "GET" && req.path == "/api/v1/node/version") {
@@ -263,27 +264,27 @@ bool agent_handle_sys(AgentContext& ctx, const HttpRequest& req,
                                                    : 0));
     long long ok_age = -1;
     if (ctx.media_q && ctx.media_q->last_ok_ms() > 0)
-      ok_age = agent_now_ms() - ctx.media_q->last_ok_ms();
+      ok_age = dvs::steady_ms_now() - ctx.media_q->last_ok_ms();
     json_object_object_add(link, "lastOkAgeMs", json_object_new_int64(ok_age));
     json_object_object_add(d, "engineLink", link);
-    agent_send_json(res, agent_envelope_ok(d, ""));
+    dvs::send_json(res, dvs::envelope_ok(d, "", "a"));
     return true;
   }
   if (req.method == "POST" && req.path == "/api/v1/node/reboot") {
     agent_audit("maintenance", "reboot", "applied", "reboot requested");
-    agent_send_json(res, agent_envelope_ok(ctx.maint->reboot(), ""));
+    dvs::send_json(res, dvs::envelope_ok(ctx.maint->reboot(), "", "a"));
     return true;
   }
   if (req.method == "POST" && req.path == "/api/v1/node/factory-reset") {
     agent_audit("maintenance", "factory-reset", "applied", "reset requested");
-    agent_send_json(res, agent_envelope_ok(ctx.maint->factory_reset(), ""));
+    dvs::send_json(res, dvs::envelope_ok(ctx.maint->factory_reset(), "", "a"));
     return true;
   }
   if (req.method == "POST" && req.path == "/api/v1/node/upgrade") {
     json_object* body = json_tokener_parse(req.body.c_str());
-    std::string fn = body ? agent_get_str(body, "filename") : std::string("fw.bin");
+    std::string fn = body ? dvs::json_get_str(body, "filename") : std::string("fw.bin");
     if (fn.empty()) fn = "fw.bin";
-    std::string sha = body ? agent_get_str(body, "sha256") : std::string();
+    std::string sha = body ? dvs::json_get_str(body, "sha256") : std::string();
     if (body) json_object_put(body);
     json_object* ur = ctx.maint->upgrade(fn, sha);
     bool uok = false;
@@ -293,7 +294,7 @@ bool agent_handle_sys(AgentContext& ctx, const HttpRequest& req,
         uok = json_object_get_boolean(okv) != 0;
     }
     agent_audit("maintenance", "upgrade", uok ? "applied" : "failed", fn);
-    agent_send_json(res, agent_envelope_ok(ur, ""));
+    dvs::send_json(res, dvs::envelope_ok(ur, "", "a"));
     return true;
   }
   if (req.method == "GET" && req.path == "/api/v1/audit-events") {
@@ -310,7 +311,7 @@ bool agent_handle_sys(AgentContext& ctx, const HttpRequest& req,
     json_object_object_add(d, "page", json_object_new_int(page));
     json_object_object_add(d, "pageSize", json_object_new_int(pageSize));
     json_object_object_add(d, "total", json_object_new_int(total));
-    agent_send_json(res, agent_envelope_ok(d, ""));
+    dvs::send_json(res, dvs::envelope_ok(d, "", "a"));
     return true;
   }
   return false;

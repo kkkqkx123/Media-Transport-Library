@@ -9,6 +9,7 @@
 #include "dvs_contract.h"
 #include "media_ipc.h"
 #include "node_store.h"
+#include "dvs_http_json.h"
 
 bool agent_handle_media(AgentContext& ctx, const HttpRequest& req,
                         HttpResponse& res) {
@@ -22,7 +23,7 @@ bool agent_handle_media(AgentContext& ctx, const HttpRequest& req,
         json_object_get_boolean(okv) &&
         json_object_object_get_ex(o, "data", &data) && data)
       agent_project_playback(ctx, data);
-    agent_send_json(res, o);
+    dvs::send_json(res, o);
     return true;
   }
   if (req.method == "GET" && req.path == "/api/v1/node/media/events") {
@@ -37,13 +38,13 @@ bool agent_handle_media(AgentContext& ctx, const HttpRequest& req,
             merged, json_object_get(json_object_array_get_idx(src, i)));
       json_object_put(src);
     }
-    agent_send_json(res, agent_envelope_ok(merged, ""));
+    dvs::send_json(res, dvs::envelope_ok(merged, "", "a"));
     return true;
   }
   if (req.method == "POST" && req.path == "/api/v1/node/media/prepare") {
-    if (!agent_bearer_ok(ctx, req)) {
-      agent_send_json(res, agent_envelope_fail("UNAUTHORIZED", 401,
-                                              "missing or bad token"));
+    if (!dvs::http_bearer_ok(req, ctx.api_token)) {
+      dvs::send_json(res, dvs::envelope_fail("UNAUTHORIZED", 401,
+                                              "missing or bad token", "a"));
       return true;
     }
     json_object* body = json_tokener_parse(req.body.c_str());
@@ -51,13 +52,13 @@ bool agent_handle_media(AgentContext& ctx, const HttpRequest& req,
     if (body) json_object_put(body);
     json_object* o = json_tokener_parse(r.c_str());
     if (!o) o = json_object_new_object();
-    agent_send_json(res, o);
+    dvs::send_json(res, o);
     return true;
   }
   if (req.method == "POST" && req.path == "/api/v1/node/media/commit") {
-    if (!agent_bearer_ok(ctx, req)) {
-      agent_send_json(res, agent_envelope_fail("UNAUTHORIZED", 401,
-                                              "missing or bad token"));
+    if (!dvs::http_bearer_ok(req, ctx.api_token)) {
+      dvs::send_json(res, dvs::envelope_fail("UNAUTHORIZED", 401,
+                                              "missing or bad token", "a"));
       return true;
     }
     json_object* body = json_tokener_parse(req.body.c_str());
@@ -65,13 +66,13 @@ bool agent_handle_media(AgentContext& ctx, const HttpRequest& req,
     if (body) json_object_put(body);
     json_object* o = json_tokener_parse(r.c_str());
     if (!o) o = json_object_new_object();
-    agent_send_json(res, o);
+    dvs::send_json(res, o);
     return true;
   }
   if (req.method == "POST" && req.path == "/api/v1/node/media/abort") {
-    if (!agent_bearer_ok(ctx, req)) {
-      agent_send_json(res, agent_envelope_fail("UNAUTHORIZED", 401,
-                                              "missing or bad token"));
+    if (!dvs::http_bearer_ok(req, ctx.api_token)) {
+      dvs::send_json(res, dvs::envelope_fail("UNAUTHORIZED", 401,
+                                              "missing or bad token", "a"));
       return true;
     }
     json_object* body = json_tokener_parse(req.body.c_str());
@@ -82,13 +83,13 @@ bool agent_handle_media(AgentContext& ctx, const HttpRequest& req,
     if (body) json_object_put(body);
     json_object* o = json_tokener_parse(r.c_str());
     if (!o) o = json_object_new_object();
-    agent_send_json(res, o);
+    dvs::send_json(res, o);
     return true;
   }
   if (req.method == "POST" && req.path == "/api/v1/node/media/layout") {
-    if (!agent_bearer_ok(ctx, req)) {
-      agent_send_json(res, agent_envelope_fail("UNAUTHORIZED", 401,
-                                              "missing or bad token"));
+    if (!dvs::http_bearer_ok(req, ctx.api_token)) {
+      dvs::send_json(res, dvs::envelope_fail("UNAUTHORIZED", 401,
+                                              "missing or bad token", "a"));
       return true;
     }
     json_object* body = json_tokener_parse(req.body.c_str());
@@ -97,16 +98,16 @@ bool agent_handle_media(AgentContext& ctx, const HttpRequest& req,
           body ? dvs::contract::validate_layout_prepare(body)
                : "INVALID_ARGUMENT:empty body";
       if (body) json_object_put(body);
-      agent_send_json(
-          res, agent_envelope_fail("INVALID_ARGUMENT", 400, reason.c_str()));
+      dvs::send_json(
+          res, dvs::envelope_fail("INVALID_ARGUMENT", 400, reason.c_str(), "a"));
       return true;
     }
     json_object* wins0 = nullptr;
     if (body) json_object_object_get_ex(body, "windows", &wins0);
     if (wins0 && !json_object_is_type(wins0, json_type_array)) {
       if (body) json_object_put(body);
-      agent_send_json(res, agent_envelope_fail("INVALID_ARGUMENT", 400,
-                                              "windows must be an array"));
+      dvs::send_json(res, dvs::envelope_fail("INVALID_ARGUMENT", 400,
+                                              "windows must be an array", "a"));
       return true;
     }
     std::string resp, opid, err;
@@ -114,16 +115,16 @@ bool agent_handle_media(AgentContext& ctx, const HttpRequest& req,
     int64_t applyAtNs = 0;
     if (!agent_stage_layout(ctx, body, resp, opid, rev, applyAtNs, err)) {
       if (body) json_object_put(body);
-      agent_send_json(res,
-                      agent_envelope_fail("INVALID_ARGUMENT", 400, err.c_str()));
+      dvs::send_json(res,
+                      dvs::envelope_fail("INVALID_ARGUMENT", 400, err.c_str(), "a"));
       return true;
     }
-    std::string nodeId = agent_get_str(ctx.store->node(), "id");
+    std::string nodeId = dvs::json_get_str(ctx.store->node(), "id");
     if (nodeId.empty()) nodeId = "local-node";
     agent_spawn_reporter(ctx, opid, rev, applyAtNs, nodeId);
     json_object* o = json_tokener_parse(resp.c_str());
     if (!o) o = json_object_new_object();
-    agent_send_json(res, o);
+    dvs::send_json(res, o);
     if (body) json_object_put(body);
     return true;
   }
@@ -134,10 +135,10 @@ bool agent_handle_media(AgentContext& ctx, const HttpRequest& req,
     json_object* lanes = nullptr;
     if (o && json_object_object_get_ex(o, "data", &d) && d)
       json_object_object_get_ex(d, "lanes", &lanes);
-    agent_send_json(res, agent_envelope_ok(
+    dvs::send_json(res, dvs::envelope_ok(
                              lanes ? json_object_get(lanes)
                                    : json_object_new_array(),
-                             ""));
+                             "", "a"));
     if (o) json_object_put(o);
     return true;
   }
@@ -152,12 +153,12 @@ bool agent_handle_media(AgentContext& ctx, const HttpRequest& req,
     if (ok && json_object_object_get_ex(o, "data", &d) && d)
       json_object_object_get_ex(d, "tx", &tx);
     if (!ok) {
-      agent_send_json(res, o ? o : json_object_new_object());
+      dvs::send_json(res, o ? o : json_object_new_object());
       return true;
     }
-    agent_send_json(res, agent_envelope_ok(
+    dvs::send_json(res, dvs::envelope_ok(
                              tx ? json_object_get(tx) : json_object_new_object(),
-                             ""));
+                             "", "a"));
     if (o) json_object_put(o);
     return true;
   }
@@ -210,13 +211,13 @@ bool agent_handle_media(AgentContext& ctx, const HttpRequest& req,
           eng_code.empty() ? "MEDIA_ENGINE_UNREACHABLE" : eng_code;
       std::string msg =
           eng_msg.empty() ? "media engine unreachable" : eng_msg;
-      json_object* fail = agent_envelope_fail(code.c_str(), 503, msg.c_str());
+      json_object* fail = dvs::envelope_fail(code.c_str(), 503, msg.c_str(), "a");
       json_object_object_del(fail, "data");
       json_object_object_add(fail, "data", d);
-      agent_send_json(res, fail);
+      dvs::send_json(res, fail);
       return true;
     }
-    agent_send_json(res, agent_envelope_ok(d, ""));
+    dvs::send_json(res, dvs::envelope_ok(d, "", "a"));
     return true;
   }
   if (req.method == "GET" && req.path == "/api/v1/node/media/logs") {
@@ -243,7 +244,7 @@ bool agent_handle_media(AgentContext& ctx, const HttpRequest& req,
     json_object* lup = nullptr;
     json_object_object_get_ex(ctx.store->node(), "lastUpgrade", &lup);
     if (lup) json_object_object_add(d, "lastUpgrade", json_object_get(lup));
-    agent_send_json(res, agent_envelope_ok(d, ""));
+    dvs::send_json(res, dvs::envelope_ok(d, "", "a"));
     return true;
   }
   return false;

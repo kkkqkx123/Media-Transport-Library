@@ -11,6 +11,7 @@
 #include "agent_context.h"
 #include "dvs_contract.h"
 #include "node_store.h"
+#include "dvs_http_json.h"
 
 namespace {
 /* Per-source login rate limiter: 5 attempts / 60s window, then locked out. */
@@ -98,17 +99,6 @@ std::string agent_session_from_cookie(
   return v;
 }
 
-bool agent_bearer_ok(AgentContext& ctx, const HttpRequest& req) {
-  auto it = req.headers.find("Authorization");
-  std::string provided = (it == req.headers.end())
-                             ? ""
-                             : dvs::contract::strip_bearer(it->second);
-  if (provided.empty())
-    provided = dvs::contract::extract_bearer(
-        const_cast<std::map<std::string, std::string>&>(req.headers));
-  return dvs::contract::bearer_ok(provided, ctx.api_token);
-}
-
 bool agent_authorized(AgentContext& ctx, const HttpRequest& req) {
   // Strict auth is opt-in via DVS_REQUIRE_AUTH=1 (default off) so the
   // node-admin prototype keeps working without a login wall. When enabled,
@@ -122,20 +112,20 @@ bool agent_authorized(AgentContext& ctx, const HttpRequest& req) {
   bool authed =
       g_sessions.valid(agent_session_from_cookie(req.headers));
   if (authed) return true;
-  return agent_bearer_ok(ctx, req);
+  return dvs::http_bearer_ok(req, ctx.api_token);
 }
 
 bool agent_handle_auth(AgentContext& ctx, const HttpRequest& req,
                        HttpResponse& res) {
   if (req.method == "POST" && req.path == "/api/v1/node/login") {
     json_object* body = json_tokener_parse(req.body.c_str());
-    std::string u = agent_get_str(body, "username");
-    std::string p = agent_get_str(body, "password");
+    std::string u = dvs::json_get_str(body, "username");
+    std::string p = dvs::json_get_str(body, "password");
     if (body) json_object_put(body);
     if (!g_limiter.allow(u)) {
-      agent_send_json(
-          res, agent_envelope_fail("TOO_MANY_REQUESTS", 429,
-                                   "登录尝试过多,请稍后再试"));
+      dvs::send_json(
+          res, dvs::envelope_fail("TOO_MANY_REQUESTS", 429,
+                                   "登录尝试过多,请稍后再试", "a"));
       return true;
     }
     if (ctx.store->verify_password(u, p)) {
@@ -153,40 +143,40 @@ bool agent_handle_auth(AgentContext& ctx, const HttpRequest& req,
                                       ? 1
                                       : 0));
       json_object_object_add(d, "requirement", pc);
-      agent_send_json(res, agent_envelope_ok(d, "登录成功"));
+      dvs::send_json(res, dvs::envelope_ok(d, "登录成功", "a"));
     } else {
-      agent_send_json(res, agent_envelope_fail("UNAUTHORIZED", 401,
-                                              "账号或密码错误"));
+      dvs::send_json(res, dvs::envelope_fail("UNAUTHORIZED", 401,
+                                              "账号或密码错误", "a"));
     }
     return true;
   }
   if (req.method == "POST" && req.path == "/api/v1/node/password") {
     json_object* body = json_tokener_parse(req.body.c_str());
-    std::string user = agent_get_str(body, "username");
+    std::string user = dvs::json_get_str(body, "username");
     if (user.empty()) user = "admin";  // default account
-    std::string oldp = agent_get_str(body, "oldPassword");
-    std::string newp = agent_get_str(body, "newPassword");
+    std::string oldp = dvs::json_get_str(body, "oldPassword");
+    std::string newp = dvs::json_get_str(body, "newPassword");
     if (body) json_object_put(body);
     if (!ctx.store->verify_password(user, oldp)) {
-      agent_send_json(
-          res, agent_envelope_fail("UNAUTHORIZED", 401, "原密码错误"));
+      dvs::send_json(
+          res, dvs::envelope_fail("UNAUTHORIZED", 401, "原密码错误", "a"));
       return true;
     }
     if (newp.size() < 6) {
-      agent_send_json(res, agent_envelope_fail("INVALID_ARGUMENT", 400,
-                                              "新密码至少 6 位"));
+      dvs::send_json(res, dvs::envelope_fail("INVALID_ARGUMENT", 400,
+                                              "新密码至少 6 位", "a"));
       return true;
     }
     ctx.store->set_password(newp);
-    agent_send_json(res,
-                    agent_envelope_ok(json_object_new_object(), "密码已修改"));
+    dvs::send_json(res,
+                    dvs::envelope_ok(json_object_new_object(), "密码已修改", "a"));
     return true;
   }
   if (req.method == "POST" && req.path == "/api/v1/node/logout") {
     g_sessions.invalidate(agent_session_from_cookie(req.headers));
     res.headers["Set-Cookie"] = "session=; Path=/; Max-Age=0";
-    agent_send_json(res,
-                    agent_envelope_ok(json_object_new_object(), "已退出"));
+    dvs::send_json(res,
+                    dvs::envelope_ok(json_object_new_object(), "已退出", "a"));
     return true;
   }
   return false;

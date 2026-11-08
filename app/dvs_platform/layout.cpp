@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 
+#include "dvs_http_json.h"
 #include "sha256.h"
 
 bool layout_cell_grid(int wall_w, int wall_h, int cols, int rows,
@@ -44,12 +45,6 @@ bool jbool(json_object* o, const char* k, bool dflt = false) {
         return json_object_get_boolean(v) != 0;
     return dflt;
 }
-int rect_int(json_object* o, const char* k) {
-    json_object* v = nullptr;
-    if (o && json_object_object_get_ex(o, k, &v) && v)
-        return json_object_get_int(v);
-    return 0;
-}
 bool valid_ip4_addr(const std::string& s) {
     if (s.empty() || s.size() > 15) return false;
     int parts = 0;
@@ -81,8 +76,8 @@ json_object* fragment_for_node(json_object* windows, const Rect& node) {
     for (int i = 0; i < n; i++) {
         json_object* w = json_object_array_get_idx(windows, i);
         if (!w || !json_object_is_type(w, json_type_object)) continue;
-        int gx = rect_int(w, "x"), gy = rect_int(w, "y");
-        int gw = rect_int(w, "w"), gh = rect_int(w, "h");
+        int gx = dvs::json_rect_int(w, "x"), gy = dvs::json_rect_int(w, "y");
+        int gw = dvs::json_rect_int(w, "w"), gh = dvs::json_rect_int(w, "h");
         if (gw <= 0 || gh <= 0) continue;
         int ix1 = std::max(gx, node.x), iy1 = std::max(gy, node.y);
         int ix2 = std::min(gx + gw, node.x + node.w);
@@ -260,8 +255,8 @@ std::string validate_scene_shape(json_object* doc, int wall_w, int wall_h) {
         std::string sig = jstr(w, "sig");
         if (id.empty()) return "INVALID_ARGUMENT:scene window missing id";
         if (sig.empty()) return "INVALID_ARGUMENT:scene window missing signal";
-        int x = rect_int(w, "x"), y = rect_int(w, "y");
-        int ww = rect_int(w, "w"), hh = rect_int(w, "h");
+        int x = dvs::json_rect_int(w, "x"), y = dvs::json_rect_int(w, "y");
+        int ww = dvs::json_rect_int(w, "w"), hh = dvs::json_rect_int(w, "h");
         if (ww < 64 || hh < 64)
             return "INVALID_ARGUMENT:window below minimum size";
         if (wall_w > 0 && wall_h > 0 &&
@@ -457,7 +452,7 @@ std::string validate_base_image(json_object* doc) {
                 !json_object_is_type(kv, json_type_int))
                 return "INVALID_ARGUMENT:baseImage sub must be {x,y,w,h}";
         }
-        if (rect_int(sub, "w") <= 0 || rect_int(sub, "h") <= 0)
+        if (dvs::json_rect_int(sub, "w") <= 0 || dvs::json_rect_int(sub, "h") <= 0)
             return "INVALID_ARGUMENT:baseImage sub must be {x,y,w,h}";
     }
     return "";
@@ -511,8 +506,8 @@ json_object* snap_windows_to_cells(
             json_object_array_add(out, c);
             continue;
         }
-        int x = rect_int(w, "x"), y = rect_int(w, "y");
-        int ww = rect_int(w, "w"), hh = rect_int(w, "h");
+        int x = dvs::json_rect_int(w, "x"), y = dvs::json_rect_int(w, "y");
+        int ww = dvs::json_rect_int(w, "w"), hh = dvs::json_rect_int(w, "h");
         if (ww > 0 && hh > 0) {
             int cx = x + ww / 2, cy = y + hh / 2;
             for (const auto& kv : cells) {
@@ -569,14 +564,14 @@ void wall_cells(json_object* wall, int wall_w, int wall_h,
         for (size_t i = 0; i < json_object_array_length(cg); i++) {
             json_object* e = json_object_array_get_idx(cg, i);
             if (!e || !json_object_is_type(e, json_type_object)) continue;
-            int x = rect_int(e, "x"), y = rect_int(e, "y");
-            int w = rect_int(e, "w"), h = rect_int(e, "h");
+            int x = dvs::json_rect_int(e, "x"), y = dvs::json_rect_int(e, "y");
+            int w = dvs::json_rect_int(e, "w"), h = dvs::json_rect_int(e, "h");
             if (w <= 0 || h <= 0) continue;
             std::string id = jstr(e, "id");
             if (id.empty()) {
                 char b[32];
-                snprintf(b, sizeof(b), "%d:%d", rect_int(e, "r"),
-                         rect_int(e, "c"));
+                snprintf(b, sizeof(b), "%d:%d", dvs::json_rect_int(e, "r"),
+                         dvs::json_rect_int(e, "c"));
                 id = b;
             }
             out->emplace_back(id, Rect{x, y, w, h});
@@ -837,10 +832,10 @@ int max_wall_members() {
 void wall_px_of(json_object* wall, int* w, int* h) {
     int ww = 0, hh = 0;
     if (wall) {
-        ww = rect_int(wall, "wall_px_w");
-        hh = rect_int(wall, "wall_px_h");
-        if (ww <= 0) ww = rect_int(wall, "w");
-        if (hh <= 0) hh = rect_int(wall, "h");
+        ww = dvs::json_rect_int(wall, "wall_px_w");
+        hh = dvs::json_rect_int(wall, "wall_px_h");
+        if (ww <= 0) ww = dvs::json_rect_int(wall, "w");
+        if (hh <= 0) hh = dvs::json_rect_int(wall, "h");
         json_object* rp = nullptr;
         json_object* cp = nullptr;
         if (ww <= 0 && json_object_object_get_ex(wall, "colPixels", &cp) && cp &&

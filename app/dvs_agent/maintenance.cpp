@@ -14,20 +14,13 @@
 #include <fstream>
 #include <string>
 #include <unistd.h>
+#include "dvs_http_json.h"
 
 static std::string slurp_file(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
     if (!f) return "";
     return std::string((std::istreambuf_iterator<char>(f)),
                        std::istreambuf_iterator<char>());
-}
-
-static std::string now_iso_str() {
-    char buf[64];
-    time_t t = time(nullptr);
-    struct tm* tm = gmtime(&t);
-    strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", tm);
-    return std::string(buf);
 }
 
 static std::string file_sha256(const std::string& path) {
@@ -237,7 +230,7 @@ json_object* Maintenance::upgrade(const std::string& filename,
         json_object_object_add(lu, "version", json_object_new_string(ver.c_str()));
         json_object_object_add(lu, "sha256", json_object_new_string(actual.c_str()));
         json_object_object_add(lu, "status", json_object_new_string("staged"));
-        json_object_object_add(lu, "at", json_object_new_string(now_iso_str().c_str()));
+        json_object_object_add(lu, "at", json_object_new_string(dvs::iso_now().c_str()));
         json_object_object_add(lp, "lastUpgrade", lu);
         store_->update_node(lp);
         json_object_put(lp);
@@ -258,7 +251,7 @@ json_object* Maintenance::upgrade(const std::string& filename,
     json_object_object_add(lu2, "version", json_object_new_string(ver.c_str()));
     json_object_object_add(lu2, "sha256", json_object_new_string(actual.c_str()));
     json_object_object_add(lu2, "status", json_object_new_string("applied"));
-    json_object_object_add(lu2, "at", json_object_new_string(now_iso_str().c_str()));
+    json_object_object_add(lu2, "at", json_object_new_string(dvs::iso_now().c_str()));
     json_object_object_add(patch, "lastUpgrade", lu2);
     store_->update_node(patch);
     json_object_put(patch);

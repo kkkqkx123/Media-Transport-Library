@@ -4,6 +4,7 @@
 #include <ctime>
 
 #include "dvs_contract.h"
+#include "dvs_http_json.h"
 
 namespace {
 

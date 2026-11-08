@@ -12,7 +12,8 @@ class Registration;
 
 /* Shared agent dependencies. main.cpp owns the instance (heap, never freed,
  * like the previous globals); every route/downlink module takes a reference.
- * No logic here, only wiring plus the tiny helpers every module needs. */
+ * No logic here, only wiring. Shared JSON/HTTP helpers live in
+ * dvs_common/dvs_http_json.h. */
 struct AgentContext {
   NodeStore* store = nullptr;
   MediaIpcClient* media = nullptr;    // command channel (mutating verbs)
@@ -23,11 +24,3 @@ struct AgentContext {
   std::string api_token;     // empty = no platform bearer check
   std::string platform_url;  // empty = local-autonomous, nothing to uplink
 };
-
-std::string agent_get_str(json_object* o, const char* key);
-std::string agent_iso_now();
-long long agent_now_ms();
-std::string agent_env_or(const char* k, const char* d);
-json_object* agent_envelope_ok(json_object* data, const char* msg);
-json_object* agent_envelope_fail(const char* code, int status, const char* msg);
-void agent_send_json(HttpResponse& res, json_object* o);

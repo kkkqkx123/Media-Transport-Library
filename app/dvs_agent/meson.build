@@ -18,13 +18,13 @@ common_sources = files(
   common_src + '/src/http_client.cpp',
   common_src + '/src/sha256.cpp',
   common_src + '/src/dvs_contract.cpp',
+  common_src + '/src/dvs_http_json.cpp',
   common_src + '/third_party/sqlite/sqlite3.c',
 )
 
 dvs_agent = executable('dvs_agent',
   files(
     'main.cpp',
-    'agent_context.cpp',
     'agent_audit.cpp',
     'agent_auth.cpp',
     'agent_media.cpp',

@@ -12,16 +12,9 @@
 #include <ctime>
 #include <string>
 #include <unistd.h>
+#include "dvs_http_json.h"
 
 const char* NodeStore::SCOPES[6] = {"role", "input", "output", "network", "registration", "sip"};
-
-static const char* now_iso() {
-    static char buf[64];
-    time_t t = time(NULL);
-    struct tm* tm = gmtime(&t);
-    strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", tm);
-    return buf;
-}
 
 NodeStore::NodeStore(const std::string& db_path) : db_(nullptr), node_(nullptr), config_(nullptr) {
     if (sqlite3_open(db_path.c_str(), &db_) != SQLITE_OK) {
@@ -257,7 +250,7 @@ json_object* NodeStore::set_desired(const std::string& scope, json_object* value
     json_object_object_del(st, "errorReason");
     json_object_object_add(st, "errorReason", json_object_new_null());
     json_object_object_del(st, "updatedAt");
-    json_object_object_add(st, "updatedAt", json_object_new_string(now_iso()));
+    json_object_object_add(st, "updatedAt", json_object_new_string(dvs::iso_now().c_str()));
     save_config();
     // update node configStates
     json_object* cs = nullptr;
@@ -305,7 +298,7 @@ json_object* NodeStore::mark_applied(const std::string& scope, int revision) {
     json_object_object_del(st, "errorReason");
     json_object_object_add(st, "errorReason", json_object_new_null());
     json_object_object_del(st, "updatedAt");
-    json_object_object_add(st, "updatedAt", json_object_new_string(now_iso()));
+    json_object_object_add(st, "updatedAt", json_object_new_string(dvs::iso_now().c_str()));
     save_config();
     json_object* cs = nullptr;
     if (json_object_object_get_ex(node_, "configStates", &cs)) {
@@ -327,7 +320,7 @@ json_object* NodeStore::mark_failed(const std::string& scope, const char* code, 
     json_object_object_del(st, "errorReason");
     json_object_object_add(st, "errorReason", reason ? json_object_new_string(reason) : json_object_new_null());
     json_object_object_del(st, "updatedAt");
-    json_object_object_add(st, "updatedAt", json_object_new_string(now_iso()));
+    json_object_object_add(st, "updatedAt", json_object_new_string(dvs::iso_now().c_str()));
     save_config();
     json_object* cs = nullptr;
     if (json_object_object_get_ex(node_, "configStates", &cs)) {
@@ -349,7 +342,7 @@ json_object* NodeStore::retry(const std::string& scope) {
     json_object_object_del(st, "errorReason");
     json_object_object_add(st, "errorReason", json_object_new_null());
     json_object_object_del(st, "updatedAt");
-    json_object_object_add(st, "updatedAt", json_object_new_string(now_iso()));
+    json_object_object_add(st, "updatedAt", json_object_new_string(dvs::iso_now().c_str()));
     save_config();
     json_object* cs = nullptr;
     if (json_object_object_get_ex(node_, "configStates", &cs)) {

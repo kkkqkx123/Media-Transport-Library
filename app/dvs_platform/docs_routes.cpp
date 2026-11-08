@@ -3,7 +3,7 @@
 // barrier, gateway and upgrade paths stay in main.cpp.
 #include "docs_routes.h"
 
-#include "http_json.h"
+#include "dvs_http_json.h"
 #include "layout.h"
 
 static std::mutex g_idem_mu;
@@ -27,22 +27,22 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
         }
         json_object* d = json_object_new_object();
         json_object_object_add(d, "items", arr);
-        send_json(res, ok_envelope(d, ""));
+        dvs::send_json(res, dvs::envelope_ok(d, ""));
         return true;
     }
     if (req.method == "GET") {
         json_object* d = ctx.store->get_doc(kind, id);
-        if (!d) { send_json(res, fail_envelope("NOT_FOUND", 404, "not found")); return true; }
+        if (!d) { dvs::send_json(res, dvs::envelope_fail("NOT_FOUND", 404, "not found")); return true; }
         if (kind == "walls" && wall_is_deleted(d)) {
             json_object_put(d);
-            send_json(res, fail_envelope("GONE", 410, "wall deleted"));
+            dvs::send_json(res, dvs::envelope_fail("GONE", 410, "wall deleted"));
             return true;
         }
-        send_json(res, ok_envelope(d, ""));
+        dvs::send_json(res, dvs::envelope_ok(d, ""));
         return true;
     }
     if (req.method == "POST" || req.method == "PUT") {
-        std::string ikey = idempotency_key(req);
+        std::string ikey = dvs::idempotency_key(req);
         std::string cache_key;
         if (!ikey.empty()) {
             cache_key = req.method + " " + req.path + "#" + ikey;
@@ -57,10 +57,10 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
         json_object* b = json_tokener_parse(req.body.c_str());
         if (!b) b = json_object_new_object();
         if (id.empty()) {
-            id = body_str(b, "id");
+            id = dvs::json_get_str(b, "id");
             if (id.empty()) {
                 char nb[32];
-                snprintf(nb, sizeof(nb), "%s-%ld", kind.c_str(), (long)now_sec());
+                snprintf(nb, sizeof(nb), "%s-%ld", kind.c_str(), (long)dvs::wall_sec_now());
                 id = nb;
                 json_object_object_add(b, "id", json_object_new_string(id.c_str()));
             }
@@ -71,12 +71,12 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
         if (kind == "groups") {
             verr = validate_group_shape(b);
             if (verr.empty()) {
-                std::string want = docs_lower(docs_trim(body_str(b, "name")));
+                std::string want = docs_lower(docs_trim(dvs::json_get_str(b, "name")));
                 for (auto& gid : ctx.store->list_ids("groups")) {
                     if (gid == id) continue;
                     json_object* g = ctx.store->get_doc("groups", gid);
                     if (!g) continue;
-                    bool dup = (docs_lower(docs_trim(body_str(g, "name"))) == want);
+                    bool dup = (docs_lower(docs_trim(dvs::json_get_str(g, "name"))) == want);
                     json_object_put(g);
                     if (dup) { verr = "CONFLICT:group name already exists"; break; }
                 }
@@ -111,18 +111,18 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
             if (old) json_object_put(old);
             if (verr.empty()) {
                 // Wall name unique within its group.
-                std::string g = body_str(b, "groupId");
-                if (g.empty()) g = body_str(b, "group");
-                std::string want = docs_lower(docs_trim(body_str(b, "name")));
+                std::string g = dvs::json_get_str(b, "groupId");
+                if (g.empty()) g = dvs::json_get_str(b, "group");
+                std::string want = docs_lower(docs_trim(dvs::json_get_str(b, "name")));
                 for (auto& wid : ctx.store->list_ids("walls")) {
                     if (wid == id) continue;
                     json_object* w = ctx.store->get_doc("walls", wid);
                     if (!w) continue;
                     if (wall_is_deleted(w)) { json_object_put(w); continue; }
-                    std::string wg = body_str(w, "groupId");
-                    if (wg.empty()) wg = body_str(w, "group");
+                    std::string wg = dvs::json_get_str(w, "groupId");
+                    if (wg.empty()) wg = dvs::json_get_str(w, "group");
                     bool dup = (!g.empty() && wg == g &&
-                                docs_lower(docs_trim(body_str(w, "name"))) == want);
+                                docs_lower(docs_trim(dvs::json_get_str(w, "name"))) == want);
                     json_object_put(w);
                     if (dup) { verr = "CONFLICT:wall name already exists in group"; break; }
                 }
@@ -150,7 +150,7 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
                 else if (has_epoch && old_epoch > 0 && want_epoch != old_epoch)
                     verr = "INVALID_ARGUMENT:wall epochTaiNs frozen";
                 else if (!has_epoch || want_epoch <= 0) {
-                    int64_t use = old_epoch > 0 ? old_epoch : (int64_t)now_ns();
+                    int64_t use = old_epoch > 0 ? old_epoch : (int64_t)dvs::wall_ns_now();
                     json_object_object_del(b, "epochTaiNs");
                     json_object_object_add(b, "epochTaiNs",
                                            json_object_new_int64(use));
@@ -168,7 +168,7 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
             }
         } else if (kind == "scenes") {
             int ww = 0, hh = 0;
-            std::string wall_id = body_str(b, "wallId");
+            std::string wall_id = dvs::json_get_str(b, "wallId");
             if (!wall_id.empty()) {
                 json_object* w = ctx.store->get_doc("walls", wall_id);
                 if (!w || wall_is_deleted(w)) {
@@ -236,7 +236,7 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
                         if (bid == id) continue;
                         json_object* o = ctx.store->get_doc("bindings", bid);
                         if (!o) continue;
-                        std::string st = body_str(o, "status");
+                        std::string st = dvs::json_get_str(o, "status");
                         bool busy = (binding_node_of(o) == n &&
                                      binding_output_of(o) == outp &&
                                      st != "pending" && st != "pending_offline");
@@ -256,7 +256,7 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
                     for (auto& wid : ctx.store->list_ids("whitelist")) {
                         json_object* o = ctx.store->get_doc("whitelist", wid);
                         if (!o) continue;
-                        bool hit = (body_str(o, "sig") == sig);
+                        bool hit = (dvs::json_get_str(o, "sig") == sig);
                         json_object_put(o);
                         if (hit) { found = true; break; }
                     }
@@ -303,7 +303,7 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
                 }
             }
             if (verr.empty()) {
-                if (!body_str(b, "status").empty() && body_str(b, "status") == "conflict")
+                if (!dvs::json_get_str(b, "status").empty() && dvs::json_get_str(b, "status") == "conflict")
                     verr = "INVALID_ARGUMENT:whitelist status is server-computed";
                 else {
                     json_object_object_del(b, "status");
@@ -319,19 +319,19 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
             // task drives exactly one output box.
             {
                 json_object* av = nullptr;
-                if (!body_str(b, "wallId").size() &&
+                if (!dvs::json_get_str(b, "wallId").size() &&
                     json_object_object_get_ex(b, "wall", &av) && av &&
                     json_object_is_type(av, json_type_string)) {
                     json_object_object_add(b, "wallId", json_object_get(av));
                     json_object_object_del(b, "wall");
                 }
-                if (!body_str(b, "sceneId").size() &&
+                if (!dvs::json_get_str(b, "sceneId").size() &&
                     json_object_object_get_ex(b, "scene", &av) && av &&
                     json_object_is_type(av, json_type_string)) {
                     json_object_object_add(b, "sceneId", json_object_get(av));
                     json_object_object_del(b, "scene");
                 }
-                if (!body_str(b, "targetNodeId").size()) {
+                if (!dvs::json_get_str(b, "targetNodeId").size()) {
                     if (json_object_object_get_ex(b, "node", &av) && av &&
                         json_object_is_type(av, json_type_string)) {
                         json_object_object_add(b, "targetNodeId",
@@ -360,12 +360,12 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
             if (verr.empty() && !playback_transition_ok(from, want_st))
                 verr = "CONFLICT:illegal playback transition";
             if (verr.empty() && playback_active_status(want_st)) {
-                std::string node = body_str(b, "targetNodeId");
+                std::string node = dvs::json_get_str(b, "targetNodeId");
                 for (auto& tid : ctx.store->list_ids("playback-tasks")) {
                     if (tid == id) continue;
                     json_object* o = ctx.store->get_doc("playback-tasks", tid);
                     if (!o) continue;
-                    std::string on = body_str(o, "targetNodeId");
+                    std::string on = dvs::json_get_str(o, "targetNodeId");
                     bool busy = (on == node && playback_active_status(playback_status_of(o)));
                     json_object_put(o);
                     if (busy) { verr = "CONFLICT:node already has an active playback"; break; }
@@ -383,10 +383,10 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
             if (verr.rfind("CONFLICT:", 0) == 0) { code = "CONFLICT"; status = 409; }
             else if (verr.rfind("NOT_FOUND:", 0) == 0) { code = "NOT_FOUND"; status = 404; }
             else if (verr.rfind("GONE:", 0) == 0) { code = "GONE"; status = 410; }
-            ctx.store->audit("{\"rejected-" + json_escape(kind) + "\":\"" +
-                           json_escape(id) + "\"}");
+            ctx.store->audit("{\"rejected-" + dvs::json_escape(kind) + "\":\"" +
+                           dvs::json_escape(id) + "\"}");
             json_object_put(b);
-            send_json(res, fail_envelope(code.c_str(), status, verr));
+            dvs::send_json(res, dvs::envelope_fail(code.c_str(), status, verr));
             return true;
         }
         bool is_new_wall = false;
@@ -396,7 +396,7 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
             if (exist) json_object_put(exist);
         }
         ctx.store->put_doc(kind, id, b);
-        ctx.store->audit("{\"kind\":\"" + json_escape(kind) + "\",\"id\":\"" + json_escape(id) + "\"}");
+        ctx.store->audit("{\"kind\":\"" + dvs::json_escape(kind) + "\",\"id\":\"" + dvs::json_escape(id) + "\"}");
         if (is_new_wall) {
             // New walls start with an empty default scene so switching and
             // clear-screen have a revision-1 baseline to roll back to.
@@ -413,13 +413,13 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
                 json_object_object_add(sc, "windows", json_object_new_array());
                 ctx.store->put_doc("scenes", sid, sc);
                 json_object_put(sc);
-                ctx.store->audit("{\"default-scene\":\"" + json_escape(sid) + "\"}");
+                ctx.store->audit("{\"default-scene\":\"" + dvs::json_escape(sid) + "\"}");
             } else {
                 json_object_put(sexist);
             }
             json_object* w0 = ctx.store->get_doc("walls", id);
             if (w0) {
-                if (body_str(w0, "currentSceneId").empty()) {
+                if (dvs::json_get_str(w0, "currentSceneId").empty()) {
                     json_object_object_add(w0, "currentSceneId",
                                            json_object_new_string(sid.c_str()));
                     ctx.store->put_doc("walls", id, w0);
@@ -429,7 +429,7 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
         }
         json_object* d = ctx.store->get_doc(kind, id);
         json_object_put(b);
-        send_json(res, ok_envelope(d ? d : json_object_new_object(), ""));
+        dvs::send_json(res, dvs::envelope_ok(d ? d : json_object_new_object(), ""));
         if (!cache_key.empty()) {
             std::lock_guard<std::mutex> lk(g_idem_mu);
             if (g_idem_cache.size() < 1024) g_idem_cache[cache_key] = res.body;
@@ -444,8 +444,8 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
                 if (!w) continue;
                 bool hit = false;
                 if (!wall_is_deleted(w)) {
-                    std::string g = body_str(w, "groupId");
-                    if (g.empty()) g = body_str(w, "group");
+                    std::string g = dvs::json_get_str(w, "groupId");
+                    if (g.empty()) g = dvs::json_get_str(w, "group");
                     hit = (g == id);
                 }
                 json_object_put(w);
@@ -455,30 +455,30 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
                 json_object* d = json_object_new_object();
                 json_object_object_add(d, "wallCount", json_object_new_int(walls));
                 json_object_put(d);
-                send_json(res, fail_envelope("RESOURCE_IN_USE", 409,
+                dvs::send_json(res, dvs::envelope_fail("RESOURCE_IN_USE", 409,
                     "group still has " + std::to_string(walls) + " wall(s)"));
                 return true;
             }
             ctx.store->del_doc(kind, id);
-            send_json(res, ok_envelope(json_object_new_object(), ""));
+            dvs::send_json(res, dvs::envelope_ok(json_object_new_object(), ""));
             return true;
         }
         if (kind == "walls") {
             json_object* w = ctx.store->get_doc("walls", id);
             if (!w) {
-                send_json(res, fail_envelope("NOT_FOUND", 404, "not found"));
+                dvs::send_json(res, dvs::envelope_fail("NOT_FOUND", 404, "not found"));
                 return true;
             }
             if (wall_is_deleted(w)) {
                 json_object_put(w);
-                send_json(res, fail_envelope("GONE", 410, "wall already deleted"));
+                dvs::send_json(res, dvs::envelope_fail("GONE", 410, "wall already deleted"));
                 return true;
             }
             json_object_put(w);
             {
                 std::lock_guard<std::mutex> lk(*ctx.ops_mu);
                 if (ctx.ops->wall_has_preparing(id, "")) {
-                    send_json(res, fail_envelope("RESOURCE_IN_USE", 409,
+                    dvs::send_json(res, dvs::envelope_fail("RESOURCE_IN_USE", 409,
                         "wall has an operation in flight"));
                     return true;
                 }
@@ -486,11 +486,11 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
             for (auto& tid : ctx.store->list_ids("playback-tasks")) {
                 json_object* t = ctx.store->get_doc("playback-tasks", tid);
                 if (!t) continue;
-                bool busy = (body_str(t, "wallId") == id &&
+                bool busy = (dvs::json_get_str(t, "wallId") == id &&
                              playback_active_status(playback_status_of(t)));
                 json_object_put(t);
                 if (busy) {
-                    send_json(res, fail_envelope("RESOURCE_IN_USE", 409,
+                    dvs::send_json(res, dvs::envelope_fail("RESOURCE_IN_USE", 409,
                         "wall has an active playback task"));
                     return true;
                 }
@@ -501,7 +501,7 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
                 bool hit = (binding_wall_of(b) == id);
                 json_object_put(b);
                 if (hit) {
-                    send_json(res, fail_envelope("RESOURCE_IN_USE", 409,
+                    dvs::send_json(res, dvs::envelope_fail("RESOURCE_IN_USE", 409,
                         "wall still has bindings; unbind first"));
                     return true;
                 }
@@ -513,45 +513,45 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
                 json_object_object_add(cur, "deleted", json_object_new_boolean(1));
                 json_object_object_del(cur, "deletedAt");
                 json_object_object_add(cur, "deletedAt",
-                    json_object_new_string(now_iso().c_str()));
+                    json_object_new_string(dvs::iso_now().c_str()));
                 json_object_object_del(cur, "deletedAtEpoch");
                 json_object_object_add(cur, "deletedAtEpoch",
-                    json_object_new_int64((int64_t)now_sec()));
+                    json_object_new_int64((int64_t)dvs::wall_sec_now()));
                 ctx.store->put_doc("walls", id, cur);
                 json_object_put(cur);
             }
-            ctx.store->audit("{\"wall-soft-delete\":\"" + json_escape(id) + "\"}");
-            send_json(res, ok_envelope(json_object_new_object(), "soft deleted"));
+            ctx.store->audit("{\"wall-soft-delete\":\"" + dvs::json_escape(id) + "\"}");
+            dvs::send_json(res, dvs::envelope_ok(json_object_new_object(), "soft deleted"));
             return true;
         }
         if (kind == "scenes") {
             json_object* sc = ctx.store->get_doc("scenes", id);
             std::string wall_id;
             if (sc) {
-                wall_id = body_str(sc, "wallId");
+                wall_id = dvs::json_get_str(sc, "wallId");
                 json_object_put(sc);
             }
             if (!wall_id.empty()) {
                 json_object* w = ctx.store->get_doc("walls", wall_id);
                 if (w) {
-                    bool eff = (body_str(w, "currentSceneId") == id);
+                    bool eff = (dvs::json_get_str(w, "currentSceneId") == id);
                     json_object_put(w);
                     if (eff) {
-                        send_json(res, fail_envelope("RESOURCE_IN_USE", 409,
+                        dvs::send_json(res, dvs::envelope_fail("RESOURCE_IN_USE", 409,
                             "scene is the effective scene"));
                         return true;
                     }
                 }
             }
             ctx.store->del_doc(kind, id);
-            send_json(res, ok_envelope(json_object_new_object(), ""));
+            dvs::send_json(res, dvs::envelope_ok(json_object_new_object(), ""));
             return true;
         }
         if (kind == "whitelist") {
             json_object* wl = ctx.store->get_doc("whitelist", id);
             std::string sig;
             if (wl) {
-                sig = body_str(wl, "sig");
+                sig = dvs::json_get_str(wl, "sig");
                 json_object_put(wl);
             }
             if (sig.empty()) sig = id;
@@ -564,40 +564,40 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
                     json_object_is_type(wins, json_type_array)) {
                     for (size_t i = 0; i < json_object_array_length(wins); i++) {
                         json_object* e = json_object_array_get_idx(wins, i);
-                        if (body_str(e, "sig") == sig) { hit = true; break; }
+                        if (dvs::json_get_str(e, "sig") == sig) { hit = true; break; }
                     }
                 }
                 json_object_put(sc);
                 if (hit) {
-                    send_json(res, fail_envelope("RESOURCE_IN_USE", 409,
+                    dvs::send_json(res, dvs::envelope_fail("RESOURCE_IN_USE", 409,
                         "signal still referenced by a scene"));
                     return true;
                 }
             }
             ctx.store->del_doc(kind, id);
-            send_json(res, ok_envelope(json_object_new_object(), ""));
+            dvs::send_json(res, dvs::envelope_ok(json_object_new_object(), ""));
             return true;
         }
         if (kind == "playback-tasks") {
             json_object* t = ctx.store->get_doc("playback-tasks", id);
             if (!t) {
-                send_json(res, fail_envelope("NOT_FOUND", 404, "not found"));
+                dvs::send_json(res, dvs::envelope_fail("NOT_FOUND", 404, "not found"));
                 return true;
             }
             std::string st = playback_status_of(t);
             json_object_put(t);
             if (st == "pending_check" || st == "pending_execution" ||
                 st == "executing" || st == "playing") {
-                send_json(res, fail_envelope("RESOURCE_IN_USE", 409,
+                dvs::send_json(res, dvs::envelope_fail("RESOURCE_IN_USE", 409,
                     "playback task still active"));
                 return true;
             }
             ctx.store->del_doc(kind, id);
-            send_json(res, ok_envelope(json_object_new_object(), ""));
+            dvs::send_json(res, dvs::envelope_ok(json_object_new_object(), ""));
             return true;
         }
         ctx.store->del_doc(kind, id);
-        send_json(res, ok_envelope(json_object_new_object(), ""));
+        dvs::send_json(res, dvs::envelope_ok(json_object_new_object(), ""));
         return true;
     }
     return false;

@@ -34,6 +34,7 @@
 #include "media_ipc.h"
 #include "node_store.h"
 #include "registration.h"
+#include "dvs_http_json.h"
 
 // Heap-owned, never freed: detached reporter/config threads and the HTTP
 // handler outlive main's frame, so the context must not sit on the stack.
@@ -63,10 +64,10 @@ int main(int argc, char** argv) {
     else if (a == "--web-root" && i + 1 < argc)
       web_root = argv[++i];
   }
-  if (web_root.empty()) web_root = agent_env_or("DVS_WEB_ROOT", "./web/src");
-  if (media_sock.empty()) media_sock = agent_env_or("DVS_MEDIA_SOCK", "");
+  if (web_root.empty()) web_root = dvs::env_or("DVS_WEB_ROOT", "./web/src");
+  if (media_sock.empty()) media_sock = dvs::env_or("DVS_MEDIA_SOCK", "");
   if (platform_url.empty())
-    platform_url = agent_env_or("DVS_PLATFORM_URL", "");
+    platform_url = dvs::env_or("DVS_PLATFORM_URL", "");
 
   g_ctx = new AgentContext();
   AgentContext& ctx = *g_ctx;
@@ -97,7 +98,7 @@ int main(int argc, char** argv) {
     fflush(stdout);
   }
 
-  std::string agent_base = agent_env_or("DVS_AGENT_BASE", "");
+  std::string agent_base = dvs::env_or("DVS_AGENT_BASE", "");
   if (agent_base.empty()) {
     std::string ip = "127.0.0.1";
     json_object* nd = ctx.store->node();
@@ -131,8 +132,8 @@ int main(int argc, char** argv) {
                                     HttpResponse& res) {
     if (agent_handle_auth(ctx, req, res)) return;
     if (!agent_authorized(ctx, req)) {
-      agent_send_json(res, agent_envelope_fail("UNAUTHORIZED", 401,
-                                              "未登录或缺少令牌"));
+      dvs::send_json(res, dvs::envelope_fail("UNAUTHORIZED", 401,
+                                              "未登录或缺少令牌", "a"));
       return;
     }
     if (agent_handle_config(ctx, req, res)) return;
@@ -142,10 +143,10 @@ int main(int argc, char** argv) {
     if (req.method == "GET" &&
         HttpServer::serve_static_file(ctx.web_root, req.path, res))
       return;
-    agent_send_json(res, agent_envelope_fail(
+    dvs::send_json(res, dvs::envelope_fail(
                              "NOT_FOUND", 404,
                              ("未定义的 API：" + req.method + " " + req.path)
-                                 .c_str()));
+                                 .c_str(), "a"));
   };
 
   HttpServer server(port, handler);

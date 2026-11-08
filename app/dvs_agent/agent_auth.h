@@ -13,8 +13,8 @@ struct AgentContext;
 std::string agent_session_from_cookie(
     const std::map<std::string, std::string>& headers);
 
-/* Platform bearer check against ctx.api_token (empty token = no check). */
-bool agent_bearer_ok(AgentContext& ctx, const HttpRequest& req);
+/* Platform bearer check is dvs::http_bearer_ok(req, ctx.api_token) directly;
+ * no local wrapper. */
 
 /* Global cookie/bearer gate for all non-login routes. True = may proceed. */
 bool agent_authorized(AgentContext& ctx, const HttpRequest& req);

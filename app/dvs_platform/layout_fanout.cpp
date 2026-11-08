@@ -6,7 +6,7 @@
 #include "channels.h"
 #include "dvs_contract.h"
 #include "http_client.h"
-#include "http_json.h"
+#include "dvs_http_json.h"
 #include "layout.h"
 #include "platform_context.h"
 #include "platform_store.h"
@@ -27,29 +27,29 @@ LayoutDelivery deliver_layout_prepare(
         d.skip_reason = "no node doc";
         return d;
     }
-    std::string agent_base = body_str(nd, "agentBase");
+    std::string agent_base = dvs::json_get_str(nd, "agentBase");
     json_object* geo = nullptr;
     json_object_object_get_ex(nd, "geometry", &geo);
-    bool geo_ok = geo && rect_int(geo, "w") > 0 && rect_int(geo, "h") > 0;
+    bool geo_ok = geo && dvs::json_rect_int(geo, "w") > 0 && dvs::json_rect_int(geo, "h") > 0;
     if (!geo_ok) {
         d.skipped = true;
         d.skip_reason = "no geometry";
         json_object_put(nd);
         return d;
     }
-    Rect node{rect_int(geo, "x"), rect_int(geo, "y"), rect_int(geo, "w"),
-              rect_int(geo, "h")};
+    Rect node{dvs::json_rect_int(geo, "x"), dvs::json_rect_int(geo, "y"), dvs::json_rect_int(geo, "w"),
+              dvs::json_rect_int(geo, "h")};
     json_object* frag = fragment_for_node(wins, node);
     std::set<std::string> sigs;
     int fn = json_object_array_length(frag);
     for (int i = 0; i < fn; i++)
-        sigs.insert(body_str(json_object_array_get_idx(frag, i), "sig"));
+        sigs.insert(dvs::json_get_str(json_object_array_get_idx(frag, i), "sig"));
     json_object* endpoints = json_object_new_array();
     if (!sigs.empty()) {
         for (auto& wid : ctx.store->list_ids("whitelist")) {
             json_object* wl = ctx.store->get_doc("whitelist", wid);
             if (!wl) continue;
-            std::string wsig = body_str(wl, "sig");
+            std::string wsig = dvs::json_get_str(wl, "sig");
             if (!sigs.count(wsig)) {
                 json_object_put(wl);
                 continue;
@@ -59,7 +59,7 @@ LayoutDelivery deliver_layout_prepare(
                                    json_object_new_string(wsig.c_str()));
             json_object_object_add(
                 ep, "address",
-                json_object_new_string(body_str(wl, "address").c_str()));
+                json_object_new_string(dvs::json_get_str(wl, "address").c_str()));
             json_object* pv = nullptr;
             int port = 0;
             if (json_object_object_get_ex(wl, "port", &pv))
@@ -79,11 +79,11 @@ LayoutDelivery deliver_layout_prepare(
             if (aport > 0)
                 json_object_object_add(ep, "audioPort",
                                        json_object_new_int(aport));
-            std::string mode = body_str(wl, "mode");
+            std::string mode = dvs::json_get_str(wl, "mode");
             json_object_object_add(
                 ep, "mode",
                 json_object_new_string(mode.empty() ? "multicast" : mode.c_str()));
-            std::string ssrc = body_str(wl, "sourceIp");
+            std::string ssrc = dvs::json_get_str(wl, "sourceIp");
             if (!ssrc.empty())
                 json_object_object_add(ep, "sourceIp",
                                        json_object_new_string(ssrc.c_str()));
@@ -100,7 +100,7 @@ LayoutDelivery deliver_layout_prepare(
             bool muted = false;
             if (json_object_object_get_ex(w, "muted", &mv))
                 muted = json_object_get_boolean(mv);
-            std::string wid = body_str(w, "id");
+            std::string wid = dvs::json_get_str(w, "id");
             if (!wid.empty() && !muted) {
                 audio_owner = wid;
                 break;
@@ -219,36 +219,36 @@ void fanout_layout_parallel(PlatformContext& ctx,
                 if (is_rollback) {
                     if (d.skipped && d.skip_reason == "no geometry") continue;
                     if (d.via_ws) {
-                        ctx.store->audit("{\"rollback\":\"" + json_escape(opid) +
-                                         "\",\"node\":\"" + json_escape(mid) +
+                        ctx.store->audit("{\"rollback\":\"" + dvs::json_escape(opid) +
+                                         "\",\"node\":\"" + dvs::json_escape(mid) +
                                          "\",\"via\":\"ws\",\"executed\":1}");
                     } else if (d.sent) {
                         ctx.store->audit(
-                            "{\"rollback\":\"" + json_escape(opid) +
-                            "\",\"node\":\"" + json_escape(mid) +
+                            "{\"rollback\":\"" + dvs::json_escape(opid) +
+                            "\",\"node\":\"" + dvs::json_escape(mid) +
                             "\",\"executed\":" +
                             std::to_string(d.http_status == 200 ? 1 : 0) + "}");
                     } else {
                         ctx.store->audit(
-                            "{\"rollback\":\"" + json_escape(opid) +
-                            "\",\"node\":\"" + json_escape(mid) +
+                            "{\"rollback\":\"" + dvs::json_escape(opid) +
+                            "\",\"node\":\"" + dvs::json_escape(mid) +
                             "\",\"executed\":0,\"reason\":\"" +
-                            json_escape(d.skip_reason) + "\"}");
+                            dvs::json_escape(d.skip_reason) + "\"}");
                     }
                 } else {
                     if (d.via_ws) {
-                        ctx.store->audit("{\"fanout\":\"" + json_escape(mid) +
+                        ctx.store->audit("{\"fanout\":\"" + dvs::json_escape(mid) +
                                          "\",\"via\":\"ws\"}");
                         ctx.channels.set_transport(mid, "ws");
                     } else if (d.sent) {
-                        ctx.store->audit("{\"fanout\":\"" + json_escape(mid) +
+                        ctx.store->audit("{\"fanout\":\"" + dvs::json_escape(mid) +
                                          "\",\"status\":" +
                                          std::to_string(d.http_status) + "}");
                         ctx.channels.set_transport(mid, "short");
                     } else {
                         ctx.store->audit("{\"fanout-skip\":\"" +
-                                         json_escape(mid) + "\",\"reason\":\"" +
-                                         json_escape(d.skip_reason) + "\"}");
+                                         dvs::json_escape(mid) + "\",\"reason\":\"" +
+                                         dvs::json_escape(d.skip_reason) + "\"}");
                     }
                 }
             }
@@ -266,7 +266,7 @@ void execute_rollback(PlatformContext& ctx, const std::string& rollback_op_id,
         snap = ctx.ops.find_committed(to_revision);
     }
     if (!snap) {
-        ctx.store->audit("{\"rollback\":\"" + json_escape(rollback_op_id) +
+        ctx.store->audit("{\"rollback\":\"" + dvs::json_escape(rollback_op_id) +
                          "\",\"executed\":0,\"reason\":\"no snapshot\"}");
         return;
     }
@@ -285,7 +285,7 @@ void execute_rollback(PlatformContext& ctx, const std::string& rollback_op_id,
     {
         std::lock_guard<std::mutex> lk(ctx.ops_mu);
         uint64_t deadline =
-            now_ns() + (uint64_t)ct::barrier_timeout_ms() * 1000000ULL;
+            dvs::wall_ns_now() + (uint64_t)ct::barrier_timeout_ms() * 1000000ULL;
         Operation& rb = ctx.ops.begin_with_deadline(opid_c, rev_c, members, 0,
                                                     deadline);
         rb.windows_json = windows_json;
@@ -298,7 +298,7 @@ void execute_rollback(PlatformContext& ctx, const std::string& rollback_op_id,
         rb.epoch_ns = snap->epoch_ns;
         rb.fps = snap->fps;
         rb.frame_index = -1;
-        rb.created_ns = now_ns();
+        rb.created_ns = dvs::wall_ns_now();
         ctx.ops.persist(opid_c);
     }
     std::thread([opid_c, rev_c, windows_json, members, token_c, vol_c, wall_c,

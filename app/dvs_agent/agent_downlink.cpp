@@ -12,6 +12,7 @@
 #include "media_ipc.h"
 #include "node_store.h"
 #include "registration.h"
+#include "dvs_http_json.h"
 
 void agent_install_downlink(AgentContext& ctx) {
   if (!ctx.reg) return;
@@ -33,7 +34,7 @@ void agent_install_downlink(AgentContext& ctx) {
             return;
           }
           (void)resp;
-          std::string nodeId = agent_get_str(ctx.store->node(), "id");
+          std::string nodeId = dvs::json_get_str(ctx.store->node(), "id");
           if (nodeId.empty()) nodeId = "local-node";
           agent_spawn_reporter(ctx, opid, rev, applyAtNs, nodeId);
         } else if (type == ct::kConfigUpdate) {
@@ -88,7 +89,7 @@ void agent_install_downlink(AgentContext& ctx) {
                                        : ("pending " + pend));
             }
           }
-          std::string nodeId = agent_get_str(ctx.store->node(), "id");
+          std::string nodeId = dvs::json_get_str(ctx.store->node(), "id");
           if (nodeId.empty()) nodeId = "local-node";
           int applied = 0;
           json_object* nd = ctx.store->node();
@@ -108,10 +109,10 @@ void agent_install_downlink(AgentContext& ctx) {
           if (ctx.reg) ctx.reg->uplink_config_ack(nodeId, applied);
         } else if (type == ct::kUpgradeTask) {
           if (!ct::validate_upgrade_task(data).empty()) return;
-          std::string tid = agent_get_str(data, "taskId");
-          std::string fn = agent_get_str(data, "filename");
-          std::string sha = agent_get_str(data, "sha256");
-          std::string nodeId = agent_get_str(ctx.store->node(), "id");
+          std::string tid = dvs::json_get_str(data, "taskId");
+          std::string fn = dvs::json_get_str(data, "filename");
+          std::string sha = dvs::json_get_str(data, "sha256");
+          std::string nodeId = dvs::json_get_str(ctx.store->node(), "id");
           if (nodeId.empty()) nodeId = "local-node";
           std::thread([ctxp, tid, fn, sha, nodeId]() {
             AgentContext& ctx = *ctxp;

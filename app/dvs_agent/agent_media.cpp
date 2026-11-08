@@ -10,6 +10,7 @@
 #include "media_ipc.h"
 #include "node_store.h"
 #include "registration.h"
+#include "dvs_http_json.h"
 
 namespace {
 std::mutex g_ver_mu;
@@ -115,7 +116,7 @@ void report_commit(AgentContext* ctxp, const std::string& opid, int rev,
     if (st) {
       json_object* d = nullptr;
       if (json_object_object_get_ex(st, "data", &d) && d) {
-        std::string s = agent_get_str(d, "state");
+        std::string s = dvs::json_get_str(d, "state");
         status = (s == "prepared" || s == "idle") ? "ready" : "blocked";
         json_object* lj = nullptr;
         if (json_object_object_get_ex(d, "lanes", &lj) && lj) {
@@ -197,7 +198,7 @@ void agent_media_note_hello(AgentContext& ctx, const std::string& hello) {
   int ei = -1;
   MediaIpcClient::parse_hello(hello, answered, match, eb, ei);
   std::lock_guard<std::mutex> lk(g_ver_mu);
-  g_ver_at = agent_now_ms();
+  g_ver_at = dvs::steady_ms_now();
   if (answered) {
     g_ver_known = true;
     g_ver_match = match;
@@ -210,7 +211,7 @@ bool agent_media_layout_allowed(AgentContext& ctx, std::string& reason_out) {
   if (!ctx.media_q) return true;
   {
     std::lock_guard<std::mutex> lk(g_ver_mu);
-    if (g_ver_known && agent_now_ms() - g_ver_at < kVerCacheMs) {
+    if (g_ver_known && dvs::steady_ms_now() - g_ver_at < kVerCacheMs) {
       if (!g_ver_match)
         reason_out = "VERSION_MISMATCH: media engine bundle differs";
       return g_ver_match;
@@ -223,7 +224,7 @@ bool agent_media_layout_allowed(AgentContext& ctx, std::string& reason_out) {
   std::lock_guard<std::mutex> lk(g_ver_mu);
   bool prev_known = g_ver_known;
   bool prev_match = g_ver_match;
-  g_ver_at = agent_now_ms();
+  g_ver_at = dvs::steady_ms_now();
   if (!answered) return true;
   g_ver_known = true;
   g_ver_match = match;
@@ -331,7 +332,7 @@ std::string agent_engine_link_state(AgentContext& ctx) {
   int streak = ctx.media_q->fail_streak();
   long long ok_age = -1;
   if (ctx.media_q->last_ok_ms() > 0)
-    ok_age = agent_now_ms() - ctx.media_q->last_ok_ms();
+    ok_age = dvs::steady_ms_now() - ctx.media_q->last_ok_ms();
   std::string st;
   if (streak >= 3)
     st = "offline";
@@ -353,7 +354,7 @@ std::string agent_engine_link_state(AgentContext& ctx) {
 }
 
 long long agent_cap_age_ms() {
-  return (g_cap_ok_ms > 0) ? agent_now_ms() - g_cap_ok_ms : -1;
+  return (g_cap_ok_ms > 0) ? dvs::steady_ms_now() - g_cap_ok_ms : -1;
 }
 
 bool agent_cap_stale() {
@@ -397,7 +398,7 @@ void agent_refresh_capability(AgentContext& ctx) {
     json_object_object_add(patch, "capabilities", merged);
     ctx.store->update_node(patch);
     json_object_put(patch);
-    g_cap_ok_ms = agent_now_ms();
+    g_cap_ok_ms = dvs::steady_ms_now();
     fprintf(stderr, "dvs-agent: startup capability merged\n");
   } else {
     fprintf(stderr, "dvs-agent: startup capability pull returned error\n");
@@ -432,7 +433,7 @@ void agent_hotplug_poll_once(AgentContext& ctx) {
   json_object_object_add(patch, "capabilities", merged);
   ctx.store->update_node(patch);
   json_object_put(patch);
-  g_cap_ok_ms = agent_now_ms();
+  g_cap_ok_ms = dvs::steady_ms_now();
   if (!g_cap_ports_sig.empty() && sig != g_cap_ports_sig) {
     g_cap_ports_sig = sig;
     revalidate_output_locked(ctx, merged);
@@ -449,7 +450,7 @@ void agent_hotplug_loop(AgentContext& ctx) {
   }
 }
 
-void agent_note_cap_ok() { g_cap_ok_ms = agent_now_ms(); }
+void agent_note_cap_ok() { g_cap_ok_ms = dvs::steady_ms_now(); }
 
 void agent_init_cap_sig(AgentContext& ctx) {
   json_object* caps0 = nullptr;
@@ -460,7 +461,7 @@ void agent_init_cap_sig(AgentContext& ctx) {
 std::string agent_sync_pending_role(AgentContext& ctx,
                                     const std::string& want) {
   if (want != "input" && want != "output") return "";
-  std::string cur = agent_get_str(ctx.store->node(), "role");
+  std::string cur = dvs::json_get_str(ctx.store->node(), "role");
   json_object* pp = json_object_new_object();
   std::string out;
   if (want == cur) {
@@ -504,7 +505,7 @@ void agent_project_playback(AgentContext& ctx, json_object* data) {
     json_object_object_add(cur, "lanesReady", json_object_new_int(ready));
     json_object_object_add(cur, "lanesTotal", json_object_new_int(total));
     json_object_object_add(cur, "updatedAt",
-                           json_object_new_string(agent_iso_now().c_str()));
+                           json_object_new_string(dvs::iso_now().c_str()));
     json_object_object_add(patch, "currentPlayback", cur);
   } else {
     json_object_object_add(patch, "currentPlayback", json_object_new_null());
@@ -517,7 +518,7 @@ bool agent_stage_layout(AgentContext& ctx, json_object* body,
                         std::string& resp_out, std::string& opid_out,
                         int& rev_out, int64_t& apply_at_ns_out,
                         std::string& err_out) {
-  opid_out = agent_get_str(body, "operationId");
+  opid_out = dvs::json_get_str(body, "operationId");
   rev_out = 1;
   json_object* rv = nullptr;
   if (body && json_object_object_get_ex(body, "revision", &rv))

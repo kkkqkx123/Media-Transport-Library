@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "agent_context.h"
+#include "dvs_http_json.h"
 
 namespace {
 struct AuditEntry {
@@ -39,7 +40,7 @@ json_object* entry_json(const AuditEntry& e) {
 
 void agent_audit(const std::string& scope, const std::string& action,
                  const std::string& result, const std::string& detail) {
-  AuditEntry e{agent_iso_now(), scope, action, result, detail};
+  AuditEntry e{dvs::iso_now(), scope, action, result, detail};
   std::lock_guard<std::mutex> lk(g_mu);
   append_locked(e);
 }

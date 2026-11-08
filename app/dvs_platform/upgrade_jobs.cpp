@@ -7,7 +7,7 @@
 #include "channels.h"
 #include "dvs_contract.h"
 #include "http_client.h"
-#include "http_json.h"
+#include "dvs_http_json.h"
 #include "platform_context.h"
 #include "platform_store.h"
 
@@ -16,13 +16,13 @@ namespace ct = dvs::contract;
 bool route_upgrade(PlatformContext& ctx, const HttpRequest& req,
                    HttpResponse& res) {
     if (req.method == "POST" && req.path == "/api/v1/nodes/upgrade") {
-        if (!require_bearer(req, res, ctx.api_token)) return true;
+        if (!dvs::require_bearer(req, res, ctx.api_token)) return true;
         json_object* b = json_tokener_parse(req.body.c_str());
         json_object* arr = nullptr;
         if (b) json_object_object_get_ex(b, "targetNodeIds", &arr);
-        std::string fn = body_str(b, "filename");
+        std::string fn = dvs::json_get_str(b, "filename");
         if (fn.empty()) fn = "fw.bin";
-        std::string sha = body_str(b, "sha256");
+        std::string sha = dvs::json_get_str(b, "sha256");
         std::vector<std::string> nodes;
         if (arr && json_object_is_type(arr, json_type_array)) {
             for (size_t i = 0; i < json_object_array_length(arr); i++)
@@ -36,14 +36,14 @@ bool route_upgrade(PlatformContext& ctx, const HttpRequest& req,
             ctx.up_q.push(UpgradeJob{task_id, nodes, fn, sha});
         }
         ctx.up_cv.notify_one();
-        ctx.store->audit("{\"upgrade-enqueue\":\"" + json_escape(task_id) +
+        ctx.store->audit("{\"upgrade-enqueue\":\"" + dvs::json_escape(task_id) +
                          "\"}");
         json_object* d = json_object_new_object();
         json_object_object_add(d, "taskId",
                                json_object_new_string(task_id.c_str()));
         json_object_object_add(d, "queued",
                                json_object_new_int((int)nodes.size()));
-        send_json(res, ok_envelope(d, "queued"));
+        dvs::send_json(res, dvs::envelope_ok(d, "queued"));
         return true;
     }
     if (req.method == "GET" &&
@@ -75,7 +75,7 @@ bool route_upgrade(PlatformContext& ctx, const HttpRequest& req,
         json_object_object_add(d, "items", items);
         json_object_object_add(d, "done", json_object_new_int(done));
         json_object_object_add(d, "total", json_object_new_int(total));
-        send_json(res, ok_envelope(d, "upgrade-progress"));
+        dvs::send_json(res, dvs::envelope_ok(d, "upgrade-progress"));
         return true;
     }
     return false;
@@ -110,16 +110,16 @@ void start_upgrade_worker(PlatformContext& ctx) {
                                      json_object_get(task));
                 if (via_ws) {
                     ctx.store->audit("{\"upgrade-push\":\"" +
-                                     json_escape(nid) +
+                                     dvs::json_escape(nid) +
                                      "\",\"via\":\"ws\"}");
                     json_object_put(task);
                     continue;
                 }
                 json_object* nd = ctx.store->get_doc("node", nid);
-                std::string base = nd ? body_str(nd, "agentBase") : "";
+                std::string base = nd ? dvs::json_get_str(nd, "agentBase") : "";
                 if (nd) json_object_put(nd);
                 if (base.empty()) {
-                    ctx.store->audit("{\"upgrade-skip\":\"" + json_escape(nid) +
+                    ctx.store->audit("{\"upgrade-skip\":\"" + dvs::json_escape(nid) +
                                      "\"}");
                     json_object_put(task);
                     continue;
@@ -130,7 +130,7 @@ void start_upgrade_worker(PlatformContext& ctx) {
                 std::string resp;
                 int sc = cli.post_json(base + "/api/v1/node/upgrade", body,
                                        resp, 10000, 2, ctx.api_token);
-                ctx.store->audit("{\"upgrade-push\":\"" + json_escape(nid) +
+                ctx.store->audit("{\"upgrade-push\":\"" + dvs::json_escape(nid) +
                                  "\",\"status\":" + std::to_string(sc) + "}");
             }
         }

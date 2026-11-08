@@ -4,6 +4,7 @@
 #include <netdb.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <chrono>
@@ -20,6 +21,7 @@
 #include "node_store.h"
 #include "registration.h"
 #include "tx_config.h"
+#include "dvs_http_json.h"
 
 namespace {
 std::string trim_str(const std::string& s) {
@@ -234,9 +236,9 @@ bool intent_log_network(const std::string& intent, std::string& err) {
 // every other key is reported as ignored and never stored.
 bool handle_config_sync(AgentContext& ctx, const HttpRequest& req,
                         HttpResponse& res) {
-  if (!agent_bearer_ok(ctx, req)) {
-    agent_send_json(res, agent_envelope_fail("UNAUTHORIZED", 401,
-                                            "missing or bad token"));
+  if (!dvs::http_bearer_ok(req, ctx.api_token)) {
+    dvs::send_json(res, dvs::envelope_fail("UNAUTHORIZED", 401,
+                                            "missing or bad token", "a"));
     return true;
   }
   json_object* body = json_tokener_parse(req.body.c_str());
@@ -244,8 +246,8 @@ bool handle_config_sync(AgentContext& ctx, const HttpRequest& req,
                           : "INVALID_ARGUMENT:empty body";
   if (!verr.empty()) {
     if (body) json_object_put(body);
-    agent_send_json(res,
-                    agent_envelope_fail("INVALID_ARGUMENT", 400, verr.c_str()));
+    dvs::send_json(res,
+                    dvs::envelope_fail("INVALID_ARGUMENT", 400, verr.c_str(), "a"));
     return true;
   }
   json_object* cfg = nullptr;
@@ -287,8 +289,8 @@ bool handle_config_sync(AgentContext& ctx, const HttpRequest& req,
   json_object_put(patch);
   if (!role_err.empty()) {
     if (body) json_object_put(body);
-    agent_send_json(res, agent_envelope_fail("INVALID_ARGUMENT", 400,
-                                            role_err.c_str()));
+    dvs::send_json(res, dvs::envelope_fail("INVALID_ARGUMENT", 400,
+                                            role_err.c_str(), "a"));
     return true;
   }
   json_object* d = json_object_new_object();
@@ -296,7 +298,7 @@ bool handle_config_sync(AgentContext& ctx, const HttpRequest& req,
   json_object_object_add(d, "source", json_object_new_string("platform"));
   json_object_object_add(d, "ignored", ignored);
   if (body) json_object_put(body);
-  agent_send_json(res, agent_envelope_ok(d, "config synced"));
+  dvs::send_json(res, dvs::envelope_ok(d, "config synced", "a"));
   return true;
 }
 }  // namespace
@@ -323,16 +325,16 @@ bool agent_handle_config(AgentContext& ctx, const HttpRequest& req,
   for (int i = 0; i < 6; i++)
     if (scope == NodeStore::SCOPES[i]) valid = true;
   if (!valid) {
-    agent_send_json(res, agent_envelope_fail("INVALID_ARGUMENT", 400,
-                                            "不支持的配置范围"));
+    dvs::send_json(res, dvs::envelope_fail("INVALID_ARGUMENT", 400,
+                                            "不支持的配置范围", "a"));
     return true;
   }
   std::string node_id = req.query.count("nodeId")
                             ? req.query.at("nodeId")
-                            : agent_get_str(ctx.store->node(), "id");
+                            : dvs::json_get_str(ctx.store->node(), "id");
   if (req.method == "GET" && action.empty()) {
     json_object* cfg = ctx.store->get_config(scope, node_id);
-    agent_send_json(res, agent_envelope_ok(cfg, ""));
+    dvs::send_json(res, dvs::envelope_ok(cfg, "", "a"));
     return true;
   }
   if (req.method == "POST" && action.empty()) {
@@ -352,7 +354,7 @@ bool agent_handle_config(AgentContext& ctx, const HttpRequest& req,
         opid = opstr.c_str();
       }
     }
-    std::string cur_role = agent_get_str(ctx.store->node(), "role");
+    std::string cur_role = dvs::json_get_str(ctx.store->node(), "role");
     ctx.store->set_desired(scope, val, opid);
     std::string fail_code;
     std::string fail_reason;
@@ -516,7 +518,7 @@ bool agent_handle_config(AgentContext& ctx, const HttpRequest& req,
                 msg = json_object_get_string(mv2);
               json_object* dd = nullptr;
               if (json_object_object_get_ex(to, "data", &dd) && dd)
-                state = agent_get_str(dd, "state");
+                state = dvs::json_get_str(dd, "state");
               json_object_put(to);
             } else {
               code = "TX_START_UNPARSABLE";
@@ -684,7 +686,7 @@ bool agent_handle_config(AgentContext& ctx, const HttpRequest& req,
         json_object_object_get_ex(ctx.store->node(), "network", &net_old);
         json_object* net_old_copy =
             net_old ? json_object_get(net_old) : json_object_new_object();
-        std::string ip_old = agent_get_str(ctx.store->node(), "ip");
+        std::string ip_old = dvs::json_get_str(ctx.store->node(), "ip");
         NetExecParams nep;
         nep.mode = nmode;
         nep.ip = ip;
@@ -718,7 +720,7 @@ bool agent_handle_config(AgentContext& ctx, const HttpRequest& req,
         json_object_object_add(nsys, "method",
                                json_object_new_string(method.c_str()));
         json_object_object_add(
-            nsys, "at", json_object_new_string(agent_iso_now().c_str()));
+            nsys, "at", json_object_new_string(dvs::iso_now().c_str()));
         if (!sys_err.empty())
           json_object_object_add(nsys, "error",
                                  json_object_new_string(sys_err.c_str()));
@@ -979,8 +981,8 @@ bool agent_handle_config(AgentContext& ctx, const HttpRequest& req,
                              ? "配置已保存，等待媒体生效"
                              : "配置已提交";
     const char* ok_text = scope_ok_msg.empty() ? ok_msg : scope_ok_msg.c_str();
-    agent_send_json(res,
-                    agent_envelope_ok(cfg, fail_code.empty() ? ok_text : "配置失败"));
+    dvs::send_json(res,
+                    dvs::envelope_ok(cfg, fail_code.empty() ? ok_text : "配置失败", "a"));
     return true;
   }
   if (req.method == "POST" && action == "retry") {
@@ -990,10 +992,10 @@ bool agent_handle_config(AgentContext& ctx, const HttpRequest& req,
     ctx.store->update_node(patch);
     json_object_put(patch);
     json_object* cfg = ctx.store->get_config(scope, node_id);
-    agent_send_json(res, agent_envelope_ok(cfg, "配置已重新提交，等待应用"));
+    dvs::send_json(res, dvs::envelope_ok(cfg, "配置已重新提交，等待应用", "a"));
     return true;
   }
-  agent_send_json(res,
-                  agent_envelope_fail("NOT_FOUND", 404, "未定义的节点配置操作"));
+  dvs::send_json(res,
+                  dvs::envelope_fail("NOT_FOUND", 404, "未定义的节点配置操作", "a"));
   return true;
 }

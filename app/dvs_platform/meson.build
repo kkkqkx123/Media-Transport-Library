@@ -14,7 +14,7 @@ agent_src = '../dvs_agent'
 common_src = '../dvs_common'
 sqlite_src = common_src + '/third_party/sqlite/sqlite3.c'
 
-inc = include_directories('.', agent_src, common_src + '/include',
+inc = include_directories('.', common_src + '/include',
                           common_src + '/third_party/sqlite')
 
 common_sources = files(
@@ -22,6 +22,7 @@ common_sources = files(
   common_src + '/src/http_client.cpp',
   common_src + '/src/sha256.cpp',
   common_src + '/src/dvs_contract.cpp',
+  common_src + '/src/dvs_http_json.cpp',
   sqlite_src,
 )
 
@@ -29,7 +30,6 @@ platform_lib_src = files(
   'platform_store.cpp',
   'layout.cpp',
   'ops.cpp',
-  'http_json.cpp',
   'docs_routes.cpp',
   'channels.cpp',
   'node_state.cpp',

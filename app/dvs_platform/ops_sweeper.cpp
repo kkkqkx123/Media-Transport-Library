@@ -5,7 +5,7 @@
 #include <mutex>
 #include <thread>
 
-#include "http_json.h"
+#include "dvs_http_json.h"
 #include "layout.h"
 #include "layout_fanout.h"
 #include "platform_context.h"
@@ -35,7 +35,7 @@ void start_barrier_sweeper(PlatformContext& ctx) {
             std::vector<std::string> expired;
             {
                 std::lock_guard<std::mutex> lk(ctx.ops_mu);
-                expired = ctx.ops.expire_sweep(now_ns());
+                expired = ctx.ops.expire_sweep(dvs::wall_ns_now());
             }
             for (auto& id : expired) {
                 int to_rev = 0;
@@ -47,7 +47,7 @@ void start_barrier_sweeper(PlatformContext& ctx) {
                     const Operation* op2 = ctx.ops.find(id);
                     if (op2) rb_members = op2->members;
                 }
-                ctx.store->audit("{\"barrier-timeout\":\"" + json_escape(id) +
+                ctx.store->audit("{\"barrier-timeout\":\"" + dvs::json_escape(id) +
                                  "\"}");
                 if (!rb.empty())
                     execute_rollback(ctx, rb, to_rev, rb_members);
@@ -68,8 +68,8 @@ void start_barrier_sweeper(PlatformContext& ctx) {
                     if (op2) rb_members = op2->members;
                 }
                 ctx.store->audit("{\"op-rollback-replay\":\"" +
-                                 json_escape(id) + "\",\"rollback\":\"" +
-                                 json_escape(rb) + "\"}");
+                                 dvs::json_escape(id) + "\",\"rollback\":\"" +
+                                 dvs::json_escape(rb) + "\"}");
                 if (!rb.empty())
                     execute_rollback(ctx, rb, to_rev, rb_members);
             }
@@ -78,7 +78,7 @@ void start_barrier_sweeper(PlatformContext& ctx) {
                 last_gc = now_s;
                 {
                     std::lock_guard<std::mutex> lk(ctx.ops_mu);
-                    ctx.ops.gc(now_ns(), kOpTtlNs);
+                    ctx.ops.gc(dvs::wall_ns_now(), kOpTtlNs);
                 }
                 for (auto& wid : ctx.store->list_ids("walls")) {
                     json_object* w = ctx.store->get_doc("walls", wid);
@@ -98,7 +98,7 @@ void start_barrier_sweeper(PlatformContext& ctx) {
                         ctx.store->del_doc("walls", wid);
                         ctx.store->del_doc("base-images", wid);
                         ctx.store->audit("{\"wall-gc\":\"" +
-                                         json_escape(wid) + "\"}");
+                                         dvs::json_escape(wid) + "\"}");
                     }
                 }
             }

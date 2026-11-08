@@ -7,7 +7,7 @@
 #include "barrier.h"
 #include "channels.h"
 #include "dvs_contract.h"
-#include "http_json.h"
+#include "dvs_http_json.h"
 #include "layout_fanout.h"
 #include "node_state.h"
 #include "platform_context.h"
@@ -18,7 +18,7 @@ namespace ct = dvs::contract;
 namespace {
 std::string ws_idem_key(const std::string& msg_id, const std::string& tp,
                         json_object* data) {
-    std::string node = body_str(data, "id");
+    std::string node = dvs::json_get_str(data, "id");
     return msg_id + "#" + tp + "#" + node;
 }
 }  // namespace
@@ -68,9 +68,9 @@ void ws_channel_loop(PlatformContext& ctx, int fd, HttpRequest hs_req) {
     std::string provided = !hello_tok.empty() ? hello_tok : hs_bearer;
     std::string verr = ct::validate_hello(data);
     bool auth = ct::bearer_ok(provided, ctx.api_token);
-    std::string node_id = body_str(data, "id");
+    std::string node_id = dvs::json_get_str(data, "id");
     if (!verr.empty() || !auth || node_id.empty() ||
-        ctx.store->tombstone_check(node_id, now_sec())) {
+        ctx.store->tombstone_check(node_id, dvs::wall_sec_now())) {
         json_object* d = json_object_new_object();
         json_object_object_add(
             d, "reason",
@@ -85,7 +85,7 @@ void ws_channel_loop(PlatformContext& ctx, int fd, HttpRequest hs_req) {
     }
     ctx.channels.register_conn(node_id, fd);
     apply_hello_doc(ctx, data);
-    ctx.store->audit("{\"ws-hello\":\"" + json_escape(node_id) + "\"}");
+    ctx.store->audit("{\"ws-hello\":\"" + dvs::json_escape(node_id) + "\"}");
     {
         json_object* w = json_object_new_object();
         json_object_object_add(w, "heartbeatIntervalMs",
@@ -119,7 +119,7 @@ void ws_channel_loop(PlatformContext& ctx, int fd, HttpRequest hs_req) {
         }
         if (tp == ct::kHeartbeat) {
             std::string e = ct::validate_heartbeat(dd);
-            std::string hid = body_str(dd, "id");
+            std::string hid = dvs::json_get_str(dd, "id");
             if (!e.empty() || hid.empty()) {
                 json_object* d = json_object_new_object();
                 json_object_object_add(
@@ -142,9 +142,9 @@ void ws_channel_loop(PlatformContext& ctx, int fd, HttpRequest hs_req) {
                                        json_object_new_string(e.c_str()));
                 send_wrapped(ws_idem_key(mid, tp, dd), ct::kError, d);
             } else {
-                std::string opid = body_str(dd, "operationId");
-                std::string node = body_str(dd, "node");
-                std::string st = body_str(dd, "status");
+                std::string opid = dvs::json_get_str(dd, "operationId");
+                std::string node = dvs::json_get_str(dd, "node");
+                std::string st = dvs::json_get_str(dd, "status");
                 json_object* lanes = nullptr;
                 json_object_object_get_ex(dd, "lanes", &lanes);
                 std::set<std::string> miss;
@@ -198,17 +198,17 @@ void ws_channel_loop(PlatformContext& ctx, int fd, HttpRequest hs_req) {
                                        json_object_new_string(e.c_str()));
                 send_wrapped(ws_idem_key(mid, tp, dd), ct::kError, d);
             } else {
-                std::string tid = body_str(dd, "taskId");
-                std::string node = body_str(dd, "node");
-                std::string st = body_str(dd, "status");
+                std::string tid = dvs::json_get_str(dd, "taskId");
+                std::string node = dvs::json_get_str(dd, "node");
+                std::string st = dvs::json_get_str(dd, "status");
                 {
                     std::lock_guard<std::mutex> lk(ctx.channels.mu);
                     ctx.channels.upgrade_progress[tid + "/" + node] = st;
                 }
                 ctx.store->audit("{\"upgrade-progress\":\"" +
-                                 json_escape(node) + "\",\"task\":\"" +
-                                 json_escape(tid) + "\",\"status\":\"" +
-                                 json_escape(st) + "\"}");
+                                 dvs::json_escape(node) + "\",\"task\":\"" +
+                                 dvs::json_escape(tid) + "\",\"status\":\"" +
+                                 dvs::json_escape(st) + "\"}");
                 json_object* ack = json_object_new_object();
                 json_object_object_add(ack, "received",
                                        json_object_new_boolean(1));
@@ -223,7 +223,7 @@ void ws_channel_loop(PlatformContext& ctx, int fd, HttpRequest hs_req) {
                 send_wrapped(ws_idem_key(mid, tp, dd), ct::kError, d);
             } else {
                 ctx.store->audit("{\"config-ack\":\"" +
-                                 json_escape(body_str(dd, "node")) + "\"}");
+                                 dvs::json_escape(dvs::json_get_str(dd, "node")) + "\"}");
                 json_object* ack = json_object_new_object();
                 json_object_object_add(ack, "received",
                                        json_object_new_boolean(1));
@@ -247,7 +247,7 @@ void ws_channel_loop(PlatformContext& ctx, int fd, HttpRequest hs_req) {
             ctx.store->put_doc("node", gone, cur);
             json_object_put(cur);
         }
-        ctx.store->audit("{\"ws-offline\":\"" + json_escape(gone) + "\"}");
+        ctx.store->audit("{\"ws-offline\":\"" + dvs::json_escape(gone) + "\"}");
     }
     ::close(fd);
 }

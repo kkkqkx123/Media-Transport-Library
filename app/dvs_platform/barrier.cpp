@@ -2,7 +2,7 @@
 
 #include <mutex>
 
-#include "http_json.h"
+#include "dvs_http_json.h"
 #include "layout.h"
 #include "node_state.h"
 #include "platform_context.h"
@@ -30,8 +30,8 @@ std::string handle_barrier_ack(PlatformContext& ctx, const std::string& opid,
             st = "blocked";
             if (ctx.store)
                 ctx.store->audit("{\"commit-clock-blocked\":\"" +
-                                 json_escape(node) + "\",\"reason\":\"" +
-                                 json_escape(reason) + "\"}");
+                                 dvs::json_escape(node) + "\",\"reason\":\"" +
+                                 dvs::json_escape(reason) + "\"}");
         }
     }
     if (ack) {
@@ -54,7 +54,7 @@ std::string handle_barrier_ack(PlatformContext& ctx, const std::string& opid,
                 st = "blocked";
                 if (ctx.store)
                     ctx.store->audit("{\"commit-frame-mismatch\":\"" +
-                                     json_escape(node) + "\",\"want\":" +
+                                     dvs::json_escape(node) + "\",\"want\":" +
                                      std::to_string(want_frame) + ",\"got\":" +
                                      std::to_string(got) + "}");
             }
@@ -68,13 +68,13 @@ std::string handle_barrier_ack(PlatformContext& ctx, const std::string& opid,
                 st = "blocked";
                 if (ctx.store)
                     ctx.store->audit("{\"commit-frame-late\":\"" +
-                                     json_escape(node) + "\"}");
+                                     dvs::json_escape(node) + "\"}");
             }
         }
-        std::string why = body_str(ack, "reason");
+        std::string why = dvs::json_get_str(ack, "reason");
         if (!why.empty() && ctx.store)
-            ctx.store->audit("{\"commit-reason\":\"" + json_escape(node) +
-                             "\",\"reason\":\"" + json_escape(why) + "\"}");
+            ctx.store->audit("{\"commit-reason\":\"" + dvs::json_escape(node) +
+                             "\",\"reason\":\"" + dvs::json_escape(why) + "\"}");
     }
     std::string state;
     std::string commit_wall, commit_scene, commit_hash;
@@ -96,7 +96,7 @@ std::string handle_barrier_ack(PlatformContext& ctx, const std::string& opid,
     if (state == "committed" && !commit_wall.empty())
         mark_wall_committed(ctx, commit_wall, commit_scene, commit_rev,
                             commit_hash);
-    ctx.store->audit("{\"commit\":\"" + json_escape(node) + "\",\"state\":\"" +
-                     json_escape(st) + "\"}");
+    ctx.store->audit("{\"commit\":\"" + dvs::json_escape(node) + "\",\"state\":\"" +
+                     dvs::json_escape(st) + "\"}");
     return state;
 }

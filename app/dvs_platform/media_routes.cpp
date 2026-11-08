@@ -4,7 +4,7 @@
 #include <cstring>
 #include <set>
 
-#include "http_json.h"
+#include "dvs_http_json.h"
 #include "layout.h"
 #include "platform_context.h"
 #include "platform_store.h"
@@ -13,8 +13,8 @@ bool route_media(PlatformContext& ctx, const HttpRequest& req,
                  HttpResponse& res) {
     if (req.method == "POST" && req.path == "/api/v1/scenes/compare") {
         json_object* b = json_tokener_parse(req.body.c_str());
-        std::string sid = body_str(b, "sceneId");
-        if (sid.empty()) sid = body_str(b, "id");
+        std::string sid = dvs::json_get_str(b, "sceneId");
+        if (sid.empty()) sid = dvs::json_get_str(b, "id");
         json_object* live_wins = nullptr;
         if (b) json_object_object_get_ex(b, "windows", &live_wins);
         int live_vol = 80;
@@ -25,7 +25,7 @@ bool route_media(PlatformContext& ctx, const HttpRequest& req,
             sid.empty() ? nullptr : ctx.store->get_doc("scenes", sid);
         if (!sc) {
             if (b) json_object_put(b);
-            send_json(res, fail_envelope("NOT_FOUND", 404, "scene unknown"));
+            dvs::send_json(res, dvs::envelope_fail("NOT_FOUND", 404, "scene unknown"));
             return true;
         }
         json_object* saved_wins = nullptr;
@@ -38,7 +38,7 @@ bool route_media(PlatformContext& ctx, const HttpRequest& req,
             layout_dirty_compare(saved_wins, saved_vol, live_wins, live_vol);
         json_object_put(sc);
         if (b) json_object_put(b);
-        send_json(res, ok_envelope(d, "compared"));
+        dvs::send_json(res, dvs::envelope_ok(d, "compared"));
         return true;
     }
     if (req.method == "POST" && req.path.rfind("/api/v1/walls/", 0) == 0 &&
@@ -48,12 +48,12 @@ bool route_media(PlatformContext& ctx, const HttpRequest& req,
         wid = wid.substr(0, wid.size() - 8);
         json_object* w = ctx.store->get_doc("walls", wid);
         if (!w) {
-            send_json(res, fail_envelope("NOT_FOUND", 404, "wall unknown"));
+            dvs::send_json(res, dvs::envelope_fail("NOT_FOUND", 404, "wall unknown"));
             return true;
         }
         if (!wall_is_deleted(w)) {
             json_object_put(w);
-            send_json(res, fail_envelope("INVALID_ARGUMENT", 400,
+            dvs::send_json(res, dvs::envelope_fail("INVALID_ARGUMENT", 400,
                                          "wall not deleted"));
             return true;
         }
@@ -61,10 +61,10 @@ bool route_media(PlatformContext& ctx, const HttpRequest& req,
         json_object_object_del(w, "deletedAt");
         ctx.store->put_doc("walls", wid, w);
         json_object_put(w);
-        ctx.store->audit("{\"wall-restore\":\"" + json_escape(wid) + "\"}");
+        ctx.store->audit("{\"wall-restore\":\"" + dvs::json_escape(wid) + "\"}");
         json_object* d = ctx.store->get_doc("walls", wid);
-        send_json(res,
-                  ok_envelope(d ? d : json_object_new_object(), "restored"));
+        dvs::send_json(res,
+                  dvs::envelope_ok(d ? d : json_object_new_object(), "restored"));
         return true;
     }
     if (req.method == "GET" && req.path.rfind("/api/v1/walls/", 0) == 0 &&
@@ -79,33 +79,33 @@ bool route_media(PlatformContext& ctx, const HttpRequest& req,
         json_object* w = ctx.store->get_doc("walls", wid);
         if (!w || wall_is_deleted(w)) {
             if (w) json_object_put(w);
-            send_json(res, fail_envelope("NOT_FOUND", 404,
+            dvs::send_json(res, dvs::envelope_fail("NOT_FOUND", 404,
                                          "wall unknown or deleted"));
             return true;
         }
         int ww = 0, hh = 0;
         wall_px_of(w, &ww, &hh);
-        std::string bver = body_str(w, "baseImageRevision");
-        if (bver.empty()) bver = body_str(w, "backdropRevision");
+        std::string bver = dvs::json_get_str(w, "baseImageRevision");
+        if (bver.empty()) bver = dvs::json_get_str(w, "backdropRevision");
         json_object_put(w);
         if (node_id.empty()) {
-            send_json(res,
-                      fail_envelope("INVALID_ARGUMENT", 400, "need ?node="));
+            dvs::send_json(res,
+                      dvs::envelope_fail("INVALID_ARGUMENT", 400, "need ?node="));
             return true;
         }
         json_object* nd = ctx.store->get_doc("node", node_id);
         if (!nd) {
-            send_json(res, fail_envelope("NOT_FOUND", 404, "node unknown"));
+            dvs::send_json(res, dvs::envelope_fail("NOT_FOUND", 404, "node unknown"));
             return true;
         }
         json_object* geo = nullptr;
         json_object_object_get_ex(nd, "geometry", &geo);
-        Rect node{rect_int(geo, "x"), rect_int(geo, "y"), rect_int(geo, "w"),
-                  rect_int(geo, "h")};
+        Rect node{dvs::json_rect_int(geo, "x"), dvs::json_rect_int(geo, "y"), dvs::json_rect_int(geo, "w"),
+                  dvs::json_rect_int(geo, "h")};
         json_object_put(nd);
         Rect sub;
         if (!base_subrect(ww, hh, node, &sub)) {
-            send_json(res, fail_envelope("NOT_FOUND", 404,
+            dvs::send_json(res, dvs::envelope_fail("NOT_FOUND", 404,
                                          "node outside wall canvas"));
             return true;
         }
@@ -129,7 +129,7 @@ bool route_media(PlatformContext& ctx, const HttpRequest& req,
         json_object_object_add(r, "w", json_object_new_int(sub.w));
         json_object_object_add(r, "h", json_object_new_int(sub.h));
         json_object_object_add(d, "subRect", r);
-        send_json(res, ok_envelope(d, "base-image"));
+        dvs::send_json(res, dvs::envelope_ok(d, "base-image"));
         return true;
     }
     if (req.method == "POST" && req.path.rfind("/api/v1/playback-tasks/", 0) == 0) {
@@ -143,7 +143,7 @@ bool route_media(PlatformContext& ctx, const HttpRequest& req,
             (verb == "start" || verb == "cancel" || verb == "finish")) {
             json_object* t = ctx.store->get_doc("playback-tasks", tid);
             if (!t) {
-                send_json(res, fail_envelope("NOT_FOUND", 404, "task unknown"));
+                dvs::send_json(res, dvs::envelope_fail("NOT_FOUND", 404, "task unknown"));
                 return true;
             }
             std::string from = playback_status_of(t);
@@ -155,8 +155,8 @@ bool route_media(PlatformContext& ctx, const HttpRequest& req,
             else
                 want = "succeeded";
             if (verb == "start" && from == "pending_execution") {
-                std::string wall_id = body_str(t, "wallId");
-                std::string node = body_str(t, "targetNodeId");
+                std::string wall_id = dvs::json_get_str(t, "wallId");
+                std::string node = dvs::json_get_str(t, "targetNodeId");
                 json_object* w =
                     wall_id.empty() ? nullptr
                                     : ctx.store->get_doc("walls", wall_id);
@@ -167,7 +167,7 @@ bool route_media(PlatformContext& ctx, const HttpRequest& req,
                 if (nd) json_object_put(nd);
                 if (!ok) {
                     json_object_put(t);
-                    send_json(res, fail_envelope("INVALID_ARGUMENT", 400,
+                    dvs::send_json(res, dvs::envelope_fail("INVALID_ARGUMENT", 400,
                                                  "wall/node unavailable for "
                                                  "start"));
                     return true;
@@ -175,7 +175,7 @@ bool route_media(PlatformContext& ctx, const HttpRequest& req,
             }
             if (!playback_transition_ok(from, want)) {
                 json_object_put(t);
-                send_json(res, fail_envelope("CONFLICT", 409,
+                dvs::send_json(res, dvs::envelope_fail("CONFLICT", 409,
                                              "illegal playback transition"));
                 return true;
             }
@@ -185,28 +185,28 @@ bool route_media(PlatformContext& ctx, const HttpRequest& req,
             ctx.store->put_doc("playback-tasks", tid, t);
             json_object_put(t);
             ctx.store->audit("{\"playback-" + verb + "\":\"" +
-                             json_escape(tid) + "\"}");
+                             dvs::json_escape(tid) + "\"}");
             json_object* d = ctx.store->get_doc("playback-tasks", tid);
-            send_json(res,
-                      ok_envelope(d ? d : json_object_new_object(), verb));
+            dvs::send_json(res,
+                      dvs::envelope_ok(d ? d : json_object_new_object(), verb));
             return true;
         }
     }
     if (req.method == "POST" && req.path == "/api/v1/whitelist/allocate") {
         json_object* b = json_tokener_parse(req.body.c_str());
         if (!b) b = json_object_new_object();
-        std::string sig = body_str(b, "sig");
+        std::string sig = dvs::json_get_str(b, "sig");
         int want_port = 0;
         json_object* pv = nullptr;
         if (json_object_object_get_ex(b, "port", &pv) && pv)
             want_port = json_object_get_int(pv);
-        std::string want_addr = body_str(b, "address");
+        std::string want_addr = dvs::json_get_str(b, "address");
         if (!sig.empty()) {
             json_object* hit = nullptr;
             for (auto& wid : ctx.store->list_ids("whitelist")) {
                 json_object* o = ctx.store->get_doc("whitelist", wid);
                 if (!o) continue;
-                if (body_str(o, "sig") == sig) {
+                if (dvs::json_get_str(o, "sig") == sig) {
                     hit = o;
                     break;
                 }
@@ -214,7 +214,7 @@ bool route_media(PlatformContext& ctx, const HttpRequest& req,
             }
             if (hit) {
                 json_object_put(b);
-                send_json(res, ok_envelope(hit, "already allocated"));
+                dvs::send_json(res, dvs::envelope_ok(hit, "already allocated"));
                 return true;
             }
         }
@@ -235,13 +235,13 @@ bool route_media(PlatformContext& ctx, const HttpRequest& req,
             if (want_port <= 0) want_port = 50010;
             if (want_port < 1 || want_port > 65535) {
                 json_object_put(b);
-                send_json(res, fail_envelope("INVALID_ARGUMENT", 400,
+                dvs::send_json(res, dvs::envelope_fail("INVALID_ARGUMENT", 400,
                                              "port must be 1..65535"));
                 return true;
             }
             if (used.count({want_addr, want_port}) != 0) {
                 json_object_put(b);
-                send_json(res, fail_envelope("CONFLICT", 409,
+                dvs::send_json(res, dvs::envelope_fail("CONFLICT", 409,
                                              "multicast address+port already "
                                              "used"));
                 return true;
@@ -251,7 +251,7 @@ bool route_media(PlatformContext& ctx, const HttpRequest& req,
         } else {
             if (!multicast_pool_next(used, want_port, &addr, &port)) {
                 json_object_put(b);
-                send_json(res, fail_envelope("RESOURCE_EXHAUSTED", 507,
+                dvs::send_json(res, dvs::envelope_fail("RESOURCE_EXHAUSTED", 507,
                                              "multicast pool exhausted"));
                 return true;
             }
@@ -259,7 +259,7 @@ bool route_media(PlatformContext& ctx, const HttpRequest& req,
         std::string id = sig;
         if (id.empty()) {
             char nb[48];
-            snprintf(nb, sizeof(nb), "wl-%ld", (long)now_sec());
+            snprintf(nb, sizeof(nb), "wl-%ld", (long)dvs::wall_sec_now());
             id = nb;
             sig = id;
         }
@@ -281,19 +281,19 @@ bool route_media(PlatformContext& ctx, const HttpRequest& req,
         if (!verr.empty()) {
             json_object_put(doc);
             json_object_put(b);
-            send_json(res,
-                      fail_envelope("INVALID_ARGUMENT", 400, verr.c_str()));
+            dvs::send_json(res,
+                      dvs::envelope_fail("INVALID_ARGUMENT", 400, verr.c_str()));
             return true;
         }
         json_object_object_add(doc, "status",
                                json_object_new_string("active"));
         json_object_put(b);
         ctx.store->put_doc("whitelist", id, doc);
-        ctx.store->audit("{\"whitelist-allocate\":\"" + json_escape(id) + "\"}");
+        ctx.store->audit("{\"whitelist-allocate\":\"" + dvs::json_escape(id) + "\"}");
         json_object* d = ctx.store->get_doc("whitelist", id);
         json_object_put(doc);
-        send_json(res,
-                  ok_envelope(d ? d : json_object_new_object(), "allocated"));
+        dvs::send_json(res,
+                  dvs::envelope_ok(d ? d : json_object_new_object(), "allocated"));
         return true;
     }
     if (req.method == "POST" && req.path.rfind("/api/v1/walls/", 0) == 0 &&
@@ -304,29 +304,29 @@ bool route_media(PlatformContext& ctx, const HttpRequest& req,
         json_object* w = ctx.store->get_doc("walls", wid);
         if (!w || wall_is_deleted(w)) {
             if (w) json_object_put(w);
-            send_json(res, fail_envelope("NOT_FOUND", 404,
+            dvs::send_json(res, dvs::envelope_fail("NOT_FOUND", 404,
                                          "wall unknown or deleted"));
             return true;
         }
         json_object_put(w);
         json_object* b = json_tokener_parse(req.body.c_str());
         if (!b) b = json_object_new_object();
-        std::string rev = body_str(b, "revision");
-        if (rev.empty()) rev = body_str(b, "baseImageRevision");
+        std::string rev = dvs::json_get_str(b, "revision");
+        if (rev.empty()) rev = dvs::json_get_str(b, "baseImageRevision");
         int bw = 0, bh = 0;
         json_object* v = nullptr;
         if (json_object_object_get_ex(b, "width", &v) && v)
             bw = json_object_get_int(v);
         if (json_object_object_get_ex(b, "height", &v) && v)
             bh = json_object_get_int(v);
-        std::string url = body_str(b, "url");
+        std::string url = dvs::json_get_str(b, "url");
         bool bad = rev.empty() || rev.size() > 64 ||
                    (bw != 0 && (bw < 64 || bw > 7680)) ||
                    (bh != 0 && (bh < 64 || bh > 4320)) || url.size() > 512;
         if (bad) {
             json_object_put(b);
-            send_json(res,
-                      fail_envelope("INVALID_ARGUMENT", 400,
+            dvs::send_json(res,
+                      dvs::envelope_fail("INVALID_ARGUMENT", 400,
                                     "need revision[1..64] + optional "
                                     "width/height/url in range"));
             return true;
@@ -346,7 +346,7 @@ bool route_media(PlatformContext& ctx, const HttpRequest& req,
             json_object_object_add(doc, "url",
                                    json_object_new_string(url.c_str()));
         json_object_object_add(doc, "updatedAt",
-                               json_object_new_string(now_iso().c_str()));
+                               json_object_new_string(dvs::iso_now().c_str()));
         json_object_put(b);
         ctx.store->put_doc("base-images", wid, doc);
         json_object_put(doc);
@@ -358,10 +358,10 @@ bool route_media(PlatformContext& ctx, const HttpRequest& req,
             ctx.store->put_doc("walls", wid, cur);
             json_object_put(cur);
         }
-        ctx.store->audit("{\"base-image\":\"" + json_escape(wid) + "\"}");
+        ctx.store->audit("{\"base-image\":\"" + dvs::json_escape(wid) + "\"}");
         json_object* d = ctx.store->get_doc("base-images", wid);
-        send_json(res,
-                  ok_envelope(d ? d : json_object_new_object(), "stored"));
+        dvs::send_json(res,
+                  dvs::envelope_ok(d ? d : json_object_new_object(), "stored"));
         return true;
     }
     if (req.method == "GET" && req.path.rfind("/api/v1/walls/", 0) == 0 &&
@@ -372,22 +372,22 @@ bool route_media(PlatformContext& ctx, const HttpRequest& req,
         json_object* w = ctx.store->get_doc("walls", wid);
         if (!w || wall_is_deleted(w)) {
             if (w) json_object_put(w);
-            send_json(res, fail_envelope("NOT_FOUND", 404,
+            dvs::send_json(res, dvs::envelope_fail("NOT_FOUND", 404,
                                          "wall unknown or deleted"));
             return true;
         }
         json_object_put(w);
         json_object* d = ctx.store->get_doc("base-images", wid);
         if (!d) {
-            send_json(res, fail_envelope("NOT_FOUND", 404, "no base image"));
+            dvs::send_json(res, dvs::envelope_fail("NOT_FOUND", 404, "no base image"));
             return true;
         }
-        std::string rev = body_str(d, "revision");
+        std::string rev = dvs::json_get_str(d, "revision");
         json_object_object_add(d, "wallId",
                                json_object_new_string(wid.c_str()));
         json_object_object_add(d, "cacheKey",
                                json_object_new_string((wid + ":" + rev).c_str()));
-        send_json(res, ok_envelope(d, "base-image-version"));
+        dvs::send_json(res, dvs::envelope_ok(d, "base-image-version"));
         return true;
     }
     return false;

@@ -1,6 +1,6 @@
 #include "node_state.h"
 
-#include "http_json.h"
+#include "dvs_http_json.h"
 #include "layout.h"
 #include "platform_context.h"
 #include "platform_store.h"
@@ -17,7 +17,7 @@ std::set<std::string> derive_wall_members(PlatformContext& ctx,
             continue;
         }
         std::string node = binding_node_of(b);
-        std::string st = body_str(b, "status");
+        std::string st = dvs::json_get_str(b, "status");
         if (node.empty()) {
             json_object_put(b);
             continue;
@@ -79,7 +79,7 @@ void promote_pending_bindings(PlatformContext& ctx,
             json_object_put(b);
             continue;
         }
-        std::string st = body_str(b, "status");
+        std::string st = dvs::json_get_str(b, "status");
         if (st != "pending" && st != "pending_offline") {
             json_object_put(b);
             continue;
@@ -96,7 +96,7 @@ void promote_pending_bindings(PlatformContext& ctx,
             for (auto& wid : ctx.store->list_ids("whitelist")) {
                 json_object* o = ctx.store->get_doc("whitelist", wid);
                 if (!o) continue;
-                bool hit = (body_str(o, "sig") == sig);
+                bool hit = (dvs::json_get_str(o, "sig") == sig);
                 json_object_put(o);
                 if (hit) {
                     found = true;
@@ -110,7 +110,7 @@ void promote_pending_bindings(PlatformContext& ctx,
                 if (obid == bid) continue;
                 json_object* o = ctx.store->get_doc("bindings", obid);
                 if (!o) continue;
-                std::string ost = body_str(o, "status");
+                std::string ost = dvs::json_get_str(o, "status");
                 bool busy = (binding_node_of(o) == node_id &&
                              binding_output_of(o) == outp &&
                              ost != "pending" && ost != "pending_offline");
@@ -127,11 +127,11 @@ void promote_pending_bindings(PlatformContext& ctx,
                                    json_object_new_string("active"));
             ctx.store->put_doc("bindings", bid, b);
             json_object_put(b);
-            ctx.store->audit("{\"binding-promoted\":\"" + json_escape(bid) + "\"}");
+            ctx.store->audit("{\"binding-promoted\":\"" + dvs::json_escape(bid) + "\"}");
         } else {
             json_object_put(b);
-            ctx.store->audit("{\"binding-still-pending\":\"" + json_escape(bid) +
-                             "\",\"reason\":\"" + json_escape(why) + "\"}");
+            ctx.store->audit("{\"binding-still-pending\":\"" + dvs::json_escape(bid) +
+                             "\",\"reason\":\"" + dvs::json_escape(why) + "\"}");
         }
     }
 }
@@ -151,12 +151,12 @@ void store_ptp_playback(json_object* cur, json_object* data) {
 }
 
 void apply_hello_doc(PlatformContext& ctx, json_object* data) {
-    std::string id = body_str(data, "id");
+    std::string id = dvs::json_get_str(data, "id");
     if (id.empty()) return;
     json_object* merged = json_object_get(data);
     json_object_object_add(merged, "online", json_object_new_boolean(1));
     json_object_object_add(merged, "lastHeartbeat",
-                           json_object_new_string(now_iso().c_str()));
+                           json_object_new_string(dvs::iso_now().c_str()));
     json_object_object_add(merged, "transport", json_object_new_string("ws"));
     ctx.store->put_doc("node", id, merged);
     json_object_put(merged);
@@ -170,7 +170,7 @@ void apply_heartbeat_doc(PlatformContext& ctx, const std::string& id,
     if (!cur) return;
     json_object_object_add(cur, "online", json_object_new_boolean(1));
     json_object_object_add(cur, "lastHeartbeat",
-                           json_object_new_string(now_iso().c_str()));
+                           json_object_new_string(dvs::iso_now().c_str()));
     json_object_object_add(cur, "transport", json_object_new_string("ws"));
     json_object* ld = nullptr;
     if (data && json_object_object_get_ex(data, "lanesDigest", &ld) && ld) {

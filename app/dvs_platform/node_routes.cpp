@@ -6,7 +6,7 @@
 #include "channels.h"
 #include "dvs_contract.h"
 #include "http_client.h"
-#include "http_json.h"
+#include "dvs_http_json.h"
 #include "layout.h"
 #include "node_state.h"
 #include "platform_context.h"
@@ -17,70 +17,70 @@ namespace ct = dvs::contract;
 bool route_nodes(PlatformContext& ctx, const HttpRequest& req,
                  HttpResponse& res) {
     if (req.method == "POST" && req.path == "/api/v1/nodes/register") {
-        if (!require_bearer(req, res, ctx.api_token)) return true;
+        if (!dvs::require_bearer(req, res, ctx.api_token)) return true;
         json_object* b = json_tokener_parse(req.body.c_str());
         std::string verr =
             b ? ct::validate_hello(b) : "INVALID_ARGUMENT:empty body";
         if (!verr.empty()) {
             if (b) json_object_put(b);
-            send_json(res, fail_envelope("INVALID_ARGUMENT", 400, verr.c_str()));
+            dvs::send_json(res, dvs::envelope_fail("INVALID_ARGUMENT", 400, verr.c_str()));
             return true;
         }
-        std::string id = body_str(b, "id");
+        std::string id = dvs::json_get_str(b, "id");
         if (id.empty()) {
             if (b) json_object_put(b);
-            send_json(res, fail_envelope("INVALID_ARGUMENT", 400, "missing id"));
+            dvs::send_json(res, dvs::envelope_fail("INVALID_ARGUMENT", 400, "missing id"));
             return true;
         }
-        ctx.store->tombstone_gc(now_sec());
-        if (ctx.store->tombstone_check(id, now_sec())) {
+        ctx.store->tombstone_gc(dvs::wall_sec_now());
+        if (ctx.store->tombstone_check(id, dvs::wall_sec_now())) {
             if (b) json_object_put(b);
-            send_json(res, fail_envelope("RETIRED", 410, "node retired"));
+            dvs::send_json(res, dvs::envelope_fail("RETIRED", 410, "node retired"));
             return true;
         }
         if (!b) b = json_object_new_object();
-        bool has_base = !body_str(b, "agentBase").empty();
+        bool has_base = !dvs::json_get_str(b, "agentBase").empty();
         json_object* geo0 = nullptr;
         bool has_geo =
             b && json_object_object_get_ex(b, "geometry", &geo0) && geo0;
         json_object_object_add(b, "online", json_object_new_boolean(1));
         json_object_object_add(b, "lastHeartbeat",
-                               json_object_new_string(now_iso().c_str()));
+                               json_object_new_string(dvs::iso_now().c_str()));
         json_object_object_add(b, "transport",
                                json_object_new_string("short"));
         ctx.store->put_doc("node", id, b);
         ctx.channels.set_transport(id, "short");
-        ctx.store->audit("{\"register\":\"" + json_escape(id) + "\"}");
+        ctx.store->audit("{\"register\":\"" + dvs::json_escape(id) + "\"}");
         promote_pending_bindings(ctx, id);
         if (!has_base || !has_geo)
-            ctx.store->audit("{\"incomplete-register\":\"" + json_escape(id) +
+            ctx.store->audit("{\"incomplete-register\":\"" + dvs::json_escape(id) +
                              "\"}");
         json_object* d = ctx.store->get_doc("node", id);
         json_object_put(b);
-        send_json(res, ok_envelope(d ? d : json_object_new_object(), ""));
+        dvs::send_json(res, dvs::envelope_ok(d ? d : json_object_new_object(), ""));
         return true;
     }
     if (req.method == "POST" && req.path == "/api/v1/nodes/heartbeat") {
-        if (!require_bearer(req, res, ctx.api_token)) return true;
+        if (!dvs::require_bearer(req, res, ctx.api_token)) return true;
         json_object* b = json_tokener_parse(req.body.c_str());
         std::string verr =
             b ? ct::validate_heartbeat(b) : "INVALID_ARGUMENT:empty body";
         if (!verr.empty()) {
             if (b) json_object_put(b);
-            send_json(res, fail_envelope("INVALID_ARGUMENT", 400, verr.c_str()));
+            dvs::send_json(res, dvs::envelope_fail("INVALID_ARGUMENT", 400, verr.c_str()));
             return true;
         }
-        std::string id = body_str(b, "id");
+        std::string id = dvs::json_get_str(b, "id");
         json_object* cur =
             id.empty() ? nullptr : ctx.store->get_doc("node", id);
         if (!cur) {
             if (b) json_object_put(b);
-            send_json(res, fail_envelope("NOT_FOUND", 404, "node unknown"));
+            dvs::send_json(res, dvs::envelope_fail("NOT_FOUND", 404, "node unknown"));
             return true;
         }
         json_object_object_add(cur, "online", json_object_new_boolean(1));
         json_object_object_add(cur, "lastHeartbeat",
-                               json_object_new_string(now_iso().c_str()));
+                               json_object_new_string(dvs::iso_now().c_str()));
         json_object* m = nullptr;
         if (b && json_object_object_get_ex(b, "metrics", &m) && m)
             json_object_object_add(cur, "metrics", json_object_get(m));
@@ -119,7 +119,7 @@ bool route_nodes(PlatformContext& ctx, const HttpRequest& req,
         promote_pending_bindings(ctx, id);
         json_object* d = json_object_new_object();
         json_object_object_add(d, "revision", json_object_new_int(1));
-        send_json(res, ok_envelope(d, ""));
+        dvs::send_json(res, dvs::envelope_ok(d, ""));
         json_object_put(cur);
         return true;
     }
@@ -140,23 +140,23 @@ bool route_nodes(PlatformContext& ctx, const HttpRequest& req,
         if (req.method == "GET" && act.empty()) {
             json_object* d = ctx.store->get_doc("node", id);
             if (!d) {
-                send_json(res, fail_envelope("NOT_FOUND", 404, "not found"));
+                dvs::send_json(res, dvs::envelope_fail("NOT_FOUND", 404, "not found"));
                 return true;
             }
-            send_json(res, ok_envelope(d, ""));
+            dvs::send_json(res, dvs::envelope_ok(d, ""));
             return true;
         }
         if (req.method == "PUT" && act.empty()) {
             json_object* cur = ctx.store->get_doc("node", id);
             if (!cur) {
-                send_json(res, fail_envelope("NOT_FOUND", 404, "not found"));
+                dvs::send_json(res, dvs::envelope_fail("NOT_FOUND", 404, "not found"));
                 return true;
             }
             json_object* b = json_tokener_parse(req.body.c_str());
-            std::string nm = body_str(b, "name");
+            std::string nm = dvs::json_get_str(b, "name");
             if (b) json_object_put(b);
             if (nm.empty()) {
-                send_json(res, fail_envelope("INVALID_ARGUMENT", 400,
+                dvs::send_json(res, dvs::envelope_fail("INVALID_ARGUMENT", 400,
                                              "missing name"));
                 json_object_put(cur);
                 return true;
@@ -166,16 +166,16 @@ bool route_nodes(PlatformContext& ctx, const HttpRequest& req,
                                    json_object_new_string(nm.c_str()));
             ctx.store->put_doc("node", id, cur);
             json_object_put(cur);
-            ctx.store->audit("{\"rename\":\"" + json_escape(id) + "\"}");
+            ctx.store->audit("{\"rename\":\"" + dvs::json_escape(id) + "\"}");
             json_object* d = ctx.store->get_doc("node", id);
-            send_json(res, ok_envelope(d ? d : json_object_new_object(), ""));
+            dvs::send_json(res, dvs::envelope_ok(d ? d : json_object_new_object(), ""));
             return true;
         }
         if (req.method == "POST" && act == "heartbeat") {
             json_object* cur = ctx.store->get_doc("node", id);
             if (!cur) {
-                send_json(res,
-                          fail_envelope("NOT_FOUND", 404, "node unknown"));
+                dvs::send_json(res,
+                          dvs::envelope_fail("NOT_FOUND", 404, "node unknown"));
                 return true;
             }
             json_object* body2 = json_tokener_parse(req.body.c_str());
@@ -183,7 +183,7 @@ bool route_nodes(PlatformContext& ctx, const HttpRequest& req,
             json_object_object_add(cur, "online", json_object_new_boolean(1));
             json_object_object_del(cur, "lastHeartbeat");
             json_object_object_add(cur, "lastHeartbeat",
-                                   json_object_new_string(now_iso().c_str()));
+                                   json_object_new_string(dvs::iso_now().c_str()));
             json_object* m = nullptr;
             if (body2 && json_object_object_get_ex(body2, "metrics", &m) && m)
                 json_object_object_add(cur, "metrics", json_object_get(m));
@@ -224,7 +224,7 @@ bool route_nodes(PlatformContext& ctx, const HttpRequest& req,
             json_object_put(cur);
             promote_pending_bindings(ctx, id);
             json_object* d = ctx.store->get_doc("node", id);
-            send_json(res, ok_envelope(d ? d : json_object_new_object(),
+            dvs::send_json(res, dvs::envelope_ok(d ? d : json_object_new_object(),
                                        "heartbeat received"));
             return true;
         }
@@ -233,7 +233,7 @@ bool route_nodes(PlatformContext& ctx, const HttpRequest& req,
             for (auto& tid : ctx.store->list_ids("playback-tasks")) {
                 json_object* t = ctx.store->get_doc("playback-tasks", tid);
                 if (!t) continue;
-                std::string tn = body_str(t, "targetNodeId");
+                std::string tn = dvs::json_get_str(t, "targetNodeId");
                 bool active = (tn == id &&
                                playback_active_status(playback_status_of(t)));
                 if (active) {
@@ -254,7 +254,7 @@ bool route_nodes(PlatformContext& ctx, const HttpRequest& req,
                                           : json_object_new_null());
                 if (nd) json_object_put(nd);
             }
-            send_json(res, ok_envelope(d, ""));
+            dvs::send_json(res, dvs::envelope_ok(d, ""));
             return true;
         }
         if (req.method == "POST" && act == "retire") {
@@ -269,7 +269,7 @@ bool route_nodes(PlatformContext& ctx, const HttpRequest& req,
             for (auto& wid : ctx.store->list_ids("whitelist")) {
                 json_object* w = ctx.store->get_doc("whitelist", wid);
                 if (!w) continue;
-                bool hit = (body_str(w, "nodeId") == id);
+                bool hit = (dvs::json_get_str(w, "nodeId") == id);
                 json_object_put(w);
                 if (hit) refs.push_back("whitelist:" + wid);
             }
@@ -280,17 +280,17 @@ bool route_nodes(PlatformContext& ctx, const HttpRequest& req,
                     json_object_array_add(ra,
                                           json_object_new_string(r.c_str()));
                 json_object_object_add(d, "refs", ra);
-                ctx.store->audit("{\"retire-rejected\":\"" + json_escape(id) +
+                ctx.store->audit("{\"retire-rejected\":\"" + dvs::json_escape(id) +
                                  "\"}");
-                send_json(res,
-                          fail_envelope("RESOURCE_IN_USE", 409,
+                dvs::send_json(res,
+                          dvs::envelope_fail("RESOURCE_IN_USE", 409,
                                         "node still referenced; "
                                         "unbind/unlist first"));
                 return true;
             }
             json_object* nd = ctx.store->get_doc("node", id);
             if (!nd) {
-                send_json(res, fail_envelope("NOT_FOUND", 404, "node unknown"));
+                dvs::send_json(res, dvs::envelope_fail("NOT_FOUND", 404, "node unknown"));
                 return true;
             }
             bool online = false;
@@ -310,28 +310,28 @@ bool route_nodes(PlatformContext& ctx, const HttpRequest& req,
                                        json_object_new_string("retire_pending"));
                 ctx.store->put_doc("retire-queue", id, q);
                 json_object_put(q);
-                ctx.store->audit("{\"retire-pending\":\"" + json_escape(id) +
+                ctx.store->audit("{\"retire-pending\":\"" + dvs::json_escape(id) +
                                  "\"}");
                 json_object* d = json_object_new_object();
                 json_object_object_add(d, "status",
                                        json_object_new_string("retire_pending"));
-                send_json(res, ok_envelope(d, "retire pending, offline"));
+                dvs::send_json(res, dvs::envelope_ok(d, "retire pending, offline"));
                 return true;
             }
-            ctx.store->tombstone_add(id, now_sec());
+            ctx.store->tombstone_add(id, dvs::wall_sec_now());
             ctx.store->del_doc("node", id);
             ctx.store->del_doc("retire-queue", id);
-            ctx.store->audit("{\"retire\":\"" + json_escape(id) + "\"}");
-            send_json(res, ok_envelope(json_object_new_object(), "retired"));
+            ctx.store->audit("{\"retire\":\"" + dvs::json_escape(id) + "\"}");
+            dvs::send_json(res, dvs::envelope_ok(json_object_new_object(), "retired"));
             return true;
         }
         if (req.method == "POST" && act == "config-push") {
             json_object* cur = ctx.store->get_doc("node", id);
             if (!cur) {
-                send_json(res, fail_envelope("NOT_FOUND", 404, "node unknown"));
+                dvs::send_json(res, dvs::envelope_fail("NOT_FOUND", 404, "node unknown"));
                 return true;
             }
-            std::string base = body_str(cur, "agentBase");
+            std::string base = dvs::json_get_str(cur, "agentBase");
             json_object* body2 = json_tokener_parse(req.body.c_str());
             json_object* cfg = nullptr;
             if (body2) json_object_object_get_ex(body2, "config", &cfg);
@@ -348,7 +348,7 @@ bool route_nodes(PlatformContext& ctx, const HttpRequest& req,
                         json_object_array_add(
                             ignored, json_object_new_string(k.c_str()));
                         ctx.store->audit("{\"config-push-ignored\":\"" +
-                                         json_escape(k) + "\"}");
+                                         dvs::json_escape(k) + "\"}");
                     }
                 }
             }
@@ -393,7 +393,7 @@ bool route_nodes(PlatformContext& ctx, const HttpRequest& req,
             }
             if (body2) json_object_put(body2);
             json_object_put(cur);
-            send_json(res, ok_envelope(d, "config-push"));
+            dvs::send_json(res, dvs::envelope_ok(d, "config-push"));
             return true;
         }
         return false;
@@ -406,7 +406,7 @@ bool route_nodes(PlatformContext& ctx, const HttpRequest& req,
         }
         json_object* d = json_object_new_object();
         json_object_object_add(d, "items", arr);
-        send_json(res, ok_envelope(d, ""));
+        dvs::send_json(res, dvs::envelope_ok(d, ""));
         return true;
     }
     return false;

@@ -16,6 +16,7 @@
 #include <fstream>
 #include <random>
 #include <string>
+#include "dvs_http_json.h"
 
 static std::string str_of(json_object* o, const char* key, const char* def = "") {
     json_object* v = nullptr;

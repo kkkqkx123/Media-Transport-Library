@@ -542,6 +542,9 @@ int main(int argc, char** argv) {
       sleep(1);
       t--;
     }
+    /* Timeout expiry is a stop request: the file feeders loop on g_run and
+     * would otherwise never leave acquire/join on shutdown. */
+    atomic_store(&g_run, false);
     file_stack_free(&fss);
     return 0;
   }

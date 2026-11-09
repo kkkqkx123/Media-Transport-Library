@@ -108,7 +108,9 @@ def run_offline(h264, duration_hint):
     text = r.stdout + r.stderr
     m = re.search(r"decode\s+(\d+)\s+frames.*?fps\s+([\d.]+)", text)
     if not m:
-        return {"error": "mpi_dec_test 输出未解析", "tail": text[-500:]}
+        return {"error": "mpi_dec_test 输出未解析（部分板卡该工具无 stdout，"
+                         "请改用 --dec-binary 指定 mpp_dec_latency 探针）",
+                "tail": text[-500:]}
     return {"frames": int(m.group(1)), "fps": float(m.group(2)), "raw_tail": text[-500:]}
 
 
@@ -157,6 +159,12 @@ def main():
                          else "dec_p99_max_us_60fps")
             th["dec_p99_max_us"] = th.get(p99_key, th.get("dec_p99_max_us", 66666))
             result["resolution"] = "4k"
+        if not args.dec_binary:
+            # 常见板端持久路径自动探测；mpi_dec_test 兜底在部分板卡无 stdout
+            default_probe = os.path.expanduser("~/code/mtl/bin/mpp_dec_latency")
+            if os.path.exists(default_probe):
+                args.dec_binary = default_probe
+                print("auto probe: " + default_probe)
         if args.dec_binary and os.path.exists(args.dec_binary):
             result.update(run_offline_mpp(args.dec_binary, args.input,
                                           args.max_au, args.duration))

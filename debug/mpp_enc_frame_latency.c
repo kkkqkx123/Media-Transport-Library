@@ -154,7 +154,6 @@ int main(int argc, char** argv) {
 
   int done = 0;
   uint64_t total_out = 0;
-  /* prime the pipe with one frame so steady-state cost excludes startup */
   for (int i = 0; i < frames; i++) {
     if (fread(yuv, 1, fbytes, f) != fbytes) {
       fseek(f, 0, SEEK_SET);
@@ -191,7 +190,11 @@ int main(int argc, char** argv) {
       break;
     }
     uint64_t t1 = now_ns();
-    cost[done++] = (uint32_t)((t1 - t0) / 1000ULL);
+    /* frame 0 primes the pipe (SPS/PPS path, HW wakeup) — encode it but
+     * exclude it from the steady-state sample set */
+    if (i > 0) {
+      cost[done++] = (uint32_t)((t1 - t0) / 1000ULL);
+    }
     total_out += mpp_packet_get_length(pkt);
     if (outf) {
       void* p = mpp_packet_get_pos(pkt);

@@ -159,10 +159,12 @@ frames=120 3840x2160@30fps level=51 mean_us=14829 p99=15389（带编排层负载
 
 ## 四、建议修正清单（按影响排序）
 
-| # | 问题 | 位置 | 修法 |
-|---|---|---|---|
-| 1 | 解码探针 25ms 轮询上限会把慢帧误分类为 no_output | `debug/mpp_dec_frame_latency.c` | 轮询上限按 fps/分辨率参数化（≥2 帧周期），或阻塞 get_frame |
-| 2 | enc 探针未丢弃首样本，与注释不符 | `debug/mpp_enc_frame_latency.c` | 循环首帧不计入 cost（或单独打 startup 行） |
-| 3 | 生产 enc_cost 丢帧路径 submit 时间戳错位 | `codec/mpp_encoder.c` 收集线程 | total==0 / ring_push 失败分支补 `submit_pop` 丢弃一个时间戳 |
-| 4 | RX 生产路径无逐帧解码延时 | `rx/rx_pipeline.c` | `rx_drain_decoder` 处加 feed→pull 时长窗口（复用 mpp_encoder 的滑动窗口结构） |
-| 5 | mpi_dec_test 兜底在本板零输出 | `tests/perf/rx_decode_perf.py` + README | 标注该板不可用；或改用 enc 探针产 H264 后仅支持探针路径 |
+> 全部已修复（2026-11-09），实测验证记录见各条括注。
+
+| # | 问题 | 位置 | 修法 | 状态 |
+|---|---|---|---|---|
+| 1 | 解码探针 25ms 轮询上限会把慢帧误分类为 no_output | `debug/mpp_dec_frame_latency.c` | 轮询改为 `--wait-ms` 截止期（默认 50ms，覆盖 4K30 预算），采样粒度 500us→100us | ✅ 已修；板端复测 1080p p50 4952/p99 7034us，与修复前口径一致 |
+| 2 | enc 探针未丢弃首样本，与注释不符 | `debug/mpp_enc_frame_latency.c` | 首帧仍编码但计入 priming，不进样本集 | ✅ 已修；板端复测 1080p mean 4503us（n=119） |
+| 3 | 生产 enc_cost 丢帧路径 submit 时间戳错位 | `codec/mpp_encoder.c` 收集线程 | `total==0` 与 `ring_push` 失败两条丢帧路径均补 `submit_pop` 消费（并修复 ring 满时 slab 块泄漏） | ✅ 已修，三 app 交叉编译通过 |
+| 4 | RX 生产路径无逐帧解码延时 | `rx/rx_pipeline.c` | feed→首帧输出滑动 300 帧窗口，周期统计行新增 `dec_p50=xxus dec_p99=xxus` | ✅ 已修，playout_rx 编译通过 |
+| 5 | mpi_dec_test 兜底在本板零输出 | `tests/perf/rx_decode_perf.py` + README | 自动探测 `~/code/mtl/bin/mpp_dec_latency` 默认路径；mpi_dec_test 解析失败时报错给出改用探针的指引 | ✅ 已修 |

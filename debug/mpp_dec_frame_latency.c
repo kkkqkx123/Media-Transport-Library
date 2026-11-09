@@ -55,21 +55,26 @@ int main(int argc, char** argv) {
   const char* input = NULL;
   int max_au = 600;
   const char* csv = NULL;
+  /* per-AU pull deadline. Must exceed the slowest real frame or the probe
+   * misclassifies slow frames as no_output (was a hard ~25ms cap before). */
+  int wait_ms = 50;
 
   static struct option opts[] = {
     {"input", required_argument, 0, 'i'},
     {"max-au", required_argument, 0, 'n'},
     {"csv", required_argument, 0, 'c'},
+    {"wait-ms", required_argument, 0, 'm'},
     {0, 0, 0, 0},
   };
   int o;
-  while ((o = getopt_long(argc, argv, "i:n:c:", opts, NULL)) != -1) {
+  while ((o = getopt_long(argc, argv, "i:n:c:m:", opts, NULL)) != -1) {
     switch (o) {
       case 'i': input = optarg; break;
       case 'n': max_au = atoi(optarg); break;
       case 'c': csv = optarg; break;
+      case 'm': wait_ms = atoi(optarg); break;
       default:
-        fprintf(stderr, "usage: %s --input H264 [--max-au N] [--csv FILE]\n", argv[0]);
+        fprintf(stderr, "usage: %s --input H264 [--max-au N] [--csv FILE] [--wait-ms MS]\n", argv[0]);
         return 1;
     }
   }
@@ -134,12 +139,14 @@ int main(int argc, char** argv) {
     }
     fed++;
 
-    /* pull until one displayable frame appears for this AU */
-    int rounds = 0, ok = 0;
-    while (rounds++ < 50) {
+    /* pull until one displayable frame appears for this AU (deadline-bounded;
+     * 100us poll keeps quantization well below the measured p50) */
+    uint64_t deadline = t0 + (uint64_t)wait_ms * 1000000ULL;
+    int ok = 0;
+    while (now_ns() < deadline) {
       MppFrame frame = NULL;
       if (api->decode_get_frame(ctx, &frame) != MPP_OK || !frame) {
-        struct timespec rq = {.tv_sec = 0, .tv_nsec = 500000};
+        struct timespec rq = {.tv_sec = 0, .tv_nsec = 100000};
         nanosleep(&rq, NULL);
         continue;
       }

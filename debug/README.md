@@ -43,12 +43,12 @@ bash tests/perf/gen_test_stream.sh --4k --out ~/code/mtl/streams
   --w 3840 --h 2160 --frames 60 --fps 30 --bps 40000000 \
   --out ~/code/mtl/streams/clock_3840x2160.h264 --csv ~/code/mtl/enc_4k_cost.csv
 
-# 解码：需要 H264 Annex B 文件
+# 解码：需要 H264 Annex B 文件；--wait-ms 为单 AU 拉取截止期（默认 50ms，
+# 必须大于最慢真实帧，否则慢帧会被误分类为 no_output）
 ~/code/mtl/bin/mpp_dec_latency --input ~/code/mtl/streams/clock_1920x1080.h264 \
   --csv ~/code/mtl/dec_cost.csv
-# 解码 4K（推荐经 rx_decode_perf.py 走阈值判定）
 ~/code/mtl/bin/mpp_dec_latency --input ~/code/mtl/streams/clock_3840x2160.h264 \
-  --csv ~/code/mtl/dec_4k_cost.csv
+  --max-au 120 --wait-ms 100 --csv ~/code/mtl/dec_4k_cost.csv
 
 # RGA：1920x1080 NV12 自缩放
 ~/code/mtl/bin/rga_blit_latency --w 1920 --h 1080 --loop 200 --csv ~/code/mtl/rga_cost.csv

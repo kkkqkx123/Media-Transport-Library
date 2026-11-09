@@ -351,6 +351,10 @@ static void* collector_thread(void* arg) {
 
     if (total == 0) {
       slab_free(e->pool, out);
+      /* drop consumes one submit stamp — keeps submit/output pairing aligned
+       * (a stale stamp here would inflate every later frame's cost) */
+      int64_t dropped;
+      submit_pop(e, &dropped);
       continue;
     }
 
@@ -391,6 +395,12 @@ static void* collector_thread(void* arg) {
       }
       probe_mpp_buffers(e);
       atomic_store(&e->last_output_ns, now_ns());
+    } else {
+      /* dropped frame consumes one submit stamp — keeps submit/output
+       * pairing aligned (a stale stamp would inflate later costs) */
+      int64_t dropped;
+      submit_pop(e, &dropped);
+      slab_free(e->pool, f.data);
     }
   }
   return NULL;

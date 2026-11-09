@@ -43,7 +43,9 @@ python3 tests/perf/tx_capture_encode_perf.py --duration 30 --out ~/code/mtl/perf
 python3 tests/perf/rx_decode_perf.py --mode offline \
   --input ~/code/mtl/streams/clock_1920x1080.h264 --out ~/code/mtl/perf/rx
 
-# 接收侧 4K 画像（优先走 mpp_dec_latency 探针，含分位与阈值判定）
+# 接收侧 4K 画像（优先走 mpp_dec_latency 探针，含分位与阈值判定；
+# --dec-binary 省略时自动探测 ~/code/mtl/bin/mpp_dec_latency，
+# mpi_dec_test 兜底在部分板卡无 stdout，不可用时会给出改用探针的提示）
 python3 tests/perf/rx_decode_perf.py --mode offline \
   --input ~/code/mtl/streams/clock_3840x2160.h264 \
   --dec-binary ~/code/mtl/bin/mpp_dec_latency \

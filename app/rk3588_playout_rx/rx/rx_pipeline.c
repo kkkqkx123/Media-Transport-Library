@@ -27,6 +27,14 @@
 
 /* Legacy path chunks at 8KB inside mpp_dec_put (see FEED_CHUNK_SIZE). */
 
+#define RX_DEC_LAT_WIN 300
+
+static uint64_t rx_now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
 struct rx_pipeline {
     rx_pipeline_params  cfg;
 
@@ -51,12 +59,19 @@ struct rx_pipeline {
     uint64_t             stat_put_fail;
     uint64_t             stat_prep_invalid;
     int                  dec_err_streak;
-    uint64_t             stat_pb_repeated;
-    uint64_t             stat_pb_underrun;
-    uint64_t             stat_pb_skip;
-    uint64_t             frame_period_ns;
+    uint64_t stat_pb_repeated;
+    uint64_t stat_pb_underrun;
+    uint64_t stat_pb_skip;
+    uint64_t frame_period_ns;
     rx_e2e_stats         e2e;
-    uint64_t             last_rx_pts;
+    uint64_t last_rx_pts;
+    /* per-frame decode latency: feed -> first displayable frame of that AU.
+     * Single-writer (decode thread), windowed like mpp_encoder's lat_win. */
+    pthread_mutex_t      dec_lat_lock;
+    uint32_t             dec_lat_win[RX_DEC_LAT_WIN];
+    int                  dec_lat_count;
+    uint64_t             dec_feed_start_ns;
+    bool                 dec_first_pending;
     char                 stats_label[24];
     /* snapshots for periodic delta reporting */
     uint64_t             snap_received;
@@ -72,6 +87,24 @@ static int rx_dispatch_frame(rx_pipeline* rp, int out_fd, uint32_t out_h_stride,
                              uint32_t out_v_stride, uint64_t rx_timestamp,
                              uint64_t capture_tai_ns) {
     rp->stat_decoded++;
+
+    /* first displayable frame after a feed: record feed->pull latency */
+    if (rp->dec_first_pending && rp->dec_feed_start_ns) {
+        uint64_t now = rx_now_ns();
+        if (now > rp->dec_feed_start_ns) {
+            uint32_t us = (uint32_t)((now - rp->dec_feed_start_ns) / 1000ULL);
+            pthread_mutex_lock(&rp->dec_lat_lock);
+            if (rp->dec_lat_count < RX_DEC_LAT_WIN) {
+                rp->dec_lat_win[rp->dec_lat_count++] = us;
+            } else {
+                memmove(&rp->dec_lat_win[0], &rp->dec_lat_win[1],
+                        (size_t)(RX_DEC_LAT_WIN - 1) * sizeof(uint32_t));
+                rp->dec_lat_win[RX_DEC_LAT_WIN - 1] = us;
+            }
+            pthread_mutex_unlock(&rp->dec_lat_lock);
+        }
+        rp->dec_first_pending = false;
+    }
 
     if (!rx_timestamp)
         rx_timestamp = av_sync_playout_target_ns(&rp->sync);
@@ -137,6 +170,9 @@ static int rx_feed_packet(rx_pipeline* rp, uint8_t* data, size_t size,
     size_t feed_size = size;
     int feed_owned = 0;
     void* dec = rp->decoder->priv;
+
+    rp->dec_feed_start_ns  = rx_now_ns();
+    rp->dec_first_pending  = true;
 
     if (rp->h264) {
         if (h264_prep_for_mpp(rp->h264, data, size, &feed_data, &feed_size,
@@ -302,6 +338,7 @@ rx_pipeline* rx_pipeline_create(const rx_pipeline_params* params) {
     if (!rp) return NULL;
     rp->cfg = *params;
     rx_e2e_stats_init(&rp->e2e);
+    pthread_mutex_init(&rp->dec_lat_lock, NULL);
     if (params->udp_port)
         snprintf(rp->stats_label, sizeof(rp->stats_label), "%u", params->udp_port);
     else
@@ -513,15 +550,38 @@ void rx_pipeline_report_stats(rx_pipeline* rp, const mtl_rx_mp4* mrx,
     uint32_t d_mtl_drop = mtl_drops - rp->snap_mtl_drops;
     uint32_t d_br_drop  = br_drops - rp->snap_br_drops;
 
+    /* decode latency percentiles over the sliding window (us; 0 = no sample) */
+    uint32_t dec_lat[RX_DEC_LAT_WIN];
+    int dec_lat_n;
+    pthread_mutex_lock(&rp->dec_lat_lock);
+    dec_lat_n = rp->dec_lat_count;
+    if (dec_lat_n > 0)
+        memcpy(dec_lat, rp->dec_lat_win, (size_t)dec_lat_n * sizeof(uint32_t));
+    pthread_mutex_unlock(&rp->dec_lat_lock);
+    uint32_t dec_p50 = 0, dec_p99 = 0;
+    if (dec_lat_n > 0) {
+        for (int i = 1; i < dec_lat_n; i++) {
+            uint32_t v = dec_lat[i];
+            int j = i;
+            while (j > 0 && dec_lat[j - 1] > v) { dec_lat[j] = dec_lat[j - 1]; j--; }
+            dec_lat[j] = v;
+        }
+        dec_p50 = dec_lat[(dec_lat_n * 50) / 100 >= dec_lat_n
+                              ? dec_lat_n - 1 : (dec_lat_n * 50) / 100];
+        dec_p99 = dec_lat[(dec_lat_n * 99) / 100 >= dec_lat_n
+                              ? dec_lat_n - 1 : (dec_lat_n * 99) / 100];
+    }
+
     printf("=== RX stats (+%ds) ===\n", period_s > 0 ? period_s : 0);
     rx_e2e_stats_print(&rp->e2e, rp->stats_label, true, d_stamp,
                        rp->cfg.time_now != NULL);
     printf("  RX[%s]: mtl_rx=+%llu bridge=+%llu dec=+%llu render=+%llu "
-           "mtl_drop=+%u br_drop=+%u corrupt=%u incomplete=%u\n",
+           "mtl_drop=+%u br_drop=+%u corrupt=%u incomplete=%u "
+           "dec_p50=%uus dec_p99=%uus\n",
            rp->stats_label,
            (unsigned long long)d_mtl, (unsigned long long)d_br,
            (unsigned long long)d_dec, (unsigned long long)d_ren,
-           d_mtl_drop, d_br_drop, corrupt, incomplete);
+           d_mtl_drop, d_br_drop, corrupt, incomplete, dec_p50, dec_p99);
     printf("  RX[%s] total: pkt=%llu dec=%llu render=%llu pb_skip=%llu "
            "pb_underrun=%llu\n",
            rp->stats_label,

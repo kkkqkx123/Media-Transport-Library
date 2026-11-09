@@ -38,6 +38,24 @@ struct tx_pipeline* tx_pipeline_create(struct tx_pipeline_params* p) {
     tp->ring_enc2dec = ring_create(p->ring_size);
     if (!tp->ring_cap2enc || !tp->ring_enc2dec) goto fail;
 
+    /* Capture must be created before the encoder: the negotiated V4L2
+     * format decides whether the encoder takes BGR888 directly (no RGA).
+     * Streaming only starts later in tx_pipeline_start(). */
+    tp->capture = v4l2_capturer_create(p->v4l2_device, p->width, p->height,
+                                       p->fps, p->v4l2_buf_count,
+                                       tx_encode_on_frame, tp);
+    if (!tp->capture) {
+        int saved = errno;
+        fprintf(stderr, "tx_pipe: capture create failed (%s)\n",
+                saved == ENODATA ? "no signal" : strerror(saved));
+        errno = saved;
+        goto fail_errno;
+    }
+    v4l2_capturer_set_error_cb(tp->capture, tx_supervise_error_cb, tp);
+    v4l2_capturer_set_signal_change_cb(tp->capture, tx_supervise_signal_cb,
+                                       tp);
+    tp->input_fourcc = v4l2_capturer_fourcc(tp->capture);
+
     tp->rga = rga_converter_create(p->width, p->height, p->rga_pool_size);
     if (!tp->rga) {
         fprintf(stderr, "tx_pipe: RGA create failed\n");
@@ -62,6 +80,7 @@ struct tx_pipeline* tx_pipeline_create(struct tx_pipeline_params* p) {
         .num_slices = p->num_slices,
         .intra_refresh_mode = p->intra_refresh_mode,
         .intra_refresh_arg = p->intra_refresh_arg,
+        .input_fourcc = tp->input_fourcc,
     };
     tp->encoder = mpp_encoder_create(&codec_cfg, tp->slab);
     if (!tp->encoder) {
@@ -69,19 +88,6 @@ struct tx_pipeline* tx_pipeline_create(struct tx_pipeline_params* p) {
         goto fail;
     }
 
-    tp->capture = v4l2_capturer_create(p->v4l2_device, p->width, p->height,
-                                       p->fps, p->v4l2_buf_count,
-                                       tx_encode_on_frame, tp);
-    if (!tp->capture) {
-        int saved = errno;
-        fprintf(stderr, "tx_pipe: capture create failed (%s)\n",
-                saved == ENODATA ? "no signal" : strerror(saved));
-        errno = saved;
-        goto fail_errno;
-    }
-    v4l2_capturer_set_error_cb(tp->capture, tx_supervise_error_cb, tp);
-    v4l2_capturer_set_signal_change_cb(tp->capture, tx_supervise_signal_cb,
-                                       tp);
     atomic_init(&tp->flag_capture_error, false);
     atomic_init(&tp->flag_signal_change, false);
     atomic_init(&tp->last_captured_seen, 0);

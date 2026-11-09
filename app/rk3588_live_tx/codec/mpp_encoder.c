@@ -9,6 +9,7 @@
 #include <rockchip/rk_mpi.h>
 #include <rockchip/rk_venc_cfg.h>
 #include <stdatomic.h>
+#include <linux/videodev2.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,6 +52,7 @@ struct mpp_enc {
   struct slab_pool* pool;
   int w, h, gop, bitrate, qp_init;
   int intra_refresh_mode, intra_refresh_arg;
+  bool input_bgr; /* V4L2 BGR3 input: encode BGR888 directly, no RGA */
   int frames_out;  /* completed frames emitted to the ring */
 
   struct enc_ring ring;
@@ -405,6 +407,7 @@ static int enc_init(void** out, struct codec_config* c) {
   e->qp_init = 26;
   e->intra_refresh_mode = c->intra_refresh_mode;
   e->intra_refresh_arg  = c->intra_refresh_arg;
+  e->input_bgr = (c->input_fourcc == V4L2_PIX_FMT_BGR24);
 
   MPP_RET r = mpp_create(&e->ctx, &e->api);
   if (r) { free(e); return -EIO; }
@@ -419,7 +422,10 @@ static int enc_init(void** out, struct codec_config* c) {
   mpp_enc_cfg_set_s32(cfg, "prep:height", e->h);
   mpp_enc_cfg_set_s32(cfg, "prep:hor_stride", e->w);
   mpp_enc_cfg_set_s32(cfg, "prep:ver_stride", e->h);
-  mpp_enc_cfg_set_s32(cfg, "prep:format", MPP_FMT_YUV420SP);
+  /* BGR3 input encodes BGR888 natively (validated by debug/mpp_enc_frame_latency
+   * --infmt bgr3); NV12 stays the default pipeline format. */
+  mpp_enc_cfg_set_s32(cfg, "prep:format",
+                      e->input_bgr ? MPP_FMT_BGR888 : MPP_FMT_YUV420SP);
   /* framerate (required) */
   int fps_num = (int)(c->fps + 0.5f);
   mpp_enc_cfg_set_s32(cfg, "rc:fps_in_num", fps_num);
@@ -523,33 +529,43 @@ static void enc_free(void* ctx) {
 static int enc_send(void* ctx, int dma_fd, uint32_t stride) {
   struct mpp_enc* e = (struct mpp_enc*)ctx;
 
-  size_t nv12_size = stride * e->h * 3 / 2;
+  /* NV12: stride is pixels/line, buffer is stride*h*3/2.
+   * BGR888: V4L2 stride is bytes/line, MPP hor_stride is pixels. */
+  uint32_t hor_stride = stride;
+  size_t frame_size = (size_t)stride * e->h * 3 / 2;
+  MppFrameFormat fmt = MPP_FMT_YUV420SP;
+  if (e->input_bgr) {
+    if (stride < (uint32_t)e->w * 3 || stride % 3 != 0) return -EINVAL;
+    hor_stride = stride / 3;
+    frame_size = (size_t)stride * e->h;
+    fmt = MPP_FMT_BGR888;
+  }
 
   /* Import external dma-buf fd as MPP buffer (zero-copy).
    * MPP 1.5.0 + RK3588 supports MPP_BUFFER_TYPE_EXT_DMA for fd import. */
   MppBufferInfo info = {
     .type = MPP_BUFFER_TYPE_EXT_DMA,
-    .size = nv12_size,
+    .size = frame_size,
     .fd   = dma_fd,
   };
   MppBuffer buf = NULL;
   MPP_RET r = mpp_buffer_import(&buf, &info);
   if (r || !buf) {
     /* fallback to mmap+copy if import fails (e.g. unsupported format) */
-    void* src = mmap(NULL, nv12_size, PROT_READ, MAP_SHARED, dma_fd, 0);
+    void* src = mmap(NULL, frame_size, PROT_READ, MAP_SHARED, dma_fd, 0);
     if (src == MAP_FAILED) return -EIO;
-    r = mpp_buffer_get(NULL, &buf, nv12_size);
-    if (r) { munmap(src, nv12_size); return -EIO; }
+    r = mpp_buffer_get(NULL, &buf, frame_size);
+    if (r) { munmap(src, frame_size); return -EIO; }
     void* dst = mpp_buffer_get_ptr(buf);
-    if (dst) memcpy(dst, src, nv12_size);
-    munmap(src, nv12_size);
+    if (dst) memcpy(dst, src, frame_size);
+    munmap(src, frame_size);
   }
 
   MppFrame f = NULL;
   mpp_frame_init(&f);
   mpp_frame_set_width(f, e->w);   mpp_frame_set_height(f, e->h);
-  mpp_frame_set_hor_stride(f, stride); mpp_frame_set_ver_stride(f, e->h);
-  mpp_frame_set_fmt(f, MPP_FMT_YUV420SP);
+  mpp_frame_set_hor_stride(f, hor_stride); mpp_frame_set_ver_stride(f, e->h);
+  mpp_frame_set_fmt(f, fmt);
   mpp_frame_set_buffer(f, buf);
   mpp_buffer_put(buf);
   submit_push(e, now_us());

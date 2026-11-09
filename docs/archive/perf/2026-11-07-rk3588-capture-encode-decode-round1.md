@@ -43,6 +43,46 @@
 仍落在预算表编码 10~30ms / 解码 10~30ms 行内偏上，余量收窄但未超。
 4K→1080p 下缩放 7.1ms 计入合成链时需单独留预算。
 
+## 2.2 BGR3 格式补充（2026-11-09，补齐生产采集格式链路）
+
+背景：生产 V4L2 采集实际协商格式为 BGR3（问题 2），生产链路走
+BGR3 → RGA 转 NV12 → MPP 编码支路。round1 只有 4K RGA BGR3→NV12 单点，
+本次补齐 RGA bgr 1080p 与**直通 BGR888 编码**（`mpp_enc_latency --infmt bgr3`，
+MPP `MPP_FMT_BGR888` 直接吃 BGR dma-buf，跳过 RGA）两个口径，量化
+"RGA 转换支路 vs 直通编码"的取舍。4K bgr3 输入由板上 ffmpeg 从既有
+`clock_3840x2160.nv12` 转出（`-pix_fmt bgr24`，60 帧，1.5GB）。
+
+| 环节 | 输入 | 均值 | p50/p90/p99 | 状态 |
+|---|---|---|---|---|
+| RGA 转换 BGR3→NV12 1080p | 200 次 | 2.37ms | 2373/2419/2529us | 通过；4K 同口径 4.68ms（round1 已测） |
+| MPP 直通编码 1080p CBR8M BGR888 | clock_1920x1080.bgr3，120 帧 | 4.69ms | 4683/4837/4985us | 通过，低于预算行；比 NV12 编码（3.97ms）贵 ~0.7ms |
+| MPP 直通编码 4K30 CBR40M BGR888 | clock_3840x2160.bgr3，60 帧，level 51 | 15.69ms | 15618/15924/16087us | 通过，低于两帧间隔 66666us；比 NV12 编码（14.15ms）贵 ~1.5ms |
+
+链路对比（均值拼表）：
+
+| 分辨率 | 生产支路 BGR→RGA→NV12→enc | 直通 BGR888→enc | 直通收益 |
+|---|---|---|---|
+| 1080p | 2.37 + 3.97 ≈ **6.3ms** | **4.69ms** | 省 ~1.6ms（-26%） |
+| 4K30 | 4.68 + 14.15 ≈ **18.8ms** | **15.69ms** | 省 ~3.1ms（-17%） |
+
+结论与口径说明：
+
+1. BGR 输入帧是 NV12 的 1.5 倍大小（1080p 6.2MB vs 4.1MB），DMA 导入带宽
+   更高，因此直通编码本身比 NV12 编码贵 0.7~1.5ms；但跳掉 RGA 转换步后
+   **总链路仍净赚 1.6~3.1ms**，两档分辨率方向一致。
+2. 生产改造点若要兑现直通收益：`tx_encode.c` 当前 `use_rga = !(NV12 && 单平面)`
+   会把 BGR3 强制送 RGA；需让 `mpp_encoder` 支持 `prep:format BGR888` 直采
+   dmabuf（探针已验证本版 MPP 支持 BGR888 编码出流，`bgr_direct.h264` 为其产物），
+   并同步 VUI/色彩描述（full range BGR→YUV 由 MPP 内部完成）。
+   **已落地（11-09）**：`codec_config.input_fourcc` + `mpp_encoder` BGR888 直采 +
+   `tx_encode.c` BGR3 跳过 RGA，live_tx / dvs_media / playout_rx 交叉编译全部通过；
+   板端实测（live_ingest 接 BGR3 采集源）待板卡可用后复测管线画像。
+3. 4K 直通 15.7ms 与 NV12 口径一致地高于 <10ms 理论值（见
+   `docs/tests/codec-latency-semantics.md` §五），格式选择不改变该结论；
+   仍低于 4K30 两帧间隔，不构成吞吐瓶颈。
+4. 判定阈值沿用：1080p 用 `enc_p99_max_us=33333`、`rga_bgr_convert_p99`
+   (rga_4k 段 15000us 仅 4K) ；本轮 p99 全部通过，无新增阈值需求。
+
 ## 3 未完成项与问题清单
 
 1. V4L2 采集间隔暂缺（已定位到信号源，非程序问题）。过程：首版探针 S_FMT 未填
@@ -57,6 +97,9 @@
 2. NV12/NV16/NV24 的 S_FMT 被拒绝为驱动真实行为（已排除程序因素）；BGR3 可协商，
    生产采集器应走 BGR3＋RGA 转换支路（与参考实现的格式决策一致）。
    4K RGA 已补 BGR3→NV12 实测 4.68ms，覆盖该支路。
+   **bgr3 补充（11-09）**：另测得直通 BGR888 编码口径（见 §2.2），两档分辨率下
+   跳过 RGA 净省 1.6~3.1ms；是否切直通取决于生产改造点 3（encoder 支持 BGR888
+   dmabuf 直采），与问题 6 的 level 跟进可一并改造复测。
 3. TX/RX 应用二进制板上缺失，管线画像与单板回环 E2E 暂不可跑，需交叉编译产物；
    解码侧已按预案用预置数据完成离线覆盖（含 4K）。4K 管线画像待 `live_ingest`
    产物到位后跑文件源（`--source file --mp4 <4K_MP4>`），本轮只到单点探针。
@@ -77,9 +120,11 @@
 板上 `~/code/mtl/perf/`：`env.json`、`cap_interval.csv`（空，采集跳过，待问题 1 解决后重采）、
 `enc_cost.csv`、`dec_cost.csv`、`rga_cost.csv`、`round1_*.log`；4K 新增
 `enc_4k_cost.csv`、`enc_4k60_cost.csv`、`dec_4k_cost.csv`、`rga_4k_cost.csv`、
-`rga_4k_scale.csv`、`rga_4k_bgr.csv`、`rx4k/rx_decode.json`、`hw_4k_enc.json`。
-板上 `~/code/mtl/streams/` 新增 `clock_3840x2160.nv12`（712MB，60 帧 @30fps）与
-`clock_3840x2160.h264`（硬编码产出）。CSV 与流文件保留在板上，不进仓库。
+`rga_4k_scale.csv`、`rga_4k_bgr.csv`、`rx4k/rx_decode.json`、`hw_4k_enc.json`；
+bgr3 补充（11-09）新增 `rga_bgr_cost.csv`（1080p RGA BGR→NV12）、
+`enc_bgr_cost.csv`（1080p 直通 BGR 编码）、`enc_4k_bgr_cost.csv`（4K30 直通），
+板上 `~/code/mtl/streams/` 新增 `clock_3840x2160.bgr3`（1.5GB，60 帧 @30fps，
+ffmpeg 由 NV12 转出）。CSV 与流文件保留在板上，不进仓库。
 
 ## 5 下一步
 

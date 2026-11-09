@@ -66,6 +66,7 @@ int tx_supervise_rebuild(struct tx_pipeline* tp) {
         .num_slices = tp->cfg.num_slices,
         .intra_refresh_mode = tp->cfg.intra_refresh_mode,
         .intra_refresh_arg = tp->cfg.intra_refresh_arg,
+        .input_fourcc = tp->input_fourcc,
     };
     tp->encoder = mpp_encoder_create(&codec_cfg, tp->slab);
     if (!tp->encoder) {

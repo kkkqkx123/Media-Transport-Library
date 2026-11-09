@@ -52,10 +52,31 @@ bash tests/perf/gen_test_stream.sh --4k --out ~/code/mtl/streams
 
 # RGA：1920x1080 NV12 自缩放
 ~/code/mtl/bin/rga_blit_latency --w 1920 --h 1080 --loop 200 --csv ~/code/mtl/rga_cost.csv
+# RGA 1080p BGR3→NV12（生产采集格式支路，与 4K 同口径对照）
+~/code/mtl/bin/rga_blit_latency --w 1920 --h 1080 --srcfmt bgr3 --loop 200 --csv ~/code/mtl/rga_bgr_cost.csv
 # RGA 4K：自拷贝 / 下缩放至 1080p / BGR3→NV12（生产采集路径）
 ~/code/mtl/bin/rga_blit_latency --w 3840 --h 2160 --loop 200 --csv ~/code/mtl/rga_4k_cost.csv
 ~/code/mtl/bin/rga_blit_latency --w 3840 --h 2160 --dw 1920 --dh 1080 --loop 200 --csv ~/code/mtl/rga_4k_scale.csv
 ~/code/mtl/bin/rga_blit_latency --w 3840 --h 2160 --srcfmt bgr3 --loop 200 --csv ~/code/mtl/rga_4k_bgr.csv
+```
+
+## BGR3 直通编码（对照 RGA 转换支路的取舍，round1 §2.2 口径）
+
+直通 = MPP 以 `MPP_FMT_BGR888` 直接编码 BGR dma-buf，跳过 RGA 转换步。
+
+```bash
+# 1080p：流已由 gen_test_stream.sh 产出（clock_1920x1080.bgr3）
+~/code/mtl/bin/mpp_enc_latency --input ~/code/mtl/streams/clock_1920x1080.bgr3 \
+  --frames 120 --bps 8000000 --infmt bgr3 --csv ~/code/mtl/enc_bgr_cost.csv \
+  --out ~/code/mtl/streams/bgr_direct.h264
+
+# 4K：先由既有 NV12 转出 bgr3（板上 ffmpeg，60 帧 @30fps，约 1.5GB）
+ffmpeg -y -v error -f rawvideo -pix_fmt nv12 -s 3840x2160 \
+  -i ~/code/mtl/streams/clock_3840x2160.nv12 -frames:v 60 \
+  -pix_fmt bgr24 -f rawvideo ~/code/mtl/streams/clock_3840x2160.bgr3
+~/code/mtl/bin/mpp_enc_latency --input ~/code/mtl/streams/clock_3840x2160.bgr3 \
+  --w 3840 --h 2160 --frames 60 --fps 30 --bps 40000000 --infmt bgr3 \
+  --csv ~/code/mtl/enc_4k_bgr_cost.csv
 ```
 
 每个程序输出一行汇总（均值、p50/p90/p99），外加可选 CSV（`--csv FILE`）。

@@ -35,6 +35,9 @@ struct codec_config {
   /* end2end extension; default 0 = off */
   int intra_refresh_mode;  /* 0=off, 1=MB-row, 2=MB-col, 3=MB-gap */
   int intra_refresh_arg;   /* rows/cols/gap count per frame */
+  /* V4L2 pixel format of the input dma-buf (e.g. V4L2_PIX_FMT_BGR24);
+   * 0 = default NV12. Encoders use it to select prep:format directly. */
+  uint32_t input_fourcc;
 };
 
 struct codec_encode_stats;

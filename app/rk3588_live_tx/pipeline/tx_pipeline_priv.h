@@ -53,6 +53,8 @@ struct tx_pipeline {
     uint64_t stat_mtl_acquire_fails;
     uint64_t stat_mtl_publish_fails;
     uint64_t stat_enc2dec_full;
+    /* negotiated V4L2 pixel format, stashed for encoder rebuilds */
+    uint32_t input_fourcc;
 };
 
 struct tx_tick_state {

@@ -56,6 +56,7 @@ def main():
     ap.add_argument("--duration", type=int, default=30)
     ap.add_argument("--udp", type=int, default=15000)
     ap.add_argument("--dip", default="127.0.0.1")
+    ap.add_argument("--port", default=None, help="MTL TX port name, e.g. native_af_xdp:enP2p33s0")
     ap.add_argument("--mp4", default=None, help="指定则用文件帧源代替 HDMI")
     ap.add_argument("--fps", type=float, default=60.0)
     ap.add_argument("--out", default=None)
@@ -64,6 +65,8 @@ def main():
 
     cmd = [args.binary, str(args.duration), "--udp", str(args.udp),
            "--dip", args.dip]
+    if args.port:
+        cmd += ["--port", args.port]
     if args.mp4:
         cmd += ["--source", "file", "--mp4", args.mp4, "--loop"]
     print("run: " + " ".join(cmd))

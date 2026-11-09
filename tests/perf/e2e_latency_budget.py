@@ -38,6 +38,7 @@ def main():
     ap.add_argument("--height", type=int, default=1080)
     ap.add_argument("--fps", type=float, default=60.0)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--port", default=None)
     args = ap.parse_args()
     th = load_thresholds()
 
@@ -46,6 +47,9 @@ def main():
               "--height", str(args.height), "--fps", str(args.fps)]
     tx_cmd = [args.tx_binary, str(args.duration), "--udp", str(args.udp),
               "--dip", "127.0.0.1"]
+    if args.port:
+        rx_cmd += ["--port", args.port]
+        tx_cmd += ["--port", args.port]
     print("run RX: " + " ".join(rx_cmd))
     rx = subprocess.Popen(rx_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     time.sleep(2)

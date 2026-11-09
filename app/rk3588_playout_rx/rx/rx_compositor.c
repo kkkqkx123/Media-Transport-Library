@@ -73,7 +73,45 @@ struct rx_compositor {
     pthread_t            render_thd;
     atomic_bool          render_running;
     uint64_t             stat_composite;
+    /* Per-composite display cost (display_layers only, monotonic ns). */
+    uint64_t             stat_render_ns_sum;
+    uint64_t             stat_render_ns_max;
+    uint64_t             stat_render_ns_min;
+    uint64_t             stat_render_count;
+    uint64_t             stat_render_slow;
+    /* Newest-drop skips: decoded but never shown (main vs sub lanes). */
+    uint64_t             stat_skip_main;
+    uint64_t             stat_skip_sub;
+    /* Period snapshots for delta reporting. */
+    uint64_t             snap_composite;
+    uint64_t             snap_render_sum;
+    uint64_t             snap_render_count;
+    uint64_t             snap_render_slow;
+    uint64_t             snap_skip_main;
+    uint64_t             snap_skip_sub;
 };
+
+/* Slow-composite threshold: one 60fps period is 16.6ms; 25ms marks a round
+ * that cannot sustain 40fps and deserves a slow tick in the report. */
+#define RX_COMP_RENDER_SLOW_NS (25000000ULL)
+
+static void comp_note_render(rx_compositor* comp, uint64_t ns) {
+    comp->stat_render_ns_sum += ns;
+    comp->stat_render_count++;
+    if (comp->stat_render_count == 1 || ns < comp->stat_render_ns_min)
+        comp->stat_render_ns_min = ns;
+    if (ns > comp->stat_render_ns_max)
+        comp->stat_render_ns_max = ns;
+    if (ns > RX_COMP_RENDER_SLOW_NS)
+        comp->stat_render_slow++;
+}
+
+static uint64_t comp_timespec_delta_ns(const struct timespec* a,
+                                       const struct timespec* b) {
+    uint64_t sa = (uint64_t)a->tv_sec * 1000000000ULL + (uint64_t)a->tv_nsec;
+    uint64_t sb = (uint64_t)b->tv_sec * 1000000000ULL + (uint64_t)b->tv_nsec;
+    return sb >= sa ? sb - sa : 0;
+}
 
 static void mode_dims_from_str(const char* mode_str, int fallback_w, int fallback_h,
                                int* mw, int* mh) {
@@ -235,10 +273,10 @@ static void* render_thread(void* arg) {
 #endif
     if (comp->lane_count == 0) {
         /* Backdrop-only: no frames to composite. Reassert the background
-         * plane periodically so the still (or black) survives display
+         * CRTC periodically so the still (or black) survives display
          * hiccups; planes stay empty by construction. */
         while (atomic_load(&comp->render_running)) {
-            if (drm_renderer_display_layers(comp->renderer, NULL, 0) != 0)
+            if (drm_renderer_show_background(comp->renderer) != 0)
                 break;
             struct timespec idle = {.tv_sec = 0, .tv_nsec = 200000000L};
             nanosleep(&idle, NULL);
@@ -274,8 +312,13 @@ static void* render_thread(void* arg) {
         int main_fd;
         uint32_t main_hs, main_vs;
         uint64_t main_cap = 0;
-        int main_r = playout_buffer_pop_newest(&main_lane->pb, target, &main_fd,
-                                               &main_hs, &main_vs, &main_cap);
+        int dropped_main = 0;
+        int main_r = playout_buffer_pop_newest_counted(&main_lane->pb, target,
+                                                       &main_fd, &main_hs,
+                                                       &main_vs, &main_cap,
+                                                       &dropped_main);
+        if (dropped_main > 0)
+            comp->stat_skip_main += (uint64_t)dropped_main;
         if (main_r != 1) {
             uint64_t now = comp_time_now(comp);
             sleep_until_ns(comp, now + frame_period_ns / 4);
@@ -303,7 +346,12 @@ static void* render_thread(void* arg) {
             int fd;
             uint32_t hs, vs;
             uint64_t cap = 0;
-            int r = playout_buffer_pop_newest(&lane->pb, UINT64_MAX, &fd, &hs, &vs, &cap);
+            int dropped = 0;
+            int r = playout_buffer_pop_newest_counted(&lane->pb, UINT64_MAX,
+                                                      &fd, &hs, &vs, &cap,
+                                                      &dropped);
+            if (dropped > 0)
+                comp->stat_skip_sub += (uint64_t)dropped;
             if (r == 0)
                 continue;
 
@@ -321,7 +369,13 @@ static void* render_thread(void* arg) {
             frame_count++;
         }
 
-        if (drm_renderer_display_layers(comp->renderer, frames, frame_count) != 0)
+        struct timespec t0, t1;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        int disp_rc = drm_renderer_display_layers(comp->renderer, frames,
+                                                  frame_count);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        comp_note_render(comp, comp_timespec_delta_ns(&t0, &t1));
+        if (disp_rc != 0)
             continue;
 
         comp->stat_composite++;
@@ -829,10 +883,12 @@ void rx_compositor_report_stats(rx_compositor* comp, int period_s, bool reset_pe
                (unsigned long long)d_mtl, (unsigned long long)d_br,
                (unsigned long long)d_dec, d_mtl_drop, d_br_drop, corrupt,
                incomplete);
-        printf("  RX[%s] total: pkt=%llu dec=%llu\n",
+        uint64_t overrun = playout_buffer_overrun_drops(&lane->pb);
+        printf("  RX[%s] total: pkt=%llu dec=%llu overrun=%llu\n",
                lane->stats_label,
                (unsigned long long)lane->stat_received,
-               (unsigned long long)lane->stat_decoded);
+               (unsigned long long)lane->stat_decoded,
+               (unsigned long long)overrun);
 
         if (reset_period) {
             rx_e2e_stats_reset_period(&lane->e2e);
@@ -844,5 +900,38 @@ void rx_compositor_report_stats(rx_compositor* comp, int period_s, bool reset_pe
             lane->snap_br_drops  = br_drops;
         }
     }
-    printf("  composite_frames=%llu\n", (unsigned long long)comp->stat_composite);
+    /* Render cost baseline: period avg distinguishes a slow submit path from
+     * intentional newest-drop skips (skip_main/sub below). */
+    uint64_t d_comp = comp->stat_composite - comp->snap_composite;
+    uint64_t d_sum  = comp->stat_render_ns_sum - comp->snap_render_sum;
+    uint64_t d_cnt  = comp->stat_render_count - comp->snap_render_count;
+    uint64_t d_slow = comp->stat_render_slow - comp->snap_render_slow;
+    uint64_t d_skip_m = comp->stat_skip_main - comp->snap_skip_main;
+    uint64_t d_skip_s = comp->stat_skip_sub - comp->snap_skip_sub;
+    double period_avg_ms = d_cnt ? (double)d_sum / (double)d_cnt / 1e6 : 0.0;
+    double total_avg_ms = comp->stat_render_count
+        ? (double)comp->stat_render_ns_sum / (double)comp->stat_render_count /
+              1e6
+        : 0.0;
+    printf("  composite_frames=+%llu total=%llu\n",
+           (unsigned long long)d_comp,
+           (unsigned long long)comp->stat_composite);
+    printf("  render: period_cnt=%llu period_avg=%.3fms total_avg=%.3fms "
+           "max=%.3fms slow(>25ms)=+%llu total_slow=%llu\n",
+           (unsigned long long)d_cnt, period_avg_ms, total_avg_ms,
+           (double)comp->stat_render_ns_max / 1e6,
+           (unsigned long long)d_slow,
+           (unsigned long long)comp->stat_render_slow);
+    printf("  skip_newest: main=+%llu sub=+%llu total_main=%llu total_sub=%llu\n",
+           (unsigned long long)d_skip_m, (unsigned long long)d_skip_s,
+           (unsigned long long)comp->stat_skip_main,
+           (unsigned long long)comp->stat_skip_sub);
+    if (reset_period) {
+        comp->snap_composite    = comp->stat_composite;
+        comp->snap_render_sum   = comp->stat_render_ns_sum;
+        comp->snap_render_count = comp->stat_render_count;
+        comp->snap_render_slow  = comp->stat_render_slow;
+        comp->snap_skip_main    = comp->stat_skip_main;
+        comp->snap_skip_sub     = comp->stat_skip_sub;
+    }
 }

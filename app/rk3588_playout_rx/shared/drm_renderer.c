@@ -501,8 +501,19 @@ static int import_nv12_fb(struct drm_renderer* r, int dma_fd, uint32_t hor_strid
     fb.pitches[1]   = hor_stride;
     fb.offsets[1]   = uv_offset;
 
-    if (drmIoctl(r->fd, DRM_IOCTL_MODE_ADDFB2, &fb) < 0)
-        return -errno;
+    /* The FB holds its own GEM reference after ADDFB2, so the PRIME handle
+     * must be closed on both paths. Leaking it grows the per-fd handle
+     * table on every composite and eventually slows imports to a crawl. */
+    if (drmIoctl(r->fd, DRM_IOCTL_MODE_ADDFB2, &fb) < 0) {
+        int e = errno;
+        struct drm_gem_close gc = {.handle = gem};
+        drmIoctl(r->fd, DRM_IOCTL_GEM_CLOSE, &gc);
+        return -e;
+    }
+    {
+        struct drm_gem_close gc = {.handle = gem};
+        drmIoctl(r->fd, DRM_IOCTL_GEM_CLOSE, &gc);
+    }
     *fb_id_out = fb.fb_id;
     return 0;
 }
@@ -534,15 +545,30 @@ static int drm_renderer_display_fullscreen(struct drm_renderer* r, uint32_t fb_i
     return 0;
 }
 
+int drm_renderer_show_background(struct drm_renderer* r) {
+    if (!r)
+        return -EINVAL;
+    if (!r->compositor_active && !r->viewport_active)
+        return -ENOTSUP;
+    /* One-shot background commit; bg_crtc_set keeps later composites cheap. */
+    if (ensure_bg_crtc(r) < 0)
+        return -errno;
+    r->first_flip = false;
+    return 0;
+}
+
 int drm_renderer_display_layers(struct drm_renderer* r,
                                 const drm_layer_frame* frames, int frame_count) {
     if (!r || !r->compositor_active || !frames || frame_count <= 0)
         return -EINVAL;
 
+    /* Background CRTC is committed once (see bg_crtc_set); steady-state
+     * composites pay only per-layer import + SetPlane, not a mode set. */
     if (ensure_bg_crtc(r) < 0) {
         perror("SetCrtc bg");
         return -errno;
     }
+    int committed = 0;
 
     for (int f = 0; f < frame_count; f++) {
         const drm_layer_frame* fr = &frames[f];
@@ -594,7 +620,12 @@ int drm_renderer_display_layers(struct drm_renderer* r,
             drmModeRmFB(r->fd, slots[recycle].fb_id);
         slots[recycle].fb_id = fb_id;
         r->layer_fb_idx[li] = (recycle + 1) % r->buf_count;
+        committed++;
     }
+    /* Partial failure still shows the layers that committed, but a round
+     * that shows nothing is an error so the caller does not count it. */
+    if (committed == 0)
+        return -EIO;
     r->first_flip = false;
     return 0;
 }

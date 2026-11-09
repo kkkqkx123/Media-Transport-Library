@@ -105,18 +105,19 @@ int playout_buffer_pop_at(playout_buffer* pb, uint64_t target_pts_ns,
     }
 }
 
-int playout_buffer_pop_newest(playout_buffer* pb, uint64_t target_pts_ns,
-                              int* dma_fd_out, uint32_t* hor_stride_out,
-                              uint32_t* ver_stride_out, uint64_t* capture_tai_out) {
+int playout_buffer_pop_newest_counted(playout_buffer* pb, uint64_t target_pts_ns,
+                                       int* dma_fd_out, uint32_t* hor_stride_out,
+                                       uint32_t* ver_stride_out,
+                                       uint64_t* capture_tai_out, int* dropped_out) {
     uint64_t last_capture = 0;
-    int got = 0;
-    int r;
+    int pops = 0;
+    int r = 0;
     do {
         uint64_t cap = 0;
         r = playout_buffer_pop_at(pb, target_pts_ns, 0, dma_fd_out, hor_stride_out,
                                   ver_stride_out, &cap);
         if (r == 1) {
-            got = 1;
+            pops++;
             if (cap)
                 last_capture = cap;
         }
@@ -124,10 +125,20 @@ int playout_buffer_pop_newest(playout_buffer* pb, uint64_t target_pts_ns,
 
     if (capture_tai_out)
         *capture_tai_out = last_capture;
+    if (dropped_out)
+        *dropped_out = pops > 1 ? pops - 1 : 0;
 
-    if (got)
+    if (pops > 0)
         return 1;
     return r;
+}
+
+int playout_buffer_pop_newest(playout_buffer* pb, uint64_t target_pts_ns,
+                              int* dma_fd_out, uint32_t* hor_stride_out,
+                              uint32_t* ver_stride_out, uint64_t* capture_tai_out) {
+    return playout_buffer_pop_newest_counted(pb, target_pts_ns, dma_fd_out,
+                                             hor_stride_out, ver_stride_out,
+                                             capture_tai_out, NULL);
 }
 
 bool playout_buffer_has_frames(const playout_buffer* pb) {

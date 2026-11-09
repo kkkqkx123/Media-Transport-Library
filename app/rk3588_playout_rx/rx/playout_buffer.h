@@ -47,7 +47,13 @@ int playout_buffer_pop_at(playout_buffer* pb, uint64_t target_pts_ns,
 /**
  * Drain all frames at or before target_pts_ns; return the newest.
  * Returns: 1 = new frame, -1 = repeat last, 0 = none ready.
+ * When dropped_out is non-NULL it receives the newest-drop skip count
+ * (frames drained beyond the returned newest; 0 when none/newest absent).
  */
+int playout_buffer_pop_newest_counted(playout_buffer* pb, uint64_t target_pts_ns,
+                                       int* dma_fd_out, uint32_t* hor_stride_out,
+                                       uint32_t* ver_stride_out,
+                                       uint64_t* capture_tai_out, int* dropped_out);
 int playout_buffer_pop_newest(playout_buffer* pb, uint64_t target_pts_ns,
                               int* dma_fd_out, uint32_t* hor_stride_out,
                               uint32_t* ver_stride_out, uint64_t* capture_tai_out);

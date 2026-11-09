@@ -50,9 +50,14 @@ int drm_renderer_display(struct drm_renderer* r, int dma_fd, uint32_t hor_stride
 int drm_renderer_set_background(struct drm_renderer* r, const uint8_t* px,
                                  int w, int h);
 
-/** Phase B: commit up to layer_count planes in one vsync generation. */
+/** Phase B: commit up to layer_count planes in one vsync generation.
+ * Returns 0 when at least one layer committed, -EIO when none did. */
 int drm_renderer_display_layers(struct drm_renderer* r,
                                 const drm_layer_frame* frames, int frame_count);
+
+/** Commit (or reassert) the background CRTC without touching video planes.
+ * Used by the backdrop-only path where there are no layers to composite. */
+int drm_renderer_show_background(struct drm_renderer* r);
 
 const display_layout* drm_renderer_layout(const struct drm_renderer* r);
 

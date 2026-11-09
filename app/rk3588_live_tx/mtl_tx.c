@@ -104,6 +104,12 @@ struct mtl_tx* mtl_tx_create(struct mtl_tx_params* p) {
     ops.priv               = tx;
     ops.type               = ST22_TYPE_FRAME_LEVEL;
     ops.fps                = st_frame_rate_to_st_fps((double)p->fps);
+    if (ops.fps == ST_FPS_MAX) {
+        fprintf(stderr,
+                "mtl_tx: fps=%.3f not in ST2110 enum, check source file "
+                "(CFR with enum rate only)\n", (double)p->fps);
+        goto fail;
+    }
     ops.width              = (uint32_t)(p->width > 0 ? p->width : 1920);
     ops.height             = (uint32_t)(p->height > 0 ? p->height : 1080);
     ops.fmt                = ST20_FMT_YUV_420_8BIT;

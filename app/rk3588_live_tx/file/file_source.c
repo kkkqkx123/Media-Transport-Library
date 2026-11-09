@@ -415,8 +415,12 @@ struct file_source* file_source_create(const struct file_source_params* p) {
     if (vpar->extradata && vpar->extradata_size > 0)
         fs->ext = extradata_handler_create(vpar->extradata,
                                            vpar->extradata_size);
-    if (fs->cfg.fps <= 0 && vs->avg_frame_rate.num > 0 && vs->avg_frame_rate.den > 0)
-        fs->cfg.fps = (float)vs->avg_frame_rate.num / (float)vs->avg_frame_rate.den;
+    if (fs->cfg.fps <= 0) {
+        if (vs->avg_frame_rate.num > 0 && vs->avg_frame_rate.den > 0)
+            fs->cfg.fps = (float)vs->avg_frame_rate.num / (float)vs->avg_frame_rate.den;
+        else if (vs->r_frame_rate.num > 0 && vs->r_frame_rate.den > 0)
+            fs->cfg.fps = (float)vs->r_frame_rate.num / (float)vs->r_frame_rate.den;
+    }
 
     if (fs->cfg.audio_tx && fs->audio.audio_idx >= 0) {
         if (aac_open(fs) < 0) {
@@ -497,12 +501,21 @@ int file_source_probe(const char* path, int* width, int* height, float* fps) {
     if (height) *height = par->height;
     if (fps) {
         AVStream* vs = fmt->streams[vi];
+        float avg_fps = 0.0f, r_fps = 0.0f;
         if (vs->avg_frame_rate.num > 0 && vs->avg_frame_rate.den > 0)
-            *fps = (float)vs->avg_frame_rate.num / (float)vs->avg_frame_rate.den;
-        else if (vs->r_frame_rate.num > 0 && vs->r_frame_rate.den > 0)
-            *fps = (float)vs->r_frame_rate.num / (float)vs->r_frame_rate.den;
-        else
-            *fps = 0.0f;
+            avg_fps = (float)vs->avg_frame_rate.num / (float)vs->avg_frame_rate.den;
+        if (vs->r_frame_rate.num > 0 && vs->r_frame_rate.den > 0)
+            r_fps = (float)vs->r_frame_rate.num / (float)vs->r_frame_rate.den;
+        *fps = avg_fps > 0.0f ? avg_fps : r_fps;
+        if (avg_fps > 0.0f && r_fps > 0.0f) {
+            float diff = avg_fps - r_fps;
+            if (diff < 0.0f) diff = -diff;
+            if (diff > 0.5f && diff / avg_fps > 0.05f)
+                fprintf(stderr,
+                        "file_source: avg_fps=%.3f != r_fps=%.3f, possible VFR, "
+                        "only CFR sources are supported\n",
+                        (double)avg_fps, (double)r_fps);
+        }
     }
     avformat_close_input(&fmt);
     return 0;

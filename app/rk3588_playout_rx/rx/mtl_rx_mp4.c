@@ -111,6 +111,13 @@ mtl_rx_mp4* mtl_rx_mp4_create(const mtl_rx_mp4_params* params) {
     ops.priv               = rx;
     ops.type               = ST22_TYPE_FRAME_LEVEL;
     ops.fps                = st_frame_rate_to_st_fps((double)params->fps);
+    if (ops.fps == ST_FPS_MAX) {
+        fprintf(stderr,
+                "mtl_rx: fps=%.3f not in ST2110 enum, check source file "
+                "(CFR with enum rate only)\n", (double)params->fps);
+        free(rx);
+        return NULL;
+    }
     ops.width              = (uint32_t)(params->width > 0 ? params->width : 1920);
     ops.height             = (uint32_t)(params->height > 0 ? params->height : 1080);
     ops.fmt                = ST20_FMT_YUV_420_8BIT;

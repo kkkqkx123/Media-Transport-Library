@@ -45,8 +45,23 @@ int mp4_demux_open(const char* path, mp4_demux_ctx** ctx_out) {
         ctx->video_info.codec_id       = par->codec_id;
         ctx->video_info.width          = par->width;
         ctx->video_info.height         = par->height;
-        ctx->video_info.fps            = (float)st->avg_frame_rate.num /
-                                         (float)st->avg_frame_rate.den;
+        float avg_fps = 0.0f, r_fps = 0.0f;
+        if (st->avg_frame_rate.num > 0 && st->avg_frame_rate.den > 0)
+            avg_fps = (float)st->avg_frame_rate.num /
+                      (float)st->avg_frame_rate.den;
+        if (st->r_frame_rate.num > 0 && st->r_frame_rate.den > 0)
+            r_fps = (float)st->r_frame_rate.num /
+                    (float)st->r_frame_rate.den;
+        ctx->video_info.fps = avg_fps > 0.0f ? avg_fps : r_fps;
+        if (avg_fps > 0.0f && r_fps > 0.0f) {
+            float diff = avg_fps - r_fps;
+            if (diff < 0.0f) diff = -diff;
+            if (diff > 0.5f && diff / avg_fps > 0.05f)
+                fprintf(stderr,
+                        "demux: avg_fps=%.3f != r_fps=%.3f, possible VFR, "
+                        "only CFR sources are supported\n",
+                        (double)avg_fps, (double)r_fps);
+        }
         ctx->video_info.time_base_num  = st->time_base.num;
         ctx->video_info.time_base_den  = st->time_base.den;
 
@@ -151,12 +166,21 @@ int mp4_probe_file(const char* path, int* width, int* height, float* fps) {
     if (width)  *width  = par->width;
     if (height) *height = par->height;
     if (fps) {
+        float avg_fps = 0.0f, r_fps = 0.0f;
         if (st->avg_frame_rate.num > 0 && st->avg_frame_rate.den > 0)
-            *fps = (float)st->avg_frame_rate.num / (float)st->avg_frame_rate.den;
-        else if (st->r_frame_rate.num > 0 && st->r_frame_rate.den > 0)
-            *fps = (float)st->r_frame_rate.num / (float)st->r_frame_rate.den;
-        else
-            *fps = 0.0f;
+            avg_fps = (float)st->avg_frame_rate.num / (float)st->avg_frame_rate.den;
+        if (st->r_frame_rate.num > 0 && st->r_frame_rate.den > 0)
+            r_fps = (float)st->r_frame_rate.num / (float)st->r_frame_rate.den;
+        *fps = avg_fps > 0.0f ? avg_fps : r_fps;
+        if (avg_fps > 0.0f && r_fps > 0.0f) {
+            float diff = avg_fps - r_fps;
+            if (diff < 0.0f) diff = -diff;
+            if (diff > 0.5f && diff / avg_fps > 0.05f)
+                fprintf(stderr,
+                        "demux: avg_fps=%.3f != r_fps=%.3f, possible VFR, "
+                        "only CFR sources are supported\n",
+                        (double)avg_fps, (double)r_fps);
+        }
     }
 
     avformat_close_input(&fmt);

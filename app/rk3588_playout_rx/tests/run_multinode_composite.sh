@@ -63,8 +63,8 @@ hdmi_stable_check() {
 # 探针片源：输出 "宽 高 帧率"（RX lane 与 TX 会话都以它对齐）。
 probe_file() {
   ffprobe -v error -select_streams v:0 \
-    -show_entries stream=width,height,avg_frame_rate -of csv=p=0 "$FILE_MP4" 2>/dev/null \
-    | awk -F, '{split($3,a,"/"); fps=(a[2]>0)?a[1]/a[2]:24; printf "%d %d %.3f", $1, $2, fps}'
+    -show_entries stream=width,height,avg_frame_rate,r_frame_rate -of csv=p=0 "$FILE_MP4" 2>/dev/null \
+    | awk -F, '{split($3,a,"/"); split($4,b,"/"); if (a[2]>0) fps=a[1]/a[2]; else if (b[2]>0) fps=b[1]/b[2]; else fps=24; printf "%d %d %.3f", $1, $2, fps}'
 }
 
 gen_rx_2lane() {
@@ -184,10 +184,11 @@ t1_file_single() {
   "$TX_BIN" --config "$tx_json" \
     >"$tx_log" 2>&1
   wait "$rx_pid" || true
-  FPS1="$fps1" python3 - "$rx_log" "$tx_log" <<'PY'
+  FPS1="$fps1" SEC1="$sec" python3 - "$rx_log" "$tx_log" <<'PY'
 import os, re, sys
 rx, tx = open(sys.argv[1], errors="replace").read(), open(sys.argv[2], errors="replace").read()
 fps = float(os.environ.get("FPS1", "24"))
+sec = float(os.environ.get("SEC1", "30"))
 ok = True
 def check(n, c, d=""):
     global ok
@@ -196,7 +197,7 @@ def check(n, c, d=""):
 m = re.search(r"video exit \((\d+) frames, (\d+) drops\)", tx)
 if m:
     fr, dr = int(m.group(1)), int(m.group(2))
-    check("文件源供帧量≈会话帧率±10%", abs(fr - fps * 30) / (fps * 30) <= 0.10, f"frames={fr}")
+    check("文件源供帧量≈会话帧率±10%", abs(fr - fps * sec) / (fps * sec) <= 0.10, f"frames={fr}")
     check("供帧零丢弃", dr == 0, f"drops={dr}")
 else: check("TX 有 file_source video exit 行", False)
 check("TX 按片源探针对齐", re.search(r"probe .*\u2192 \d+x\d+@", tx) is not None)

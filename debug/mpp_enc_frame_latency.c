@@ -48,6 +48,8 @@ int main(int argc, char** argv) {
   const char* infmt = "nv12";
   const char* outpath = NULL;
   int level = 0; /* 0 = auto by resolution (42 for <=1080p, 51/52 for 4K) */
+  int hor_stride_arg = 0;  /* MPP hor_stride in pixels, 0 = w */
+  int file_stride = 0;     /* row bytes in input file, 0 = tight */
   FILE* outf = NULL;
 
   static struct option opts[] = {
@@ -61,10 +63,12 @@ int main(int argc, char** argv) {
     {"infmt", required_argument, 0, 'F'},
     {"out", required_argument, 0, 'o'},
     {"level", required_argument, 0, 'L'},
+    {"hor-stride", required_argument, 0, 'S'},
+    {"file-stride", required_argument, 0, 'T'},
     {0, 0, 0, 0},
   };
   int o;
-  while ((o = getopt_long(argc, argv, "i:w:H:n:b:f:c:F:o:L:", opts, NULL)) != -1) {
+  while ((o = getopt_long(argc, argv, "i:w:H:n:b:f:c:F:o:L:S:T:", opts, NULL)) != -1) {
     switch (o) {
       case 'i': input = optarg; break;
       case 'w': w = atoi(optarg); break;
@@ -76,23 +80,40 @@ int main(int argc, char** argv) {
       case 'F': infmt = optarg; break;
       case 'o': outpath = optarg; break;
       case 'L': level = atoi(optarg); break;
+      case 'S': hor_stride_arg = atoi(optarg); break;
+      case 'T': file_stride = atoi(optarg); break;
       default:
-        fprintf(stderr, "usage: %s --input FILE --w W --h H [--frames N] [--bps B] [--fps F] [--csv FILE] [--infmt nv12|bgr3] [--level N]\n", argv[0]);
+        fprintf(stderr, "usage: %s --input FILE --w W --h H [--frames N] [--bps B] [--fps F] [--csv FILE] [--infmt nv12|bgr3|rgb3] [--level N] [--hor-stride PX] [--file-stride BYTES]\n", argv[0]);
         return 1;
     }
   }
   if (!input) { fprintf(stderr, "missing --input file\n"); return 1; }
 
   MppFrameFormat mpp_fmt = MPP_FMT_YUV420SP;
+  int px_bytes = 1; /* bytes per pixel of one input row unit */
   size_t fbytes = (size_t)w * (size_t)h * 3 / 2;
   if (strcmp(infmt, "bgr3") == 0) {
     mpp_fmt = MPP_FMT_BGR888;
+    px_bytes = 3;
+    fbytes = (size_t)w * (size_t)h * 3;
+  } else if (strcmp(infmt, "rgb3") == 0) {
+    mpp_fmt = MPP_FMT_RGB888;
+    px_bytes = 3;
     fbytes = (size_t)w * (size_t)h * 3;
   } else if (strcmp(infmt, "nv12") != 0) {
     fprintf(stderr, "unknown --infmt %s\n", infmt);
     return 1;
   }
-  uint8_t* yuv = malloc(fbytes);
+  /* Stride matrix knobs (BGR stride-unit investigation): file rows are
+   * file_stride bytes (default tight); MPP buffer rows are hs_px pixels. */
+  int hs_px = hor_stride_arg > 0 ? hor_stride_arg : w;
+  size_t file_row = file_stride > 0 ? (size_t)file_stride : (size_t)w * px_bytes;
+  size_t mpp_row = (size_t)hs_px * (mpp_fmt == MPP_FMT_YUV420SP ? 1 : 3);
+  size_t mpp_buf_size = mpp_row * (size_t)h * (mpp_fmt == MPP_FMT_YUV420SP ? 3 : 2) / 2;
+  size_t file_bytes = file_row * (size_t)h;
+  if (mpp_fmt == MPP_FMT_YUV420SP) file_bytes = file_bytes * 3 / 2;
+  (void)fbytes;
+  uint8_t* yuv = malloc(file_bytes);
   uint32_t* cost = calloc((size_t)(frames > 0 ? frames : 1), sizeof(uint32_t));
   if (!yuv || !cost) { fprintf(stderr, "oom\n"); return 1; }
 
@@ -147,25 +168,54 @@ int main(int argc, char** argv) {
   }
 
   MppBuffer frm_buf = NULL;
-  if (mpp_buffer_get(NULL, &frm_buf, fbytes)) {
+  if (mpp_buffer_get(NULL, &frm_buf, mpp_buf_size)) {
     fprintf(stderr, "mpp_buffer_get failed\n");
     return 1;
   }
+  printf("stride: file_row=%zu mpp_row=%zu (hs_px=%d)\n", file_row, mpp_row,
+         hs_px);
 
   int done = 0;
   uint64_t total_out = 0;
   for (int i = 0; i < frames; i++) {
-    if (fread(yuv, 1, fbytes, f) != fbytes) {
+    if (fread(yuv, 1, file_bytes, f) != file_bytes) {
       fseek(f, 0, SEEK_SET);
-      if (fread(yuv, 1, fbytes, f) != fbytes) break;
+      if (fread(yuv, 1, file_bytes, f) != file_bytes) break;
     }
-    memcpy(mpp_buffer_get_ptr(frm_buf), yuv, fbytes);
+    /* file rows -> MPP rows (stride matrix); tight default == flat copy */
+    {
+      uint8_t* dst = mpp_buffer_get_ptr(frm_buf);
+      if (mpp_fmt == MPP_FMT_YUV420SP) {
+        /* Y: h rows; UV: h/2 rows, same row width */
+        size_t fw = file_row, mw = mpp_row;
+        size_t copy = fw < mw ? fw : mw;
+        for (int r = 0; r < h; r++) {
+          memcpy(dst + (size_t)r * mw, yuv + (size_t)r * fw, copy);
+          if (mw > copy) memset(dst + (size_t)r * mw + copy, 0, mw - copy);
+        }
+        uint8_t* uv_dst = dst + mw * (size_t)h;
+        const uint8_t* uv_src = yuv + fw * (size_t)h;
+        for (int r = 0; r < h / 2; r++) {
+          memcpy(uv_dst + (size_t)r * mw, uv_src + (size_t)r * fw, copy);
+          if (mw > copy)
+            memset(uv_dst + (size_t)r * mw + copy, 0, mw - copy);
+        }
+      } else {
+        size_t copy = file_row < mpp_row ? file_row : mpp_row;
+        for (int r = 0; r < h; r++) {
+          memcpy(dst + (size_t)r * mpp_row, yuv + (size_t)r * file_row,
+                 copy);
+          if (mpp_row > copy)
+            memset(dst + (size_t)r * mpp_row + copy, 0, mpp_row - copy);
+        }
+      }
+    }
 
     MppFrame frame = NULL;
     mpp_frame_init(&frame);
     mpp_frame_set_width(frame, w);
     mpp_frame_set_height(frame, h);
-    mpp_frame_set_hor_stride(frame, w);
+    mpp_frame_set_hor_stride(frame, hs_px);
     mpp_frame_set_ver_stride(frame, h);
     mpp_frame_set_fmt(frame, mpp_fmt);
     mpp_frame_set_buffer(frame, frm_buf);

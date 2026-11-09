@@ -39,7 +39,8 @@ struct tx_pipeline* tx_pipeline_create(struct tx_pipeline_params* p) {
     if (!tp->ring_cap2enc || !tp->ring_enc2dec) goto fail;
 
     /* Capture must be created before the encoder: the negotiated V4L2
-     * format decides whether the encoder takes BGR888 directly (no RGA).
+     * format is recorded for encoder setup. Non-NV12 captures are
+     * normalized to NV12 by RGA before encoding.
      * Streaming only starts later in tx_pipeline_start(). */
     tp->capture = v4l2_capturer_create(p->v4l2_device, p->width, p->height,
                                        p->fps, p->v4l2_buf_count,

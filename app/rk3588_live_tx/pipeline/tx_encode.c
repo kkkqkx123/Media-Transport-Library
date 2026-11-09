@@ -236,11 +236,11 @@ void* tx_encode_thread(void* arg) {
         int enc_fd = f->fd;
         uint32_t enc_stride = f->stride;
         int nv12_idx = -1;
-        /* RGA only when the encoder cannot take the format directly:
-         * NV12 passes through; BGR888 (V4L2 BGR3) is supported natively
-         * by the MPP encoder (round1 §2.2 direct-BGR path). */
-        bool use_rga = !(f->fourcc == V4L2_PIX_FMT_NV12 && f->num_planes == 1) &&
-                       f->fourcc != V4L2_PIX_FMT_BGR24;
+        /* RGA normalizes every non-NV12 capture format to NV12.
+         * BGR888 direct encode is not used: MPP reports success on BGR888
+         * input but emits 3-tiled output (verified by isolated encode of a
+         * known-clean BGR3 file). Same architecture as zlmediakit. */
+        bool use_rga = !(f->fourcc == V4L2_PIX_FMT_NV12 && f->num_planes == 1);
         if (use_rga) {
             int nv12_fd;
             uint32_t nv12_stride;

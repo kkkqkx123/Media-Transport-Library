@@ -49,3 +49,25 @@ sudo ~/code/mtl/bin/drm_smoke --duration 10
 ## 5 集成验证
 
 运行 `file_playout_rx` 接收流，观察 `RX stats` 与 DRM 呈现，确认无 DRM ioctl 错误。
+
+## 6 显示 A/B 对比（直通 vs 完整链路）
+
+`debug/tests/hdmi_passthrough.c`：HDMI-IN 经 V4L2（BGR3 MMAP）采集、CPU 转
+NV12 后 DRM 全屏直通显示，不经过 MPP 编解码与 ST2110 网络。
+与完整链路（`app/rk3588_playout_rx/tests/run_tx_rx_e2e.sh`）做同屏先后对比：
+直通正常而链路异常 → 查编码/网络/解码/呈现；直通同样异常 → 查采集源/驱动。
+
+```bash
+# 编译直通程序
+mkdir -p ~/code/mtl/bin
+gcc ~/code/mtl/debug/tests/hdmi_passthrough.c \
+    -o ~/code/mtl/bin/hdmi_passthrough -I/usr/include/libdrm -ldrm
+
+# 一键对比（先 A 直通 20s，再 B 链路 30s， durations 可用环境变量覆盖）
+bash ~/code/mtl/bin/display_compare.sh
+PASS_SEC=20 CHAIN_SEC=30 bash ~/code/mtl/bin/display_compare.sh
+```
+
+直通程序参数：`--device /dev/dri/card0`、`--connector HDMI-A`、
+`--mode 1920x1080@60`、`--vdev /dev/video0`、`--width/--height`、
+`--duration SEC`、`--verbose`。退出时恢复原 CRTC，与 L2 相同的善后约定。

@@ -9,6 +9,8 @@
 #   ./tests/run_single_board_plan_a.sh [seconds] [rx_args...]
 #
 # Env (optional):
+#   CODEC=h264|h265 (default h264) — passed as --codec to TX and RX;
+#     h265 needs an HEVC-capable MPP stack on both ends.
 #   FILE_PLAYOUT_MPP_AGGRESSIVE_PULL=1  — idle pull after each AU + EOS flush
 #   FILE_PLAYOUT_MPP_WHOLE_AU=1         — whole AU feed (A/B only; default is legacy)
 
@@ -16,6 +18,12 @@ set -euo pipefail
 
 SEC="${1:-120}"
 shift || true
+CODEC="${CODEC:-h264}"
+case "$CODEC" in h264|h265) ;; *) echo "bad CODEC=$CODEC (want h264|h265)"; exit 1 ;; esac
+if [ "$CODEC" = "h265" ]; then EXT="h265"; else EXT="h264"; fi
+DUMP="/tmp/rx_capture.$EXT"
+DUMP_IDX="/tmp/rx_capture.idx"
+DUMP_YUV="/tmp/rx_capture_replay.yuv"
 LOG="/tmp/run1.log"
 RX_LOG="/tmp/run1.rx.log"
 BASE="/tmp/run1"
@@ -51,12 +59,12 @@ sleep 1
 
 echo "=== clean old trace/dump (avoid NUL/corrupt csv) ==="
 rm -f "${BASE}.rx_mtl.csv" "${BASE}.rx_br.csv" \
-      /tmp/rx_capture.h264 /tmp/rx_capture.idx \
+      /tmp/rx_capture.h264 /tmp/rx_capture.h265 /tmp/rx_capture.idx \
       /tmp/rx_capture_replay.yuv
 
 export FILE_PLAYOUT_AU_TRACE="$BASE"
-export FILE_PLAYOUT_DUMP_RX=/tmp/rx_capture.h264
-export FILE_PLAYOUT_DUMP_RX_IDX=/tmp/rx_capture.idx
+export FILE_PLAYOUT_DUMP_RX="$DUMP"
+export FILE_PLAYOUT_DUMP_RX_IDX="$DUMP_IDX"
 
 echo "=== env ==="
 echo "  test_sec=$SEC  log=$LOG"
@@ -66,12 +74,12 @@ echo "  FILE_PLAYOUT_MPP_AGGRESSIVE_PULL=${FILE_PLAYOUT_MPP_AGGRESSIVE_PULL:-<un
 echo "=== RX ${SEC}s (sender: live_ingest, ip=$L2_IP, HDMI required) ==="
 rm -f "$LOG" "$RX_LOG"
 ./build/file_playout_rx "$SEC" --udp 15000 --sip "$L2_IP" \
-  --width 1920 --height 1080 --fps 60.0 "$@" >"$RX_LOG" 2>&1 &
+  --width 1920 --height 1080 --fps 60.0 --codec "$CODEC" "$@" >"$RX_LOG" 2>&1 &
 RX_PID=$!
 
 sleep 2
 kill -0 "$RX_PID" 2>/dev/null || { tail -n 20 "$RX_LOG"; echo "RX 启动失败"; exit 1; }
-"$LIVE_INGEST" "$SEC" --udp 15000 --dip "$L2_IP" 2>&1 | tee "$LOG" &
+"$LIVE_INGEST" "$SEC" --udp 15000 --dip "$L2_IP" --codec "$CODEC" 2>&1 | tee "$LOG" &
 TX_PID=$!
 
 wait "$RX_PID" && RX_ST=0 || RX_ST=$?
@@ -86,7 +94,7 @@ grep -E 'mpp_dec:|mpp_dec stats|rx_pipe:' "$LOG" || true
 
 echo ""
 echo "=== trace files ==="
-ls -l "${BASE}"*.csv /tmp/rx_capture.h264 2>/dev/null || true
+ls -l "${BASE}"*.csv "$DUMP" 2>/dev/null || true
 for f in "${BASE}.rx_mtl.csv" "${BASE}.rx_br.csv"; do
   if [ -f "$f" ]; then
     echo -n "$f: "
@@ -97,11 +105,24 @@ for f in "${BASE}.rx_mtl.csv" "${BASE}.rx_br.csv"; do
 done
 
 echo ""
-echo "=== offline mpi_dec_test replay ==="
-if [ -f /tmp/rx_capture.h264 ] && command -v mpi_dec_test >/dev/null 2>&1; then
-  mpi_dec_test -t 7 -i /tmp/rx_capture.h264 -n 0 -o /tmp/rx_capture_replay.yuv
-  PKTS=$(wc -l < /tmp/rx_capture.idx)
-  FR=$(python3 -c "import os; s=os.path.getsize('/tmp/rx_capture_replay.yuv'); print(int(s/(1920*1080*3//2)))")
+echo "=== offline replay ($CODEC) + annexb codec check ==="
+python3 tests/check_codec_annexb.py "$DUMP" --expect "$CODEC" || true
+if [ -f "$DUMP" ]; then
+  if [ "$CODEC" = "h265" ]; then
+    if command -v ffmpeg >/dev/null 2>&1; then
+      ffmpeg -v error -f hevc -i "$DUMP" -pix_fmt yuv420p -f rawvideo -y "$DUMP_YUV"
+    else
+      echo "SKIP: no ffmpeg for hevc replay"
+    fi
+  elif command -v mpi_dec_test >/dev/null 2>&1; then
+    mpi_dec_test -t 7 -i "$DUMP" -n 0 -o "$DUMP_YUV"
+  else
+    echo "SKIP: no mpi_dec_test for h264 replay"
+  fi
+fi
+if [ -f "$DUMP_YUV" ] && [ -f "$DUMP_IDX" ]; then
+  PKTS=$(wc -l < "$DUMP_IDX")
+  FR=$(python3 -c "import os; s=os.path.getsize('$DUMP_YUV'); print(int(s/(1920*1080*3//2)))")
   echo "capture packets=$PKTS  offline_frames=$FR  yield=$(python3 -c "print(f'{$FR/$PKTS*100:.1f}%')")"
   if grep -q 'rx_pipe:' "$LOG"; then
     python3 - <<'PY' "$LOG" "$PKTS" "$FR"

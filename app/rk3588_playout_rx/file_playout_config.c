@@ -27,6 +27,7 @@ void file_playout_cfg_defaults(file_playout_cfg* cfg) {
     cfg->height            = 0;
     cfg->fps               = 0.0f;
     cfg->codestream_size   = 1024 * 1024;   /* 1 MB */
+    cfg->codec             = CODEC_FMT_H264;
     strcpy(cfg->mp4_file,  "");
     cfg->mp4_count         = 0;
     cfg->loop              = true;
@@ -104,6 +105,20 @@ int file_playout_config_load(const char* json_path, file_playout_cfg* cfg) {
         cfg->fps = (float)json_object_get_double(val);
     if (json_object_object_get_ex(root, "codestream_size", &val))
         cfg->codestream_size = (size_t)json_object_get_int64(val);
+    if (json_object_object_get_ex(root, "codec", &val)) {
+        const char* name = json_object_get_string(val);
+        if (!name || !strcmp(name, "h264") || !strcmp(name, "H264"))
+            cfg->codec = CODEC_FMT_H264;
+        else if (!strcmp(name, "h265") || !strcmp(name, "hevc") ||
+                 !strcmp(name, "H265") || !strcmp(name, "HEVC"))
+            cfg->codec = CODEC_FMT_H265;
+        else {
+            fprintf(stderr, "config: unknown codec \"%s\" (want h264|h265)\n",
+                    name ? name : "");
+            json_object_put(root);
+            return -1;
+        }
+    }
     if (json_object_object_get_ex(root, "mp4_file", &val)) {
         snprintf(cfg->mp4_file, sizeof(cfg->mp4_file), "%s",
                  json_object_get_string(val));
@@ -256,7 +271,7 @@ void file_playout_rx_usage(const char* prog) {
         "Usage:\n"
         "  %s [sec] [--config FILE] [--port P] [--lip IP] [--sip IP]"
         " [--udp PORT] [--audio-udp PORT] [--width W] [--height H] [--fps FPS]"
-        " [--probe-mp4 FILE] [--mtl-log-level LEVEL]\n"
+        " [--codec h264|h265] [--probe-mp4 FILE] [--mtl-log-level LEVEL]\n"
         "\n"
         "  --fps must match TX (critical for ST22 slot assembly).\n"
         "  --mtl-log-level: debug|info|notice|warning|error (default: notice)\n"
@@ -491,6 +506,17 @@ static int file_playout_config_parse_args(file_playout_cfg* cfg, int argc, char*
         } else if (strcmp(argv[i], "--fps") == 0 && i + 1 < argc) {
             cfg->fps = (float)atof(argv[++i]);
             cfg->fps_override = true;
+        } else if (strcmp(argv[i], "--codec") == 0 && i + 1 < argc) {
+            const char* name = argv[++i];
+            if (!strcmp(name, "h264") || !strcmp(name, "H264"))
+                cfg->codec = CODEC_FMT_H264;
+            else if (!strcmp(name, "h265") || !strcmp(name, "hevc") ||
+                     !strcmp(name, "H265") || !strcmp(name, "HEVC"))
+                cfg->codec = CODEC_FMT_H265;
+            else {
+                fprintf(stderr, "Invalid --codec: %s (want h264|h265)\n", name);
+                return -1;
+            }
         } else if (strcmp(argv[i], "--probe-mp4") == 0 && i + 1 < argc) {
             snprintf(cfg->probe_mp4, sizeof(cfg->probe_mp4), "%s", argv[++i]);
         } else if (strcmp(argv[i], "--mtl-log-level") == 0 && i + 1 < argc) {
@@ -580,8 +606,9 @@ void file_playout_config_print(const file_playout_cfg* cfg) {
     printf("  test_time:       %d s\n", cfg->test_time);
     printf("  TX: port=%s lip=%s dip=%s\n", cfg->tx_port, cfg->tx_lip, cfg->tx_dip);
     printf("  RX: port=%s lip=%s sip=%s\n", cfg->rx_port, cfg->rx_lip, cfg->rx_sip);
-    printf("  video: %dx%d @ %.3ffps, codestream=%zu\n",
-           cfg->width, cfg->height, (double)cfg->fps, cfg->codestream_size);
+    printf("  video: %dx%d @ %.3ffps, codestream=%zu, codec=%s\n",
+           cfg->width, cfg->height, (double)cfg->fps, cfg->codestream_size,
+           cfg->codec == CODEC_FMT_H265 ? "h265" : "h264");
     printf("  UDP: video=%u audio=%u\n", cfg->udp_port, cfg->audio_udp_port);
     if (cfg->mp4_count > 0) {
         printf("  MP4 playlist (%d file(s), loop=%s, seek=%lld ms):\n",

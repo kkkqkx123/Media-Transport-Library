@@ -143,6 +143,7 @@ static int run_compositor(file_playout_cfg* cfg) {
         .cpu_decode               = cfg->cpu_decode,
         .cpu_render               = cfg->cpu_render,
         .cpu_audio                = cfg->cpu_audio,
+        .codec                    = cfg->codec,
     };
     if (cfg->ptp_mode != FILE_PLAYOUT_PTP_MONOTONIC) {
         cp.time_now  = (uint64_t(*)(void*))mtl_ptp_read_time;
@@ -301,6 +302,7 @@ static int run_legacy_pipeline(file_playout_cfg* cfg) {
         .cpu_audio        = cfg->cpu_audio,
         .display_viewport = &cfg->display_viewport,
         .udp_port         = cfg->udp_port,
+        .codec            = cfg->codec,
     };
     if (cfg->ptp_mode != FILE_PLAYOUT_PTP_MONOTONIC) {
         rxp.time_now  = (uint64_t(*)(void*))mtl_ptp_read_time;

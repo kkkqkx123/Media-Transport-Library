@@ -238,6 +238,7 @@ static rx_compositor* build_compositor(dvs_engine* e,
         .cpu_decode = cfg->cpu_decode,
         .cpu_render = cfg->cpu_render,
         .cpu_audio = cfg->cpu_audio,
+        .codec = cfg->codec,
     };
     if (cfg->ptp_mode != FILE_PLAYOUT_PTP_MONOTONIC) {
         cp.time_now = (uint64_t(*)(void*))mtl_ptp_read_time;

@@ -127,6 +127,15 @@ test_pacing_config = executable('test_pacing_config',
 )
 test('pacing_config', test_pacing_config)
 
+test_codec_config = executable('test_codec_config',
+  files('tests/test_codec_config.c', 'file_playout_config.c'),
+  c_args: common_c_args,
+  dependencies: [mtl_dep, libjson_c_dep],
+  link_with: [file_playout_shared, file_playout_probe],
+  include_directories: file_playout_inc,
+)
+test('codec_config', test_codec_config)
+
 executable('rx_minimal',
   files('tests/rx_minimal.c'),
   c_args: common_c_args,

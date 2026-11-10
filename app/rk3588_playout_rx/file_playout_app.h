@@ -3,6 +3,7 @@
 
 #include "pipeline_common.h"
 #include "display_layout.h"
+#include "codec_plugin.h"
 #include <mtl_api.h>
 #include <st20_api.h>
 #include <stdatomic.h>
@@ -57,6 +58,7 @@ typedef struct file_playout_cfg {
     int    height;
     float  fps;
     size_t codestream_size;        /* max compressed frame size */
+    enum codec_format codec;     /* receive decode codec, defaults to H264 */
 
     /* MP4 source */
     char   mp4_file[FILE_PLAYOUT_MAX_PATH_LEN];

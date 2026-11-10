@@ -4,7 +4,8 @@
 # 不依赖仓库路径，只依赖板端二进制与标准工具。
 #
 # 用法：run_tx_rx_e2e.sh [秒数]
-# 环境覆盖：SEC PORT IP UDP W H FPS PTP_DELAY
+# 环境覆盖：SEC PORT IP UDP W H FPS CODEC PTP_DELAY
+#   CODEC=h264|h265（默认 h264），透传为 TX/RX 的 --codec 并做日志断言。
 set -euo pipefail
 
 SEC="${1:-${SEC:-60}}"
@@ -12,6 +13,8 @@ PORT="${PORT:-kernel:enP2p33s0}"
 IP="${IP:-192.168.80.202}"
 UDP="${UDP:-15000}"
 W="${W:-1920}"; H="${H:-1080}"; FPS="${FPS:-60}"
+CODEC="${CODEC:-h264}"
+case "$CODEC" in h264|h265) ;; *) echo "FAIL: bad CODEC=$CODEC"; exit 1 ;; esac
 BIN_DIR="${BIN_DIR:-$HOME/code/mtl/bin}"
 RX_BIN="$BIN_DIR/file_playout_rx"
 TX_BIN="$BIN_DIR/live_ingest"
@@ -70,7 +73,7 @@ rm -f "$RX_LOG" "$TX_LOG"
 
 echo "=== RX 起 ($SEC s, $PORT lip=$IP sip=$IP udp=$UDP ${W}x${H}@${FPS}) ==="
 nohup "$RX_BIN" "$SEC" --port "$PORT" --lip "$IP" --sip "$IP" \
-  --udp "$UDP" --width "$W" --height "$H" --fps "$FPS" \
+  --udp "$UDP" --width "$W" --height "$H" --fps "$FPS" --codec "$CODEC" \
   --ptp-mode monotonic --stats-interval 10 >"$RX_LOG" 2>&1 &
 RX_PID=$!
 sleep "$START_DELAY"
@@ -83,10 +86,10 @@ echo "=== TX 起 ($SEC s, HDMI, dip=$IP udp=$UDP) ==="
 TX_RC=0
 if command -v timeout >/dev/null 2>&1; then
   timeout -s INT $((SEC + 60)) "$TX_BIN" "$SEC" --port "$PORT" --lip "$IP" --dip "$IP" --udp "$UDP" \
-    --pacing tsc_narrow --log-level warning >"$TX_LOG" 2>&1 || TX_RC=$?
+    --codec "$CODEC" --pacing tsc_narrow --log-level warning >"$TX_LOG" 2>&1 || TX_RC=$?
 else
   "$TX_BIN" "$SEC" --port "$PORT" --lip "$IP" --dip "$IP" --udp "$UDP" \
-    --pacing tsc_narrow --log-level warning >"$TX_LOG" 2>&1 || TX_RC=$?
+    --codec "$CODEC" --pacing tsc_narrow --log-level warning >"$TX_LOG" 2>&1 || TX_RC=$?
 fi
 echo "TX 退出=$TX_RC"
 wait "$RX_PID" || true
@@ -100,6 +103,8 @@ echo "TX: $TX_SUM"
 echo "RX: $RX_SUM"
 [ -n "$TX_SUM" ] || fail "无 TX 汇总行"
 [ -n "$RX_SUM" ] || fail "无 RX 汇总行"
+grep -qa "mpp_enc: $CODEC" "$TX_LOG" || fail "TX 编码器非 $CODEC（查 $TX_LOG 首屏 mpp_enc 行）"
+grep -qa "mpp_dec: $CODEC" "$RX_LOG" || fail "RX 解码器非 $CODEC（查 $RX_LOG 首屏 mpp_dec 行）"
 
 python3 - "$RX_LOG" "$TX_LOG" <<'PY'
 import re, sys

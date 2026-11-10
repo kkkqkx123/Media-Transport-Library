@@ -23,6 +23,8 @@ def main() -> int:
                     help="render/(test_sec*fps); both-mode decode ~80%% → render ~40%%")
     ap.add_argument("--max-overrun-pct-of-dec", type=float, default=5.0)
     ap.add_argument("--max-repeat", type=int, default=100000)
+    ap.add_argument("--expect-codec", choices=("h264", "h265"), default=None,
+                    help="require the MPP decoder to run with this codec")
     args = ap.parse_args()
 
     text = open(args.log, encoding="utf-8", errors="replace").read()
@@ -80,6 +82,14 @@ def main() -> int:
     if dec <= 0:
         print("FAIL: dec=0")
         return 1
+
+    if args.expect_codec:
+        seen = set(re.findall(r"mpp_dec: (h264|h265)\b", text))
+        print(f"  decoder codec seen: {sorted(seen) or ['none']}")
+        if args.expect_codec not in seen:
+            print(f"FAIL: expected decoder codec {args.expect_codec} "
+                  f"not in log")
+            return 1
 
     r_exp = 100.0 * render / expected if expected > 0 else 0.0
     r_dec = 100.0 * render / dec

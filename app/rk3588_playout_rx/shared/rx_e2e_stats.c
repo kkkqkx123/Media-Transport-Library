@@ -1,4 +1,5 @@
 #include "rx_e2e_stats.h"
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 

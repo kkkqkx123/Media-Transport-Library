@@ -9,6 +9,7 @@
 #include "mtl_rx_bridge.h"
 #include <pthread.h>
 #include <stdatomic.h>
+#include <stdbool.h>
 #include <stdint.h>
 
 struct ring_buffer;

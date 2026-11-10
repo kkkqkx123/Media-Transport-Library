@@ -6,6 +6,7 @@
 #include <sqlite3.h>
 
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -14,13 +15,30 @@
 #include <unistd.h>
 #include "dvs_http_json.h"
 
+namespace {
+void ensure_parent_dir(const std::string& path) {
+    if (path.empty() || path == ":memory:") return;
+    size_t slash = path.find_last_of('/');
+    if (slash == std::string::npos || slash == 0) return;
+    std::string dir = path.substr(0, slash);
+    std::string cur;
+    for (size_t i = 0; i < dir.size(); i++) {
+        cur.push_back(dir[i]);
+        if (dir[i] == '/' && cur.size() > 1) mkdir(cur.c_str(), 0755);
+    }
+    if (!cur.empty()) mkdir(cur.c_str(), 0755);
+}
+} // namespace
+
 const char* NodeStore::SCOPES[6] = {"role", "input", "output", "network", "registration", "sip"};
 
 NodeStore::NodeStore(const std::string& db_path) : db_(nullptr), node_(nullptr), config_(nullptr) {
+    ensure_parent_dir(db_path);
     if (sqlite3_open(db_path.c_str(), &db_) != SQLITE_OK) {
-        fprintf(stderr, "cannot open db: %s\n", sqlite3_errmsg(db_));
+        fprintf(stderr, "cannot open db: %s\n", db_ ? sqlite3_errmsg(db_) : "out of memory");
         return;
     }
+    if (db_) sqlite3_busy_timeout(db_, 5000);
     ensure_schema();
     load();
 }
@@ -57,8 +75,11 @@ static void set_kv(sqlite3* db, const char* key, const std::string& val) {
 
 void NodeStore::ensure_schema() {
     char* err = nullptr;
+    sqlite3_exec(db_, "PRAGMA journal_mode=WAL", nullptr, nullptr, nullptr);
+    sqlite3_exec(db_, "PRAGMA synchronous=NORMAL", nullptr, nullptr, nullptr);
     sqlite3_exec(db_, "CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL)", nullptr, nullptr, &err);
-    if (err) { fprintf(stderr, "%s\n", err); sqlite3_free(err); }
+    if (err) { fprintf(stderr, "%s\n", err); sqlite3_free(err); err = nullptr; }
+    sqlite3_exec(db_, "PRAGMA user_version=1", nullptr, nullptr, nullptr);
 }
 
 void NodeStore::load() {
@@ -76,7 +97,7 @@ void NodeStore::load() {
         json_object_object_add(seed, "mac", json_object_new_string("00:00:00:00:00:00"));
         json_object_object_add(seed, "ip", json_object_new_string("127.0.0.1"));
         json_object_object_add(seed, "fw", json_object_new_string("V1.0.0"));
-        json_object_object_add(seed, "online", json_object_new_boolean(1));
+        json_object_object_add(seed, "online", json_object_new_boolean(0));
         json_object_object_add(seed, "lastHeartbeat", json_object_new_null());
         json_object_object_add(seed, "registerMode", json_object_new_string("auto"));
         json_object_object_add(seed, "registerState", json_object_new_string("unregistered"));
@@ -134,6 +155,7 @@ void NodeStore::load() {
     }
     node_ = json_tokener_parse(n.c_str());
     /* Backfill sip mode for databases seeded before the probe label. */
+    bool node_dirty = false;
     {
         json_object* sip = nullptr;
         if (node_ && json_object_object_get_ex(node_, "sip", &sip) && sip &&
@@ -142,10 +164,27 @@ void NodeStore::load() {
             if (!json_object_object_get_ex(sip, "mode", &mv) || !mv) {
                 json_object_object_add(sip, "mode",
                                        json_object_new_string("connectivity-probe"));
-                set_kv(db_, "node", json_object_to_json_string(node_));
+                node_dirty = true;
             }
         }
     }
+    /* Volatile runtime never survives a restart. Capabilities stay as a
+     * cache for an engine that starts later, everything else is rebuilt
+     * by engine probing and platform heartbeats. */
+    if (node_) {
+        json_object_object_del(node_, "online");
+        json_object_object_add(node_, "online", json_object_new_boolean(0));
+        json_object_object_del(node_, "lastHeartbeat");
+        json_object_object_add(node_, "lastHeartbeat", json_object_new_null());
+        json_object_object_del(node_, "metrics");
+        json_object_object_add(node_, "metrics", json_object_new_object());
+        json_object_object_del(node_, "currentPlayback");
+        json_object_object_add(node_, "currentPlayback", json_object_new_null());
+        json_object_object_del(node_, "exception");
+        json_object_object_add(node_, "exception", json_object_new_null());
+        node_dirty = true;
+    }
+    if (node_dirty) set_kv(db_, "node", json_object_to_json_string(node_));
 
     std::string c = get_kv(db_, "config");
     if (c.empty()) {

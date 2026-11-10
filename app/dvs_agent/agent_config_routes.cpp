@@ -258,7 +258,9 @@ bool handle_config_sync(AgentContext& ctx, const HttpRequest& req,
   if (cfg && json_object_is_type(cfg, json_type_object)) {
     json_object_object_foreach(cfg, key, val) {
       std::string k(key);
-      if (k == "geometry") {
+      if (!dvs::contract::config_update_key_allowed(k)) {
+        json_object_array_add(ignored, json_object_new_string(k.c_str()));
+      } else if (k == "geometry") {
         json_object_object_add(patch, "geometry", json_object_get(val));
       } else if (k == "role") {
         std::string want;
@@ -278,8 +280,6 @@ bool handle_config_sync(AgentContext& ctx, const HttpRequest& req,
           agent_audit("role", "platform-sync", "pending",
                       std::string("pending ") + want);
         }
-      } else {
-        json_object_array_add(ignored, json_object_new_string(k.c_str()));
       }
     }
   }

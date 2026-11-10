@@ -80,6 +80,7 @@ void start_barrier_sweeper(PlatformContext& ctx) {
                     std::lock_guard<std::mutex> lk(ctx.ops_mu);
                     ctx.ops.gc(dvs::wall_ns_now(), kOpTtlNs);
                 }
+                ctx.store->audit_trim();
                 for (auto& wid : ctx.store->list_ids("walls")) {
                     json_object* w = ctx.store->get_doc("walls", wid);
                     if (!w) continue;

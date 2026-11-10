@@ -385,6 +385,10 @@ uint64_t frame_start_ns(uint64_t epoch_ns, double fps, int64_t frame) {
     return epoch_ns + (uint64_t)(start_s * 1000000000.0 + 0.5);
 }
 
+bool config_update_key_allowed(const std::string& key) {
+    return key == "geometry" || key == "role";
+}
+
 std::string validate_config_update(json_object* data) {
     if (!is_obj(data)) return "INVALID_ARGUMENT:config.update must be object";
     json_object* cfg = field(data, "config");
@@ -392,6 +396,9 @@ std::string validate_config_update(json_object* data) {
     bool has_geo = false, has_role = false;
     json_object_object_foreach(cfg, key, val) {
         std::string k(key);
+        if (!config_update_key_allowed(k)) {
+            return std::string("INVALID_ARGUMENT:config.update unknown key: ") + k;
+        }
         if (k == "geometry") {
             if (!rect_ok(val))
                 return "INVALID_ARGUMENT:config.update geometry must be {x,y,w,h}";
@@ -412,8 +419,6 @@ std::string validate_config_update(json_object* data) {
                 return "INVALID_ARGUMENT:config.update role must be string|object";
             }
             has_role = true;
-        } else {
-            return std::string("INVALID_ARGUMENT:config.update unknown key: ") + k;
         }
     }
     if (!has_geo && !has_role)

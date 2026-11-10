@@ -125,7 +125,7 @@ kind 共 6 个：`groups`、`walls`、`scenes`、`bindings`、`whitelist`、`pla
 | 自报基地址 | `DVS_AGENT_BASE`，缺省按本机网络配置拼 `http://<ip>:<port>` | 存储于各 node 文档的 `agentBase` |
 | 媒体通道 | `--media-sock` / `DVS_MEDIA_SOCK` | 无 |
 | 令牌 | `DVS_API_TOKEN`（空 = 平台类调用不校验） | 同左（空则告警并放行变更接口） |
-| 本地库 | `--db`，缺省 `/tmp/dvs_agent.db` | `--db`，缺省 `/tmp/dvs_platform.db` |
+| 本地库 | `--db`，缺省 `/var/lib/dvs_agent/dvs_agent.db` | `--db`，缺省 `/var/lib/dvs_platform/dvs_platform.db` |
 
 ## 6. 反向代理规则
 

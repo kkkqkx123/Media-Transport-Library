@@ -1,11 +1,29 @@
 #include "platform_store.h"
 
+#include <sys/stat.h>
+#include <cstdio>
+
 namespace {
 const int64_t kTombstoneTtlSec = 30LL * 24 * 3600;
+const int kAuditKeepRows = 5000;
+void ensure_parent_dir(const std::string& path) {
+    if (path.empty() || path == ":memory:") return;
+    size_t slash = path.find_last_of('/');
+    if (slash == std::string::npos || slash == 0) return;
+    std::string dir = path.substr(0, slash);
+    std::string cur;
+    for (size_t i = 0; i < dir.size(); i++) {
+        cur.push_back(dir[i]);
+        if (dir[i] == '/' && cur.size() > 1) mkdir(cur.c_str(), 0755);
+    }
+    if (!cur.empty()) mkdir(cur.c_str(), 0755);
+}
 } // namespace
 
 PlatformStore::PlatformStore(const std::string& db_path) {
+    ensure_parent_dir(db_path);
     sqlite3_open(db_path.c_str(), &db_);
+    if (db_) sqlite3_busy_timeout(db_, 5000);
     ensure_schema();
 }
 
@@ -14,6 +32,9 @@ PlatformStore::~PlatformStore() {
 }
 
 void PlatformStore::ensure_schema() {
+    if (!db_) return;
+    sqlite3_exec(db_, "PRAGMA journal_mode=WAL", nullptr, nullptr, nullptr);
+    sqlite3_exec(db_, "PRAGMA synchronous=NORMAL", nullptr, nullptr, nullptr);
     const char* ddl =
         "CREATE TABLE IF NOT EXISTS docs(kind TEXT, id TEXT, data TEXT,"
         " PRIMARY KEY(kind,id));"
@@ -24,6 +45,7 @@ void PlatformStore::ensure_schema() {
     char* err = nullptr;
     sqlite3_exec(db_, ddl, nullptr, nullptr, &err);
     if (err) sqlite3_free(err);
+    sqlite3_exec(db_, "PRAGMA user_version=1", nullptr, nullptr, nullptr);
 }
 
 bool PlatformStore::put_doc(const std::string& kind, const std::string& id,
@@ -85,12 +107,31 @@ bool PlatformStore::del_doc(const std::string& kind, const std::string& id) {
 
 void PlatformStore::audit(const std::string& event_json) {
     std::lock_guard<std::mutex> lk(mu_);
+    if (!db_) return;
     sqlite3_stmt* st = nullptr;
     sqlite3_prepare_v2(db_, "INSERT INTO audit_log(event) VALUES(?)",
                        -1, &st, nullptr);
+    if (!st) return;
     sqlite3_bind_text(st, 1, event_json.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_step(st);
     sqlite3_finalize(st);
+    char* err = nullptr;
+    std::string trim =
+        "DELETE FROM audit_log WHERE seq <= (SELECT MAX(seq)-" +
+        std::to_string(kAuditKeepRows) + " FROM audit_log)";
+    sqlite3_exec(db_, trim.c_str(), nullptr, nullptr, &err);
+    if (err) sqlite3_free(err);
+}
+
+void PlatformStore::audit_trim() {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (!db_) return;
+    char* err = nullptr;
+    std::string trim =
+        "DELETE FROM audit_log WHERE seq <= (SELECT MAX(seq)-" +
+        std::to_string(kAuditKeepRows) + " FROM audit_log)";
+    sqlite3_exec(db_, trim.c_str(), nullptr, nullptr, &err);
+    if (err) sqlite3_free(err);
 }
 
 json_object* PlatformStore::audit_list(int limit) {

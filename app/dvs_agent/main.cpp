@@ -41,7 +41,7 @@
 static AgentContext* g_ctx = nullptr;
 
 int main(int argc, char** argv) {
-  std::string db_path = "/tmp/dvs_agent.db";
+  std::string db_path = "/var/lib/dvs_agent/dvs_agent.db";
   std::string platform_url;
   std::string media_sock;
   std::string web_root;

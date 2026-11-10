@@ -9,6 +9,7 @@
 #include <rockchip/rk_mpi.h>
 #include <rockchip/rk_venc_cfg.h>
 #include <stdatomic.h>
+#include <stdbool.h>
 #include <linux/videodev2.h>
 #include <stdio.h>
 #include <stdlib.h>

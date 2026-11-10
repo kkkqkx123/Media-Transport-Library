@@ -71,6 +71,10 @@ std::string validate_hello(json_object* data);
 std::string validate_heartbeat(json_object* data);
 std::string validate_layout_prepare(json_object* data);
 std::string validate_barrier_ack(json_object* data);
+// Platform-owned config subset gate: the only keys a platform config push
+// may carry. Platform filtering and agent landing read this predicate
+// instead of hard-coding key names, so a new key touches one place.
+bool config_update_key_allowed(const std::string& key);
 std::string validate_config_update(json_object* data);
 std::string validate_config_ack(json_object* data);
 std::string validate_upgrade_task(json_object* data);

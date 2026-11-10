@@ -21,6 +21,8 @@ public:
 
     void audit(const std::string& event_json);
     json_object* audit_list(int limit); // {items:[...]}
+    // Drop oldest audit rows beyond the retention cap. Safe to call often.
+    void audit_trim();
 
     // Tombstones: retired node ids rejected from re-register for 30 days.
     void tombstone_add(const std::string& id, int64_t now_sec);

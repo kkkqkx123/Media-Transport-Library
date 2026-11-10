@@ -16,7 +16,7 @@
 #include "ws_channel.h"
 
 int main(int argc, char** argv) {
-    std::string db = "/tmp/dvs_platform.db";
+    std::string db = "/var/lib/dvs_platform/dvs_platform.db";
     int port = 8081;
     std::string web_root_arg;
     for (int i = 1; i < argc; i++) {

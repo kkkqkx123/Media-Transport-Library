@@ -341,7 +341,7 @@ bool route_nodes(PlatformContext& ctx, const HttpRequest& req,
             if (cfg && json_object_is_type(cfg, json_type_object)) {
                 json_object_object_foreach(cfg, key, val) {
                     std::string k(key);
-                    if (k == "geometry" || k == "role")
+                    if (ct::config_update_key_allowed(k))
                         json_object_object_add(fwd, k.c_str(),
                                                json_object_get(val));
                     else {

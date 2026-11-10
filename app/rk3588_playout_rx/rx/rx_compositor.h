@@ -5,6 +5,7 @@
 #include "codec_plugin.h"
 #include "display_layout.h"
 #include <mtl_api.h>
+#include <stdbool.h>
 #include <stdint.h>
 
 typedef struct rx_compositor rx_compositor;

@@ -21,14 +21,38 @@ bool route_upgrade(PlatformContext& ctx, const HttpRequest& req,
         json_object* arr = nullptr;
         if (b) json_object_object_get_ex(b, "targetNodeIds", &arr);
         std::string fn = dvs::json_get_str(b, "filename");
-        if (fn.empty()) fn = "fw.bin";
+        if (fn.empty()) fn = dvs::json_get_str(b, "file");
+        if (fn.empty()) fn = dvs::json_get_str(b, "name");
         std::string sha = dvs::json_get_str(b, "sha256");
+        if (sha.empty()) sha = dvs::json_get_str(b, "sha");
+        std::string ver = dvs::json_get_str(b, "fwVersion");
+        if (ver.empty()) ver = dvs::json_get_str(b, "fw_version");
+        if (ver.empty()) ver = dvs::json_get_str(b, "version");
         std::vector<std::string> nodes;
         if (arr && json_object_is_type(arr, json_type_array)) {
-            for (size_t i = 0; i < json_object_array_length(arr); i++)
-                nodes.push_back(json_object_get_string(
-                    json_object_array_get_idx(arr, i)));
+            for (size_t i = 0; i < json_object_array_length(arr); i++) {
+                json_object* e = json_object_array_get_idx(arr, i);
+                if (e && json_object_is_type(e, json_type_string)) {
+                    std::string nid = json_object_get_string(e);
+                    if (!nid.empty()) nodes.push_back(nid);
+                }
+            }
         }
+        if (nodes.empty()) {
+            if (b) json_object_put(b);
+            dvs::send_json(res, dvs::envelope_fail("INVALID_ARGUMENT", 400,
+                                         "need non-empty targetNodeIds"));
+            return true;
+        }
+        if (fn.empty()) {
+            if (b) json_object_put(b);
+            dvs::send_json(res, dvs::envelope_fail("INVALID_ARGUMENT", 400,
+                                         "need filename and sha256 from an uploaded package"));
+            return true;
+        }
+        if (!ver.empty())
+            ctx.store->audit("{\"upgrade-version\":\"" +
+                             dvs::json_escape(ver) + "\"}");
         if (b) json_object_put(b);
         std::string task_id = ct::next_msg_id("p");
         {

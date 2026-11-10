@@ -2,9 +2,11 @@
 #include "dvs_contract.h"
 #include "dvs_node_bundle.h"
 #include "node_store.h"
+#include "local_shim.h"
 #include "media_ipc.h"
 #include "registration.h"
 #include "http_client.h"
+#include "http_server.h"
 #include "network_apply.h"
 #include "tx_config.h"
 
@@ -784,6 +786,47 @@ static void test_translate_platform_layout() {
   json_object_put(b);
 }
 
+static void test_local_shim_guards() {
+  std::string db = "/tmp/dvs_agent_test_shim.db";
+  std::remove(db.c_str());
+  NodeStore store(db);
+  store.set_node_id("n1");
+  HttpRequest req;
+  HttpResponse res;
+  req.method = "GET";
+  req.path = "/api/v1/nodes/other";
+  req.body = "";
+  CHECK(route_local_nodes(&store, req, res), "shim claims node id path");
+  json_object* o = json_tokener_parse(res.body.c_str());
+  json_object* okv = nullptr;
+  json_object* codev = nullptr;
+  bool is_fail = o && json_object_object_get_ex(o, "ok", &okv) && okv &&
+                 !json_object_get_boolean(okv) &&
+                 json_object_object_get_ex(o, "code", &codev) && codev &&
+                 std::string(json_object_get_string(codev)) == "NOT_FOUND";
+  CHECK(is_fail, "shim rejects mismatched node id");
+  if (o) json_object_put(o);
+  req.method = "PUT";
+  req.path = "/api/v1/nodes/n1";
+  req.body = "{\"name\":\"   \"}";
+  res = HttpResponse();
+  CHECK(route_local_nodes(&store, req, res), "shim claims rename path");
+  o = json_tokener_parse(res.body.c_str());
+  bool empty_rejected = o && json_object_object_get_ex(o, "ok", &okv) &&
+                        okv && !json_object_get_boolean(okv);
+  CHECK(empty_rejected, "shim rejects empty rename");
+  if (o) json_object_put(o);
+  req.body = "{\"name\":\"edge-box\"}";
+  res = HttpResponse();
+  CHECK(route_local_nodes(&store, req, res), "shim claims valid rename");
+  o = json_tokener_parse(res.body.c_str());
+  bool rename_ok = o && json_object_object_get_ex(o, "ok", &okv) && okv &&
+                   json_object_get_boolean(okv);
+  CHECK(rename_ok, "shim accepts valid rename");
+  if (o) json_object_put(o);
+  std::remove(db.c_str());
+}
+
 int main() {
   test_sha256();
   test_pbkdf2_deterministic();
@@ -800,6 +843,7 @@ int main() {
   test_tx_config();
   test_role_pending_projection();
   test_translate_platform_layout();
+  test_local_shim_guards();
 
   if (g_failures == 0) {
     printf("\nALL TESTS PASSED\n");

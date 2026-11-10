@@ -159,6 +159,8 @@ std::string validate_hello(json_object* data) {
     if (!rect_ok(geo)) return "INVALID_ARGUMENT:hello geometry must be {x,y,w,h}";
     json_object* cap = field(data, "capability");
     if (cap && !is_obj(cap)) return "INVALID_ARGUMENT:hello capability must be object";
+    if (field(data, "capabilities"))
+        return "INVALID_ARGUMENT:hello capability must be object";
     json_object* net = field(data, "network");
     if (net && !is_obj(net)) return "INVALID_ARGUMENT:hello network must be object";
     std::string pe = ptp_opt_err(data);

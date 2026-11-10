@@ -102,6 +102,12 @@ bool route_local_nodes(NodeStore* store, const HttpRequest& req,
             id = rest.substr(0, slash);
             action = rest.substr(slash + 1);
         }
+        std::string local_id = shim_str(store->node(), "id");
+        if (!local_id.empty() && id != local_id) {
+            dvs::send_json(res, dvs::envelope_fail("NOT_FOUND", 404,
+                                                 "node unknown", "a"));
+            return true;
+        }
         if (req.method == "GET" && action.empty()) {
             shim_send(res, shim_ok(json_object_get(store->node())));
             return true;
@@ -110,6 +116,23 @@ bool route_local_nodes(NodeStore* store, const HttpRequest& req,
             json_object* body = json_tokener_parse(req.body.c_str());
             std::string name = shim_str(body, "name");
             if (body) json_object_put(body);
+            size_t begin = 0;
+            while (begin < name.size() && (name[begin] == ' ' ||
+                   name[begin] == '\t' || name[begin] == '\n' ||
+                   name[begin] == '\r'))
+                begin++;
+            size_t end = name.size();
+            while (end > begin && (name[end - 1] == ' ' ||
+                   name[end - 1] == '\t' || name[end - 1] == '\n' ||
+                   name[end - 1] == '\r'))
+                end--;
+            if (end <= begin) {
+                dvs::send_json(res, dvs::envelope_fail("INVALID_ARGUMENT",
+                                                     400, "missing name",
+                                                     "a"));
+                return true;
+            }
+            name = name.substr(begin, end - begin);
             json_object* patch = json_object_new_object();
             json_object_object_add(patch, "name",
                                    json_object_new_string(name.c_str()));

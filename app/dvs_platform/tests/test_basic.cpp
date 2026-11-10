@@ -11,7 +11,9 @@
 
 #include "layout.h"
 #include "ops.h"
+#include "platform_context.h"
 #include "platform_store.h"
+#include "upgrade_jobs.h"
 
 #include "dvs_contract.h"
 #include "dvs_node_bundle.h"
@@ -1455,7 +1457,8 @@ static void test_validation_gaps() {
         assert(!validate_whitelist_shape(w).empty());
         json_object_put(w);
     }
-    // Playback aliases and full status set.
+    // Playback aliases stay at the route layer: the shape validator takes
+    // canonical keys only, plus the full status set.
     assert(!validate_playback_shape(nullptr).empty());
     {
         json_object* t = json_object_new_object();
@@ -1463,6 +1466,11 @@ static void test_validation_gaps() {
         json_object_object_add(t, "scene", json_object_new_string("s"));
         json_object_object_add(t, "node", json_object_new_string("n"));
         assert(!validate_playback_shape(t).empty());
+        json_object_put(t);
+        t = json_object_new_object();
+        json_object_object_add(t, "wallId", json_object_new_string("w"));
+        json_object_object_add(t, "sceneId", json_object_new_string("s"));
+        json_object_object_add(t, "targetNodeId", json_object_new_string("n"));
         static const char* kStates[] = {"pending_check", "pending_execution",
                                         "executing", "playing", "succeeded",
                                         "failed", "cancelled", "expired"};
@@ -2047,6 +2055,35 @@ static void test_p3_barrier_and_scale() {
     }
 }
 
+static void test_upgrade_entry_guards() {
+    PlatformStore store(":memory:");
+    PlatformContext ctx;
+    ctx.store = &store;
+    ctx.ops.set_store(&store);
+    HttpRequest req;
+    HttpResponse res;
+    req.method = "POST";
+    req.path = "/api/v1/nodes/upgrade";
+    req.body = "{}";
+    assert(route_upgrade(ctx, req, res));
+    json_object* o = json_tokener_parse(res.body.c_str());
+    json_object* okv = nullptr;
+    assert(o && json_object_object_get_ex(o, "ok", &okv) && !json_object_get_boolean(okv));
+    json_object_put(o);
+    req.body = "{\"targetNodeIds\":[\"n1\"]}";
+    res = HttpResponse();
+    assert(route_upgrade(ctx, req, res));
+    o = json_tokener_parse(res.body.c_str());
+    assert(o && json_object_object_get_ex(o, "ok", &okv) && !json_object_get_boolean(okv));
+    json_object_put(o);
+    req.body = "{\"targetNodeIds\":[\"n1\"],\"filename\":\"fw.bin\",\"sha256\":\"abc\"}";
+    res = HttpResponse();
+    assert(route_upgrade(ctx, req, res));
+    o = json_tokener_parse(res.body.c_str());
+    assert(o && json_object_object_get_ex(o, "ok", &okv) && json_object_get_boolean(okv));
+    json_object_put(o);
+}
+
 int main() {
     test_layout_cell_grid();
     test_layout_apply_at();
@@ -2068,6 +2105,7 @@ int main() {
     test_p3_barrier_and_scale();
     test_common();
     test_frame_anchor();
+    test_upgrade_entry_guards();
 
     printf("dvs_platform_basic OK\n");
     return 0;

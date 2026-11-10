@@ -38,6 +38,9 @@ struct mtl_rx_audio {
     atomic_bool               running;
     uint64_t                  stat_frames;
     uint64_t                  stat_drops;
+    uint32_t                  stat_peak_max;
+    uint64_t                  stat_silent;
+    uint64_t                  stat_write_err;
 };
 
 static uint64_t audio_frame_tai_ns(struct st30_rx_frame_meta* meta) {
@@ -84,10 +87,22 @@ static void* audio_play_thread(void* arg) {
         size_t bytes = slot->size ? slot->size : rx->frame_bytes;
 
         if (rx->cfg.alsa && fb && bytes >= 4) {
+            const int16_t* s = (const int16_t*)fb;
+            size_t nsamp = bytes / 2;
+            uint32_t peak = 0;
+            for (size_t i = 0; i < nsamp; i++) {
+                int v = s[i];
+                if (v < 0) v = -v;
+                if ((uint32_t)v > peak) peak = (uint32_t)v;
+            }
+            if (peak > rx->stat_peak_max) rx->stat_peak_max = peak;
+            if (peak == 0) rx->stat_silent++;
             snd_pcm_uframes_t nframes = (snd_pcm_uframes_t)(bytes / 4);
             if (alsa_audio_write(rx->cfg.alsa, (const int16_t*)fb, nframes) == 0) {
                 if (rx->cfg.sync && slot->tai_ns)
                     av_sync_note_audio_frame(rx->cfg.sync, slot->tai_ns);
+            } else {
+                rx->stat_write_err++;
             }
         }
 
@@ -191,9 +206,11 @@ void mtl_rx_audio_stop(mtl_rx_audio* rx) {
         pthread_join(rx->thd, NULL);
         rx->thd = 0;
     }
-    printf("mtl_rx_audio: %llu frames, %llu drops\n",
+    printf("mtl_rx_audio: %llu frames, %llu drops, peak_max=%u silent_frames=%llu write_err=%llu\n",
            (unsigned long long)rx->stat_frames,
-           (unsigned long long)rx->stat_drops);
+           (unsigned long long)rx->stat_drops,
+           rx->stat_peak_max, (unsigned long long)rx->stat_silent,
+           (unsigned long long)rx->stat_write_err);
 }
 
 void mtl_rx_audio_free(mtl_rx_audio* rx) {

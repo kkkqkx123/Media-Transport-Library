@@ -222,23 +222,30 @@ t1_file_single() {
   note "片源 $w1 x $h1 @ fps=$fps1"
   if ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of csv=p=0 "$FILE_MP4" 2>/dev/null | grep -q .; then
     has_audio=1; note "片源含音频轨，启用音频端到端断言";
+    vol=$(ffmpeg -v info -i "$FILE_MP4" -map 0:a:0 -af volumedetect -f null /dev/null 2>&1 | grep -E "mean_volume|max_volume" || true)
+    note "片源音量：$(echo "$vol" | tr '\n' ' ')"
+    maxv=$(echo "$vol" | sed -n 's/.*max_volume: *\(-*[0-9.]*\).*/\1/p')
+    if [ "$maxv" = "-inf" ] || [ -z "$maxv" ]; then fail "片源音频全静音（max_volume=$maxv），先换片源"; return 1; fi
   else
     has_audio=0; note "片源无音频轨，音频断言跳过（视频照常）";
   fi
   gen_tx_file "$tx_json" "$sec" "$UDP_FILE" "$AUDIO_FILE"
   env_gate display,audio || return 1
   kill_apps
-  rm -f "$rx_log" "$tx_log"
+  rm -f "$rx_log" "$tx_log" "$OUT_DIR/t1_alsa_probe.log"
   nohup $UNBUF "$RX_BIN" "$sec" --port "$PORT" --lip "$IP" --sip "$IP" \
     --udp "$UDP_FILE" --audio-udp "$AUDIO_FILE" --width "$w1" --height "$h1" --fps "$fps1" \
     --ptp-mode monotonic --stats-interval 10 >"$rx_log" 2>&1 &
   local rx_pid=$!; CUR_RX="$rx_pid"
   sleep 3
   if ! kill -0 "$rx_pid" 2>/dev/null; then tail -n 20 "$rx_log"; CUR_RX=""; fail "T1 RX 启动失败"; return 1; fi
+  ( while kill -0 "$rx_pid" 2>/dev/null; do date "+%T" | tr -d '\n'; echo -n " "; cat /proc/asound/card0/pcm0p/sub0/status 2>/dev/null | tr '\n' ';'; echo; sleep 1; done >"$OUT_DIR/t1_alsa_probe.log" 2>&1 & echo $! >"$OUT_DIR/.t1_probe_pid")
   "$TX_BIN" --config "$tx_json" \
     >"$tx_log" 2>&1
+  kill "$(cat "$OUT_DIR/.t1_probe_pid" 2>/dev/null)" 2>/dev/null || true; rm -f "$OUT_DIR/.t1_probe_pid"
   wait "$rx_pid" || true
   CUR_RX=""
+  set +e
   FPS1="$fps1" SEC1="$sec" HAS_AUDIO="$has_audio" python3 - "$rx_log" "$tx_log" <<'PY'
 import os, re, sys
 rx, tx = open(sys.argv[1], errors="replace").read(), open(sys.argv[2], errors="replace").read()
@@ -266,22 +273,57 @@ if len(wins) >= 3:
     check("稳态零坏帧", all(int(w[5]) == 0 and int(w[6]) == 0 for w in steady))
 else: check(f"稳态窗口数>=3（去头尾），实际 {len(wins)}", False)
 if has_audio:
-    m2 = re.search(r"audio exit \((\d+) frames\)", tx)
+    m2 = re.search(r"audio exit \((\d+) frames(?:, peak_max=(\d+) silent_frames=(\d+))?\)", tx)
     check("音频源供帧>0", m2 is not None and int(m2.group(1)) > 0,
             m2.group(0) if m2 else "无 audio exit 行")
+    if m2 and m2.group(2) is not None:
+        peak, sil, tot = int(m2.group(2)), int(m2.group(3)), int(m2.group(1))
+        check("TX 音频非静音 peak_max>=500", peak >= 500, f"peak_max={peak}")
+        check("TX 静音帧占比<50%", tot > 0 and sil / tot < 0.5, f"silent={sil}/{tot}")
+    else:
+        check("TX 有 PCM 峰值统计（旧二进制请重编）", False, "缺 peak_max 字段")
     check("音频无重采样失败", "audio resample" not in tx or "audio feeder started" in tx)
     check("TX 音频已建连", "audio feeder started" in tx)
-    m3 = re.search(r"mtl_rx_audio: (\d+) frames, (\d+) drops", rx)
+    m3 = re.search(r"mtl_rx_audio: (\d+) frames, (\d+) drops(?:, peak_max=(\d+) silent_frames=(\d+) write_err=(\d+))?", rx)
     check("RX 音频收到帧>0", m3 is not None and int(m3.group(1)) > 0,
             m3.group(0) if m3 else "无 mtl_rx_audio 行")
     if m3:
         check("RX 音频零丢弃", int(m3.group(2)) == 0, f"drops={m3.group(2)}")
+        if m3.group(3) is not None:
+            peak, sil, tot, werr = int(m3.group(3)), int(m3.group(4)), int(m3.group(1)), int(m3.group(5))
+            check("RX 音频非静音 peak_max>=500", peak >= 500, f"peak_max={peak}")
+            check("RX 静音帧占比<50%", tot > 0 and sil / tot < 0.5, f"silent={sil}/{tot}")
+            check("RX ALSA 写零失败", werr == 0, f"write_err={werr}")
+        else:
+            check("RX 有 PCM 峰值统计（旧二进制请重编）", False, "缺 peak_max 字段")
     check("声卡可用", "ALSA open failed" not in rx, "声卡打开失败则为 FAIL（已请求音频）")
+    check("ALSA 无写错误", "alsa: write error" not in rx, "见 rx 日志 alsa: write error")
+    m4 = re.search(r"alsa: close written=(\d+) frames errors=(\d+)", rx)
+    check("ALSA 实际消费帧>0", m4 is not None and int(m4.group(1)) > 0,
+            m4.group(0) if m4 else "无 alsa: close 行（旧二进制请重编）")
+    if m4:
+        check("ALSA 关闭零错误", int(m4.group(2)) == 0, f"errors={m4.group(2)}")
+        try:
+            exp = int(48000 * sec)
+            check("ALSA 消费量达标(>=0.7 名义值)", int(m4.group(1)) >= 0.7 * exp, f"written={m4.group(1)} exp~{exp}")
+        except Exception:
+            pass
 else:
     check("无音频片源明确无声", "audio=off" in tx, "file_source audio=off")
     print("SKIP: T1 音频断言（片源无音频轨）")
 sys.exit(0 if ok else 1)
 PY
+  py_rc=$?
+  set -e
+  if [ "$has_audio" = 1 ]; then
+    if grep -q "RUNNING" "$OUT_DIR/t1_alsa_probe.log" 2>/dev/null; then
+      echo "PASS: T1 ALSA 硬件曾进入 RUNNING（驱动真实消费）"
+    else
+      echo "FAIL: T1 ALSA 从未 RUNNING（见 $OUT_DIR/t1_alsa_probe.log，声卡未真实消费）"; py_rc=1
+    fi
+    echo "--- t1_alsa_probe 末5行 ---"; tail -n 5 "$OUT_DIR/t1_alsa_probe.log" 2>/dev/null || true
+  fi
+  return $py_rc
 }
 
 # T2：HDMI TX + 文件 TX 并发，对 2-lane compositor。

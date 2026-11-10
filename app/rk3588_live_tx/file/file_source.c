@@ -393,6 +393,8 @@ static void* audio_thread(void* arg) {
     size_t frame_bytes = mtl_tx_audio_frame_bytes(fs->cfg.audio_tx);
     uint8_t* pcm = NULL;
     size_t pcm_len = 0, pcm_off = 0;
+    uint32_t peak_max = 0;
+    uint64_t silent_frames = 0;
 
     printf("file_source: audio feeder started (%zu B/frame)\n", frame_bytes);
     while (atomic_load(running)) {
@@ -450,6 +452,18 @@ static void* audio_thread(void* arg) {
             usleep(1000);
             continue;
         }
+        {
+            const int16_t* s = (const int16_t*)addr;
+            size_t nsamp = frame_bytes / 2;
+            uint32_t peak = 0;
+            for (size_t i = 0; i < nsamp; i++) {
+                int v = s[i];
+                if (v < 0) v = -v;
+                if ((uint32_t)v > peak) peak = (uint32_t)v;
+            }
+            if (peak > peak_max) peak_max = peak;
+            if (peak == 0) silent_frames++;
+        }
         if (mtl_tx_audio_publish_fb(fs->cfg.audio_tx, idx, frame_bytes) != 0)
             mtl_tx_audio_abort_fb(fs->cfg.audio_tx, idx);
         else
@@ -457,8 +471,9 @@ static void* audio_thread(void* arg) {
     }
     free(pcm);
     av_packet_free(&pkt);
-    printf("file_source: audio exit (%llu frames)\n",
-           (unsigned long long)fs->stat_audio);
+    printf("file_source: audio exit (%llu frames, peak_max=%u silent_frames=%llu)\n",
+           (unsigned long long)fs->stat_audio, peak_max,
+           (unsigned long long)silent_frames);
     return NULL;
 }
 

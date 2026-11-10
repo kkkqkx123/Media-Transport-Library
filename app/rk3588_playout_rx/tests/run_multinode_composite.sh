@@ -62,9 +62,19 @@ hdmi_stable_check() {
 # TX 按片源探针对齐，RX 用 ffprobe 同一片源对齐。
 # 探针片源：输出 "宽 高 帧率"（RX lane 与 TX 会话都以它对齐）。
 probe_file() {
-  ffprobe -v error -select_streams v:0 \
-    -show_entries stream=width,height,avg_frame_rate,r_frame_rate -of csv=p=0 "$FILE_MP4" 2>/dev/null \
-    | awk -F, '{split($3,a,"/"); split($4,b,"/"); if (a[2]>0) fps=a[1]/a[2]; else if (b[2]>0) fps=b[1]/b[2]; else fps=24; printf "%d %d %.3f", $1, $2, fps}'
+  # ffprobe CSV 字段顺序并不跟随 show_entries 顺序；分别取数避免误读。
+  local w h avg r
+  w=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$FILE_MP4" 2>/dev/null | tr -d '[:space:]')
+  h=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$FILE_MP4" 2>/dev/null | tr -d '[:space:]')
+  avg=$(ffprobe -v error -select_streams v:0 -show_entries stream=avg_frame_rate -of csv=p=0 "$FILE_MP4" 2>/dev/null)
+  r=$(ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of csv=p=0 "$FILE_MP4" 2>/dev/null)
+  awk -v w="${w:-1920}" -v h="${h:-1080}" -v avg="$avg" -v r="$r" 'BEGIN {
+    split(avg, a, "/"); split(r, b, "/");
+    if (a[2]+0 > 0) fps = a[1]/a[2];
+    else if (b[2]+0 > 0) fps = b[1]/b[2];
+    else fps = 24;
+    printf "%d %d %.3f", w+0, h+0, fps;
+  }'
 }
 
 gen_rx_2lane() {

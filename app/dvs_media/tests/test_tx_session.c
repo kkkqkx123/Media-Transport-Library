@@ -43,6 +43,13 @@ static int fake_backend_fail(const dvs_tx_params_t* p, char* err, size_t n) {
     return -1;
 }
 
+static int fake_backend_positive(const dvs_tx_params_t* p, char* err, size_t n) {
+    (void)p;
+    (void)err;
+    (void)n;
+    return 1;
+}
+
 static const char* jstr(struct json_object* o, const char* k) {
     struct json_object* v = NULL;
     if (o && json_object_object_get_ex(o, k, &v) && v)
@@ -135,6 +142,17 @@ int main(void) {
           "tx_start with backend fail");
     CHECK(s.state == DVS_TX_FAILED, "backend fail means failed");
     CHECK(strstr(s.error, "mpp busy") != NULL, "backend reason kept");
+
+    /* backend positive return: contract violation, loud failure, never pending */
+    dvs_tx_init(&s);
+    dvs_tx_set_backend(&s, fake_backend_positive);
+    good_params(&p);
+    CHECK(dvs_tx_start(&s, &p, "input", err, sizeof(err)) != 0,
+          "tx_start with backend positive return fails");
+    CHECK(s.state == DVS_TX_FAILED, "backend positive return means failed");
+    CHECK(s.backend_pending == 0, "backend positive return never pending");
+    CHECK(strstr(s.error, "TX_BACKEND_CONTRACT") != NULL,
+          "backend contract violation is explicit");
 
     /* stop is idempotent and clears params */
     dvs_tx_stop(&s);

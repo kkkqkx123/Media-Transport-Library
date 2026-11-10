@@ -57,3 +57,5 @@ python3 tests/perf/e2e_latency_budget.py --duration 60 --out ~/code/mtl/perf/e2e
 
 每轮输出 JSON 原始结果与 Markdown 报告到 `--out`（板上 `~/code/mtl/perf`），结论汇总后归档到 `docs/archive/perf/`（按日期命名）。
 压测与运行中业务会争用硬件，对比采集指标前需停业务或记录负载基线。
+手动验证全流程（环境准备、一条龙执行、看屏确认）见
+`docs/tests/rk3588-manual-verification-runbook.md`。

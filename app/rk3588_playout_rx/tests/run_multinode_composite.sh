@@ -28,7 +28,14 @@ UDP_HDMI="${UDP_HDMI:-15000}"
 UDP_FILE="${UDP_FILE:-15010}"
 AUDIO_FILE="${AUDIO_FILE:-15012}"
 export UDP_HDMI UDP_FILE
+BOARD_ENV="${BOARD_ENV:-$BIN_DIR/board_env.sh}"
 mkdir -p "$OUT_DIR"
+# 分阶段环境门禁（T1 文件源不依赖 HDMI，scope 按需收敛）。
+env_gate() {
+  [ -x "$BOARD_ENV" ] || { fail "缺 $BOARD_ENV（与本脚本同批同步到 bin/）"; return 1; }
+  ENV_UDP_PORTS="$UDP_HDMI $UDP_FILE $AUDIO_FILE" "$BOARD_ENV" status "$1",net --quiet \
+    || { fail "测试环境未就绪（$BOARD_ENV status 查阻塞项，或 $BOARD_ENV run -- $0 $WHICH $SEC 一条龙）"; return 1; }
+}
 
 fail() { echo "FAIL: $*"; return 1; }
 note() { echo "  $*"; }
@@ -61,13 +68,7 @@ preflight() {
   [ -c /dev/video0 ] || { fail "无 /dev/video0（HDMI 采集缺失）"; return 1; }
   [ -f "$FILE_MP4" ] || { fail "缺文件片源 $FILE_MP4"; return 1; }
   command -v ffprobe >/dev/null 2>&1 || { fail "缺 ffprobe（T1/T2 探针对齐用）"; return 1; }
-  if command -v fuser >/dev/null 2>&1; then
-    fuser /dev/video0 >/dev/null 2>&1 && { fail "/dev/video0 被占用，先停旧进程再跑"; return 1; }
-  fi
-  if command -v ss >/dev/null 2>&1; then
-    ss -ulpn 2>/dev/null | grep -qE ":$UDP_HDMI\b|:$UDP_FILE\b" \
-      && { fail "UDP $UDP_HDMI/$UDP_FILE 已被占用（残留 RX/TX 未退）"; return 1; }
-  fi
+  [ -x "$BOARD_ENV" ] || { fail "缺 $BOARD_ENV（与本脚本同批同步到 bin/）"; return 1; }
   pgrep -f MtlManager >/dev/null || { fail "MtlManager 未运行"; return 1; }
   return 0
 }
@@ -169,6 +170,7 @@ t0_baseline() {
   local sec="$1" rx_log="$OUT_DIR/t0_rx.log" tx_log="$OUT_DIR/t0_tx.log"
   echo "=== T0 基线：HDMI 单路回环 ${sec}s ==="
   hdmi_stable_check || return 1
+  env_gate display,capture || return 1
   kill_apps
   rm -f "$rx_log" "$tx_log"
   nohup $UNBUF "$RX_BIN" "$sec" --port "$PORT" --lip "$IP" --sip "$IP" \
@@ -224,6 +226,7 @@ t1_file_single() {
     has_audio=0; note "片源无音频轨，音频断言跳过（视频照常）";
   fi
   gen_tx_file "$tx_json" "$sec" "$UDP_FILE" "$AUDIO_FILE"
+  env_gate display,audio || return 1
   kill_apps
   rm -f "$rx_log" "$tx_log"
   nohup $UNBUF "$RX_BIN" "$sec" --port "$PORT" --lip "$IP" --sip "$IP" \
@@ -294,6 +297,7 @@ t2_composite() {
   note "文件源 $w1 x $h1 @ fps=$fps1"
   gen_rx_2lane "$w1" "$h1" "$fps1"
   gen_tx_file "$tx_json" "$tx_sec" "$UDP_FILE" 0
+  env_gate display,capture || return 1
   kill_apps
   rm -f "$rx_log" "$tx1_log" "$tx2_log"
   nohup $UNBUF "$RX_BIN" "$rx_sec" --config "$CFG_2LANE" \

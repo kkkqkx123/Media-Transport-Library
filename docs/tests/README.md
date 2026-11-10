@@ -7,7 +7,8 @@
 
 | 文档 | 用途 | 何时读 |
 |---|---|---|
-| `rk3588-tx-rx-e2e-verification-design.md` | 单路全链路验证设计（L0–L7，单板回环与双板互通） | 跑任何板端验证前 |
+| `rk3588-manual-verification-runbook.md` | **手动验证操作手册：同步→门禁→一条龙→看屏→恢复→故障速查** | **拿板动手先读本文** |
+| `rk3588-tx-rx-e2e-verification-design.md` | 单路全链路验证设计（L0–L7，单板回环与双板互通） | 跑任何板端验证前（口径参考） |
 | `rk3588-tx-rx-e2e-validation-report.md` | 单路单板 60 秒验证报告 | 查单路基线结论 |
 | `rk3588-multinode-composite-verification-design.md` | 单盒模拟多节点合成输出验证设计（能证明什么、不能证明什么、未来多盒任务） | 做多节点/合成验证前 |
 | `rk3588-multinode-composite-validation-report.md` | 上述设计的板端实测报告（T0–T3 全绿时的数值） | 查多路合成结论 |
@@ -37,10 +38,9 @@
 
 ## 3 板端前置与同步
 
-前置：MtlManager 常驻、大页充足、HDMI 输入有时序锁定、显示输出已点亮。
-同步规范见 `../dev/board-mtl-sync.md`（目录定义、三组映射、推送校验命令、禁止事项）。
-二进制变更只在交叉编译服务器上重编，同步后以 `pkill` 清理残留进程再开测。
-每轮日志与生成的 JSON 同目录存放，报告引用末值而非首个窗口（首尾窗口含启停瞬态）。
+动手步骤见操作手册 `rk3588-manual-verification-runbook.md`（§1 同步、§2 `board_env.sh status` 门禁）。
+同步规范见 `../dev/board-mtl-sync.md`。每轮日志与生成的 JSON 同目录存放，
+报告引用末值而非首个窗口（首尾窗口含启停瞬态）。
 
 ## 4 判定口径速查
 

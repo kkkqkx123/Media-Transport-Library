@@ -162,8 +162,9 @@ int dvs_tx_start(dvs_tx_session_t* s, const dvs_tx_params_t* p,
     s->backend_pending = 0;
 
     if (!s->backend) {
-        /* Backend-less build: params are stored and validated, but nothing
-         * flows. Report configured, not running. */
+        /* No backend installed (x86 unit-test seam only; the shipped binary
+         * always installs the live_ingest backend). Params are stored and
+         * validated, but nothing flows: report configured, not running. */
         s->state = DVS_TX_CONFIGURED;
         s->backend_pending = 1;
         snprintf(s->error, sizeof(s->error),
@@ -176,16 +177,14 @@ int dvs_tx_start(dvs_tx_session_t* s, const dvs_tx_params_t* p,
         s->error[0] = '\0';
         return 0;
     }
-    if (rc > 0) {
-        s->state = DVS_TX_CONFIGURED;
-        s->backend_pending = 1;
-        if (!s->error[0])
-            snprintf(s->error, sizeof(s->error),
-                     "TX_BACKEND_PENDING: tx data plane not linked on this build");
-        return 0;
-    }
+    /* Binary contract: any non-zero backend return is a failed start. A
+     * positive return is a contract violation, never a pending state. */
     s->state = DVS_TX_FAILED;
-    if (!s->error[0]) snprintf(s->error, sizeof(s->error), "backend start failed");
+    if (rc > 0)
+        snprintf(s->error, sizeof(s->error),
+                 "TX_BACKEND_CONTRACT: backend returned %d (want 0/-1)", rc);
+    else if (!s->error[0])
+        snprintf(s->error, sizeof(s->error), "backend start failed");
     if (err && errlen > 0) snprintf(err, errlen, "%s", s->error);
     return -1;
 }

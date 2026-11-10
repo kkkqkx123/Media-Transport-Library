@@ -106,7 +106,7 @@ dvs_media --version                            # 输出 bundle + IPC 版本后�
 - 参数门：`port`（`HDMIk`/`/dev/videoN`/稳定身份三选一）+ `codec(h264/h265)` + 宽高/fps/码率 + `target{sip,udpPort}` 必填，`gopMs` 缺省走编码器默认（跟 fps），`audioUdpPort` 为 0 表示无音频 TX；范围见 `tx_session.h`，先范围校验再按上报 capability  gating。
 - 端口解析：启动绑定表按物理身份优先，TX 启动时重扫；目标缺失/无信号直接拒绝并附可用表（`HDMI1(/dev/video0), …`），绝不静默改绑。
 - 数据面：`tx_backend_live_ingest` 持有 MTL TX 会话 + TX pipeline；视频链为 V4L2→RGA→MPP→MTL ST22；音频链为 ALSA 采集（48kHz 双声道 PCM16，1ms 包/10ms 帧）→ ST2110-30，音频 bring-up 失败则整个 TX start  loud 失败，不发无声视频。所有进入/退出都在引擎锁下，`tx_stop`/角色切换/clear/stop 全路径对称 teardown。
-- **诚实规则**：`tx_session` 的无 backend（`configured + backend_pending`）分支只活在 x86 单测里；出货二进制恒装 live_ingest backend，`tx_start` 成功即 `running`，失败即 `failed`，不存在第三种出货形态；`tx_stop` 幂等清参回 `idle`。
+- **诚实规则**：`tx_session` 的无 backend（`configured + backend_pending`）分支只活在 x86 单测里；出货二进制恒装 live_ingest backend，`tx_start` 成功即 `running`，失败即 `failed`，不存在第三种出货形态；`tx_stop` 幂等清参回 `idle`。backend 契约二进制化：返回 0 为成功，任何非零为失败；正返回值属契约违规，以 `TX_BACKEND_CONTRACT` 短码直接失败，永不映射为 pending。
 - `query_state.tx` 为 `dvs_tx_status_json` 快照（`state/params/error/backend_pending`）；commit 失败短码：`DECODE_NOT_READY`（影子无首帧，旧画面保持）/ `LAYOUT_APPLY_FAILED` / `MEDIA_SESSION_FAILED` / `LAYOUT_CONFLICT`（input 角色下推布局）。
 
 ## 10. 帧锚定提交、快慢路径与角色互斥

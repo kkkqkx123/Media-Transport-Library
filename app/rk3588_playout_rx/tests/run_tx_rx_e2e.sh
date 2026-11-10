@@ -45,16 +45,10 @@ trap cleanup INT TERM EXIT
 preflight() {
   [ -x "$RX_BIN" ] || fail "缺 $RX_BIN"
   [ -x "$TX_BIN" ] || fail "缺 $TX_BIN"
-  [ -c /dev/video0 ] || fail "无 /dev/video0（HDMI 采集缺失）"
-  if command -v fuser >/dev/null 2>&1; then
-    fuser /dev/video0 >/dev/null 2>&1 && fail "/dev/video0 被占用（fuser /dev/video0 查持有者，先停旧进程再跑）"
-    [ -e /dev/dri/card0 ] && fuser /dev/dri/card0 >/dev/null 2>&1 \
-      && echo "WARN: /dev/dri/card0 被占用（桌面或旧 RX），显示可能提交失败"
-  fi
-  if command -v ss >/dev/null 2>&1; then
-    ss -ulpn 2>/dev/null | grep -q ":$UDP\b" \
-      && fail "UDP $UDP 已被占用（ss -ulpn 查持有者，残留 RX/TX 未退）"
-  fi
+  BOARD_ENV="${BOARD_ENV:-$BIN_DIR/board_env.sh}"
+  [ -x "$BOARD_ENV" ] || fail "缺 $BOARD_ENV（与本脚本同批同步到 bin/）"
+  ENV_UDP_PORTS="$UDP" "$BOARD_ENV" status display,capture,net --quiet \
+    || fail "测试环境未就绪（$BOARD_ENV status 查阻塞项，或 $BOARD_ENV run -- $0 $SEC 一条龙）"
   if ! pgrep -f "MtlManager" >/dev/null 2>&1; then
     echo "起 MtlManager（后台）..."
     nohup /usr/local/bin/MtlManager >/tmp/mtlmanager2.log 2>&1 &
@@ -72,8 +66,6 @@ preflight() {
 }
 
 preflight
-v4l2-ctl -d /dev/video0 --get-dv-timings 2>/dev/null | grep -q "1920" \
-  || echo "WARN: DV 时序非 1080p，以宽高帧率显式对齐继续"
 rm -f "$RX_LOG" "$TX_LOG"
 
 echo "=== RX 起 ($SEC s, $PORT lip=$IP sip=$IP udp=$UDP ${W}x${H}@${FPS}) ==="

@@ -23,7 +23,8 @@
 ## 2. 三组映射（仓库 → 板端）
 
 * `debug/*` → `src/debug/*`，含 `debug/tests/*` → `src/debug/tests/*`，
-  共 13 文件。编译命令见 `src/debug/README.md`，产物落 `bin/`。
+  共 14 文件（含 `board_env.sh`）。编译命令见 `src/debug/README.md`，产物落 `bin/`；
+  其中 `board_env.sh`、`display_compare.sh` 另拷可执行副本进 `bin/`（e2e 门禁与一条龙入口）。
 * `tests/perf/**/*` → `src/perf/**/*`，共 9 文件。运行命令见
   `src/perf/README.md`，输出落 `perf/`，输入流落 `streams/`。
 * `app/rk3588_playout_rx/tests/` 手动子集 → `src/playout-tests/`：

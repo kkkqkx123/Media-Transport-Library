@@ -1,5 +1,9 @@
 # RK3588 功能验证方案
 
+> 已过期：本文不再更新。验证体系现为 `docs/tests/` 下 design（口径）＋
+> `rk3588-manual-verification-runbook.md`（动手步骤）＋ validation-report（结论），
+> 板端同步见 `docs/dev/board-mtl-sync.md`。本文仅保留作历史引用。
+>
 > 最后更新：2026-11-02
 > 适用：在 RK3588 板端对 MTL 库与 `rk3588_live_tx` / `rk3588_playout_rx` 应用做功能完整性验证。
 > 部署前提见 `docs/dev/RK3588_DEPLOYMENT.md`，交叉编译链路见 `docs/archive/RK3588_CROSS_COMPILE_PROGRESS.md`。

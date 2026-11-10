@@ -9,7 +9,10 @@ PASS_SEC="${PASS_SEC:-20}"
 CHAIN_SEC="${CHAIN_SEC:-30}"
 
 need() { [ -x "$BIN/$1" ] || { echo "缺 $BIN/$1"; echo "补：$2"; exit 1; }; }
+need board_env.sh "同步 debug/tests/board_env.sh 到 src/debug/tests/ 并拷入 bin/"
 trap "exit 130" INT; trap "exit 143" TERM
+ENV_UDP_PORTS="15000 15010 15012" "$BIN/board_env.sh" status display,capture,net --quiet \
+  || { echo "测试环境未就绪（board_env.sh status 查阻塞项，或 board_env.sh run -- $BIN/run_tx_rx_e2e.sh $CHAIN_SEC 一条龙）"; exit 1; }
 if command -v fuser >/dev/null 2>&1; then
   fuser /dev/video0 >/dev/null 2>&1 && { echo "FAIL: /dev/video0 被占用，先停旧采集进程再跑 A/B 对比"; exit 1; }
 fi

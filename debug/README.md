@@ -92,3 +92,6 @@ ffmpeg -y -v error -f rawvideo -pix_fmt nv12 -s 3840x2160 \
 - 解码：输入为上一步产出的 4K H264，`--max-au` 按文件 AU 数截断。
 - RGA：`--w 3840 --h 2160` 自拷贝、`--dw 1920 --dh 1080` 下缩放、
   `--srcfmt bgr3` 覆盖生产 BGR 采集→NV12 路径（默认 `nv12` 保持旧行为）。
+
+端到端手动验证流程（环境准备、一条龙执行、看屏确认）见
+`docs/tests/rk3588-manual-verification-runbook.md`。

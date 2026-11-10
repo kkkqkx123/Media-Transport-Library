@@ -48,7 +48,15 @@ case "$STAGE" in
   *) echo "用法：$0 [T0|T1|T2] [hold秒数]"; exit 1 ;;
 esac
 [ -x "$RUNNER" ] || fail "缺 runner $RUNNER"
-[ -c /dev/video0 ] || fail "无 /dev/video0（HDMI 采集缺失）"
+BOARD_ENV="${BOARD_ENV:-$BIN_DIR/board_env.sh}"
+[ -x "$BOARD_ENV" ] || fail "缺 $BOARD_ENV（与 runner 同批同步到 bin/）"
+case "$STAGE" in
+  T0) SCOPE=display,capture,net;;
+  T1) SCOPE=display,audio,net;;
+  T2) SCOPE=all;;
+esac
+ENV_UDP_PORTS="15000 15010 15012" "$BOARD_ENV" status "$SCOPE" --quiet \
+  || fail "测试环境未就绪（$BOARD_ENV status 查阻塞项，或 $BOARD_ENV run -- $0 $STAGE $HOLD 一条龙）"
 pgrep -f MtlManager >/dev/null || fail "MtlManager 未运行"
 
 # 期望现象检查单（与验证报告 §8 目视清单同源）。

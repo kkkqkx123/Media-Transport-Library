@@ -94,3 +94,13 @@ T2 文件路音频 by-design 关闭（合成器音频取 main lane=HDMI），只
 `run_multinode_composite.sh T1 40` 全 PASS——视频 `1210 frames/drops=0`、
 稳态 `dec/mtl_rx 900/900` 零丢零坏；音频 TX `40046 frames, peak_max=2912, silent=0`、
 RX `37053 frames, 0 drops, write_err=0`；ALSA `written=1778544 errors=0` 且硬件曾 `RUNNING`。
+
+## 7. 节点包验证（`debug/tests/` → 板 `src/debug/tests/`，可执行副本进 `bin/`）
+
+| 本地 | 板端 | 输入 → 输出 | 对照设计 |
+|---|---|---|---|
+| `debug/tests/dvs_ipc_probe.py` | 同级映射，直跑 | IPC socket → 单行回包包络断言 | `dvs-node-deployment-verification-design.md` V1，`dvs-node-validation-report.md` §1.3 |
+| `debug/tests/dvs_node_smoke.sh` | 同级映射 + `bin/` 副本 | 双 `--version` + IPC 只读 + 代理 HTTP + 前端 200 | 同上 V0–V3 门禁 |
+| `debug/tests/dvs_agent_api_smoke.sh` | 同级映射 + `bin/` 副本 | 代理全 API（登录/六 scope/非法反例/媒体面/审计/本地投影），不碰破坏性运维 | 同上 V2 与 Web 功能矩阵 |
+
+只依赖 `curl` + `python3`；代理回包以 `ok/status/code/msg/data` 为必字段，`requestId` 仅代理自发包络携带，透传的引擎离线包络（`MEDIA_ENGINE_*`）无此字段亦判通过；配置非法写入判 `ok:true + data.state=failed`，不判 HTTP 层失败。

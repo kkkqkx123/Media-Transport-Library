@@ -15,15 +15,21 @@ Outputs: `app/rk3588_live_tx/build/live_ingest` (TX-only) and `app/rk3588_playou
 
 | App | What it does |
 |---|---|
-| `app/rk3588_live_tx/` | 编码发送端 (TX-only):V4L2 capture → RGA conversion → MPP encode → MTL TX (ST2110-22). `codec/` 只留编码侧 (`mpp_encoder`, `rga_converter`);`hal/` 有 DMA allocator、slab pool、timer、SEI timestamps;`pipeline/` 只留 `tx_pipeline`;`mtl_tx.c` 包装 MTL 发送会话。只产流,不收流;回环验证与 `rk3588_playout_rx` 接收进程经网络互通。单元测试在 `tests/`。 |
-| `app/rk3588_playout_rx/` | 解码接收端 (RX-only):MTL RX → MPP decode → playout buffering → AV sync → ALSA audio → multi-window composition (`rx/rx_compositor`) → DRM display. `shared/` holds MPP decode/DRM/MP4-demux-probe/extradata helpers that `dvs_media` reuses **in-tree** (not a copy) — keep these in sync across both apps. 只收流,不产流;发送端由 `rk3588_live_tx` 经网络供给(文件帧源迁入编码侧见 `docs/plan/rk3588/RK3588_ENCODE_DECODE_ROLE_REFACTOR.md` 阶段二)。Includes PTP configs (`config/ptp/`) and Python log-verification scripts in `tests/`. |
-| `app/dvs_media/` | 节点媒体引擎 (C, MTL/MPP/DRM/ALSA):由 `rk3588_playout_rx` 的 **RX 侧演进**,通过 meson **in-tree 编译直接复用** file_playout 的 `rx/`、`shared/`(含 `mp4_demux` 探针与 `extradata_handler` 解码辅助)与 `rk3588_common`;支持 IPC configure/prepare/commit/abort/clear/query_state,布局热更新与能力上报。input role 数据面经 `engine/tx_backend_live_ingest.c` 复用 `rk3588_live_tx` 的 donor chain (V4L2 capture → RGA → MPP encode → MTL TX)。集成分析见 `docs/analysis/DVS_MEDIA_RK3588_INTEGRATION.md`,接入方案见 `docs/plan/`。 |
-| `app/dvs_agent/` | 节点代理 (C++17):本地 HTTP + node-device-admin 静态前端,六 scope 配置状态机,注册/心跳,维护操作;依赖 json-c + SQLite amalgamation。 |
-| `app/dvs_platform/` | 平台服务 (C++17, 与代理同栈):节点注册/心跳网关,分组/墙/场景/绑定/白名单文档,布局像素拆分,跨节点 prepare/commit 屏障与回退,退役墓碑,串行批量升级;直编 SQLite,无新增运行时依赖。复用代理的 HTTP 服务与客户端源文件,不预抽公共库。 |
+| `app/rk3588_live_tx/` | Encode sender (TX-only): V4L2 capture → RGA conversion → MPP encode → MTL TX (ST2110-22). `codec/` keeps the encode side only (`mpp_encoder`, `rga_converter`); `hal/` has DMA allocator, slab pool, timer, SEI timestamps; `pipeline/` keeps `tx_pipeline` only; `mtl_tx.c` wraps the MTL send session. Send-only, no receive; loopback is verified against the `rk3588_playout_rx` receive process over the network. Unit tests in `tests/`. |
+| `app/rk3588_playout_rx/` | Decode receiver (RX-only): MTL RX → MPP decode → playout buffering → AV sync → ALSA audio → multi-window composition (`rx/rx_compositor`) → DRM display. `shared/` holds MPP decode/DRM/MP4-demux-probe/extradata helpers that `dvs_media` reuses **in-tree** (not a copy) — keep these in sync across both apps. Receive-only, no send; the sender is `rk3588_live_tx` over the network (file frame sources moving into the encode side: see `docs/plan/rk3588/RK3588_ENCODE_DECODE_ROLE_REFACTOR.md` phase 2). Includes PTP configs (`config/ptp/`) and Python log-verification scripts in `tests/`. |
+| `app/dvs_media/` | Node media engine (C, MTL/MPP/DRM/ALSA): evolved from the **RX side** of `rk3588_playout_rx`; meson compiles file_playout's `rx/` and `shared/` (incl. the `mp4_demux` probe and `extradata_handler` decode helper) plus `rk3588_common` **in-tree, no copies**. Supports IPC configure/prepare/commit/abort/clear/query_state, hot layout updates, and capability reporting. The input-role data plane reuses the `rk3588_live_tx` donor chain (V4L2 capture → RGA → MPP encode → MTL TX) via `engine/tx_backend_live_ingest.c`. Integration analysis: `docs/analysis/DVS_MEDIA_RK3588_INTEGRATION.md`; rollout plans: `docs/plan/`. |
+| `app/dvs_agent/` | Node agent (C++17): local HTTP + node-device-admin static frontend, six-scope config state machine, registration/heartbeat, maintenance ops; depends on json-c + SQLite amalgamation. |
+| `app/dvs_platform/` | Platform service (C++17, same stack as the agent): node registration/heartbeat gateway, group/wall/scene/binding/allowlist documents, layout pixel splitting, cross-node prepare/commit barrier with rollback, decommission tombstones, serial batch upgrades; SQLite compiled in, no new runtime deps. Reuses the agent's HTTP service and client sources in-tree, no pre-extracted common library. |
 
 ---
 
 ## Compile guideline
+
+Hard rule: building x86 (native) artifacts locally is prohibited under all circumstances. Local work is code and docs edits only — no local compilation, no running locally built artifacts. Local resources are tight; all compilation happens on the devs compile server.
+
+- Prohibited: `./build.sh` (any subcommand), any `meson setup build` under `app/*/` without `--cross-file`, local `ninja -C build`, running x86 unit/self-test binaries locally — anything that would produce x86 build artifacts locally.
+- Cleaned up: all local x86 artifacts are deleted (native `build/` dirs such as `app/dvs_agent/build` and `app/dvs_platform/build`, plus the failed local cross-build residue `app/dvs_agent/build-aarch64`). aarch64 cross artifacts (`build-aarch64/`, `app/dvs_media/build`, `app/rk3588_live_tx/build`, `app/rk3588_playout_rx/build`) are kept.
+- Build flow: first `./scripts/sync_to_devs.sh --dry-run` to review, then `./scripts/sync_to_devs.sh` for one-way sync to `devs:/data/kkkqkx/mtl` (see docs/dev/MTL_SYNC_GUIDE.md), then compile on devs; RK3588 cross builds use `script/build_rk3588_cross.sh` or a sysroot cross file with output dir `build-aarch64/`.
 
 When need to compile mtl in compile server, refer to docs/dev/MTL_SYNC_GUIDE.md.
 

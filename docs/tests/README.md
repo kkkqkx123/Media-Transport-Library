@@ -16,6 +16,8 @@
 | `rk3588-drm-verification-design.md` | DRM 显示验证设计 | 查显示判定口径 |
 | `rk3588-capture-encode-decode-perf-design.md` | 采集编码解码性能画像设计 | 查性能判定口径 |
 | `codec-latency-semantics.md`、`codec-perf-test-logic.md` | 编解码时延语义与性能逻辑 | 查编解码判定口径 |
+| `dvs-node-validation-report.md` | 节点包验证报告（x86 全绿 + 板端待验清单与实测输出） | 查节点包本轮结论 |
+| `dvs-node-deployment-verification-design.md` | 节点包（`dvs_media` + `dvs_agent`）板端部署与验证设计：版本契约、分层验证、Web 后端功能矩阵、新增调试脚本规格 | 跑受控包验证前（本文档为唯一入口） |
 
 ## 2 板端验证脚本
 

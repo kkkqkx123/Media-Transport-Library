@@ -14,7 +14,7 @@
 | `src/debug/` | 源码镜像 | 仓库 `debug/` 全量（含 `tests/` 子目录），只读 | 是（以仓库为准） |
 | `src/perf/` | 源码镜像 | 仓库 `tests/perf/` 全量（含 `common/`），只读 | 是（以仓库为准） |
 | `src/playout-tests/` | 源码镜像 | `app/rk3588_playout_rx/tests/` 手动子集（见 §2），只读 | 是（以仓库为准） |
-| `perf/`、`streams/` | 数据态 | 测量输出（csv/json/md/log）与输入流（nv12/h264/bgr3） | 否，长期保留 |
+| `perf/`、`streams/` | 数据态 | 测量输出（csv/json/md/log）与输入流（nv12/h264/bgr3/mp4） | 否，长期保留 |
 
 已废止：旧 `~/code/mtl/debug/`、`~/code/mtl/tests/`（路径与仓库不对齐的
 手抄快照）、`src/` 顶层孤儿 `.c`、`bin/*.bak`、`__pycache__`，均已清理，
@@ -29,6 +29,7 @@
   `src/perf/README.md`，输出落 `perf/`，输入流落 `streams/`。
 * `app/rk3588_playout_rx/tests/` 手动子集 → `src/playout-tests/`：
   `run_tx_rx_e2e.sh`、`run_multinode_composite.sh`、
+  `gen_av_file_source.sh`、
   `run_dualboard_interop.sh`、`run_dualoutput_sameframe.sh`、
   `manual_check_visual.sh`、`verify_phase.sh`、`plan_a_verify.sh`、
   `run_single_board_plan_a.sh`、`check_drm_log.py`、`check_playout_log.py`、

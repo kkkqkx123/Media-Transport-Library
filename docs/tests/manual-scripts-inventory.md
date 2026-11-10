@@ -46,6 +46,7 @@
 | `run_tx_rx_e2e.sh` | `src/playout-tests/` + `bin/` 可执行副本，单板回环默认 60s | `rk3588-tx-rx-e2e-verification-design.md` L0–L7；报告见 `rk3588-tx-rx-e2e-validation-report.md` |
 | `run_multinode_composite.sh` | 同上；`OUT_DIR` 先定义后使用（此前引用未定义变量，`set -u` 下直接失败，已修复） | `rk3588-multinode-composite-verification-design.md` T0–T3；报告见 `rk3588-multinode-composite-validation-report.md`；音频正式结论见 §5 |
 | `manual_check_visual.sh` | 同上 | 目检流程（与 `display_compare.sh` 互补） |
+| `gen_av_file_source.sh` | 同上（只跑一次，产物进 `streams/`，见 §6） | 生成 T1/T2 默认文件片源（有声非静音，替代旧 `/usr/local/test.mp4`） |
 | `run_dualboard_interop.sh`、`run_dualoutput_sameframe.sh` | 同上，未来 F1–F3，本阶段只备不用 | 见两 design 文档的未来任务节 |
 | `verify_phase.sh`、`plan_a_verify.sh`、`run_single_board_plan_a.sh` | 同上 | 单路 Plan A 阶段性脚本，`verify_phase.sh` 用 `FILE_PLAYOUT_DUMP_RX` 取流后二次验证 |
 | `check_playout_log.py`、`check_drm_log.py`、`check_pts_idx.py`、`compare_au_trace.py`、`verify_vrx_margin.py` | 同上离线跑 | 日志/AU 轨迹/PTS/VRX 余量检查器，输入为日志或抓包，见各脚本头注释 |
@@ -66,3 +67,30 @@
 | 反例 RX `audio_udp=0` 纯视频 | 通过 | `audio=off`，无 `alsa: ready`/`mtl_rx_audio` 建连行，视频照常 |
 | T0 HDMI 基线 30s | 通过（重跑确认） | 初次失败为超时杀脚本残留进程争用端口所致（`build ret -283`=应用无帧可发、`trs -142`=发送环无包，均为结果而非原因）；清理残留后重跑 `T0 30` 全过：收流 `1616 pkt/1615 dec`、发送 `1795 cap/1793 enc`、零丢零坏 |
 | T3 独立运行 | 脚本前置缺失 | 依赖 T2 生成的 `multinode_2lane.json`，单独跑 T3 即 `FileNotFoundError`（历史脚本排序问题，与音频改动无关） |
+
+## 6. 文件片源说明（`gen_av_file_source.sh` + `FILE_MP4` 默认值）
+
+两 runner 的 `FILE_MP4` 默认值现为 `~/code/mtl/streams/multinode_av_1080p30.mp4`
+（板端数据态持久目录，见 `docs/dev/board-mtl-sync.md` §1），由
+`app/rk3588_playout_rx/tests/gen_av_file_source.sh` 生成并随手动子集同步上板
+（`src/playout-tests/`），输出落 `streams/`、不进 git。
+
+换源原因：旧默认 `/usr/local/test.mp4` 无人管理，内容一旦变无声（无音频轨），
+T1 音频断言全部 SKIP 仍显示通过——ST30 feeder 建连、TX/RX peak/静音统计、
+ALSA 实际消费（`t1_alsa_probe.log` 是否 `RUNNING`）全不跑，`manual_check` T1 项 4
+也只能跳过。有音频轨但全静音时 T1 会明确 FAIL，只有无轨是静默 SKIP，
+最具迷惑性，故必须 pin 住一路有声非静音片源。
+
+片源刻画：1920x1080 CFR 30fps（`testsrc2`，PiP 目视可辨冻结）+ 440Hz 正弦
+48kHz 立体声 AAC；视频码率 4Mbps 上限 6Mbps，单 AU 远小于 TX 侧 1MB 码流上限；
+时长 60s，覆盖 T1/T2 默认 40s 无需 loop。生成脚本的校验口径与 T1 门禁同源
+（视频几何、有音频轨、`volumedetect` 非全静音），属“按构造通过 T1 门禁”。
+
+分工重申：T1 凭此片源恢复音频端到端覆盖（脚本逻辑零改，`has_audio` 分支已存在）；
+T2 文件路音频 by-design 关闭（合成器音频取 main lane=HDMI），只验视频合成，
+有声片源对其价值是 PiP 画面持续变化；T0/T3 不消费文件源，不受影响。
+
+复测（旧 `/usr/local/test.mp4` 已删，板 `streams/` 新片源）：
+`run_multinode_composite.sh T1 40` 全 PASS——视频 `1210 frames/drops=0`、
+稳态 `dec/mtl_rx 900/900` 零丢零坏；音频 TX `40046 frames, peak_max=2912, silent=0`、
+RX `37053 frames, 0 drops, write_err=0`；ALSA `written=1778544 errors=0` 且硬件曾 `RUNNING`。

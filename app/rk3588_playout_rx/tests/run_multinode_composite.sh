@@ -12,13 +12,15 @@
 #
 # 用法：run_multinode_composite.sh [T0|T1|T2|T3|all] [秒数]
 # 环境覆盖：IP PORT SEC FILE_MP4 BIN_DIR OUT_DIR UDP_HDMI UDP_FILE
+# FILE_MP4 默认见 streams/ 受管片源（gen_av_file_source.sh 生成，有声非静音，T1 音频断言必需）；
+# T2 文件路音频 by-design 关闭，只验视频合成；T3 不跑流。
 set -euo pipefail
 
 WHICH="${1:-all}"
 SEC="${2:-${SEC:-40}}"
 IP="${IP:-192.168.80.202}"
 PORT="${PORT:-kernel:enP2p33s0}"
-FILE_MP4="${FILE_MP4:-/usr/local/test.mp4}"
+FILE_MP4="${FILE_MP4:-$HOME/code/mtl/streams/multinode_av_1080p30.mp4}"
 BIN_DIR="${BIN_DIR:-$HOME/code/mtl/bin}"
 RX_BIN="$BIN_DIR/file_playout_rx"
 TX_BIN="$BIN_DIR/live_ingest"

@@ -9,6 +9,7 @@
 #
 # 用法：manual_check_visual.sh [T0|T1|T2] [hold秒数]
 # 环境：IP PORT FILE_MP4 BIN_DIR OUT_DIR RUNNER（与 run_multinode_composite.sh 同名变量互通）
+# FILE_MP4 默认同 runner（streams/ 受管有声片源，见 gen_av_file_source.sh）；T1 项 4 需有声片源方可判定。
 # 非交互（stdin 非 tty）时只跑流取证并标记 UNWITNESSED，不伪造人工结论。
 set -euo pipefail
 
@@ -16,7 +17,7 @@ STAGE="${1:-T2}"
 HOLD="${2:-120}"
 IP="${IP:-192.168.80.202}"
 PORT="${PORT:-kernel:enP2p33s0}"
-FILE_MP4="${FILE_MP4:-/usr/local/test.mp4}"
+FILE_MP4="${FILE_MP4:-$HOME/code/mtl/streams/multinode_av_1080p30.mp4}"
 BIN_DIR="${BIN_DIR:-$HOME/code/mtl/bin}"
 OUT_DIR="${OUT_DIR:-/tmp/multinode_composite}"
 RUNNER="${RUNNER:-$(cd "$(dirname "$0")" && pwd)/run_multinode_composite.sh}"

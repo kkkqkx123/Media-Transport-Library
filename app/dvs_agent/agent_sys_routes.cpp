@@ -4,6 +4,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
+#include <dirent.h>
 #include <fstream>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -20,6 +22,25 @@
 #include "dvs_http_json.h"
 
 namespace {
+// Best-effort expiry of staged firmware older than 24h. Runs on each
+// upload before the new file lands; failures are ignored so an unreadable
+// staging dir never blocks a fresh upload.
+void staging_expire_old_files(const std::string& staging) {
+  DIR* dp = opendir(staging.c_str());
+  if (!dp) return;
+  time_t now = time(nullptr);
+  struct dirent* de = nullptr;
+  while ((de = readdir(dp)) != nullptr) {
+    if (de->d_name[0] == '.') continue;
+    std::string p = staging + "/" + de->d_name;
+    struct stat st;
+    if (stat(p.c_str(), &st) != 0) continue;
+    if (!S_ISREG(st.st_mode)) continue;
+    if ((now - st.st_mtime) > 24 * 3600) unlink(p.c_str());
+  }
+  closedir(dp);
+}
+
 json_object* node_capacity_json() {
   json_object* o = json_object_new_object();
   long long mem_total = 0, mem_avail = 0;
@@ -237,6 +258,7 @@ bool agent_handle_sys(AgentContext& ctx, const HttpRequest& req,
       }
       if (!cur.empty()) mkdir(cur.c_str(), 0755);
     }
+    staging_expire_old_files(staging);
     std::string dest = staging + "/" + base;
     std::ofstream out(dest, std::ios::binary | std::ios::trunc);
     if (!out) {

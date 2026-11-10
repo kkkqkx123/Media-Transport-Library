@@ -127,6 +127,8 @@ std::string validate_per_node_budget(
 int ptp_max_offset_us();
 // Node qualification for fanout: online, role output, clock synced within
 // threshold. Missing clock summary means unknown and unqualified.
+// Monotonic/debug nodes report unsynced (known-not-synced) and are excluded
+// from aligned walls by policy; they may run standalone.
 bool node_clock_ok(json_object* node, std::string* reason);
 // Barrier ack lane readiness: every present lane must be ready. A missing
 // ready flag counts as ready; a missing or empty array counts as ready.

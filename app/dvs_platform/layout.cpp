@@ -771,6 +771,11 @@ bool node_clock_ok(json_object* node, std::string* reason) {
     if (!ptp || !json_object_is_type(ptp, json_type_object))
         return fail("clock unknown");
     std::string st = jstr(ptp, "state");
+    // Aligned-wall policy: monotonic/debug nodes report unsynced
+    // (known-not-synced, distinct from unknown) and are excluded here.
+    // They may run standalone but never join a wall that needs PTP alignment.
+    if (st == "unsynced")
+        return fail("monotonic clock (unsynced), excluded from aligned walls");
     if (st != "synced") return fail("clock unsynced");
     json_object* off = nullptr;
     if (json_object_object_get_ex(ptp, "offsetUs", &off) && off) {

@@ -30,6 +30,24 @@
 #define DVS_OUT_MIN_H 480
 #define DVS_OUT_MIN_HZ 24
 
+/* TX encode absolute ceilings (RK3588 SoC limits). Single source for the
+ * engine validator (tx_session.h) and the agent admission defaults
+ * (tx_config.h); a reported capability.tx object narrows these per-field.
+ * Floors reuse the output minima so capture and display never disagree on
+ * the 480p baseline. */
+#define DVS_TX_MAX_W 3840
+#define DVS_TX_MAX_H 2160
+#define DVS_TX_MAX_FPS 60
+#define DVS_TX_MAX_BR_KBPS 20000
+#define DVS_TX_MIN_W 640
+#define DVS_TX_MIN_H 480
+#define DVS_TX_MIN_FPS 24
+#define DVS_TX_MIN_BR_KBPS 500
+
+/* GOP interval bounds (ms). 0 selects the encoder default (follows fps). */
+#define DVS_TX_GOP_MS_MIN 250
+#define DVS_TX_GOP_MS_MAX 4000
+
 /* Capability freshness defaults (ms). Overridable via DVS_VER_CACHE_MS /
  * DVS_CAP_STALE_MS / DVS_HOTPLUG_INTERVAL_MS for field tuning. */
 #define DVS_VER_CACHE_MS_DEFAULT 5000

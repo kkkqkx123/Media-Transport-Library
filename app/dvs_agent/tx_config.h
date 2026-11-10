@@ -2,6 +2,8 @@
 #include <json-c/json.h>
 #include <string>
 
+#include "dvs_node_bundle.h"
+
 /* TX parameter model for the input scope (encode + single target).
  *
  * Responsibility split: this module owns parsing, defaults and range checks.
@@ -11,11 +13,11 @@
  */
 struct TxEncode {
     std::string codec = "h264";  // "h264" | "h265"
-    int width = 1920;            // 640..cap.maxWidth
-    int height = 1080;           // 480..cap.maxHeight
-    int fps = 30;                // 24..cap.maxFps
-    int bitrate = 4000;          // 500..cap.maxBitrateKbps (kbps)
-    int gopMs = 0;               // 0 = encoder default; else 250..4000
+    int width = 1920;            // DVS_TX_MIN_W..cap.maxWidth
+    int height = 1080;           // DVS_TX_MIN_H..cap.maxHeight
+    int fps = 30;                // DVS_TX_MIN_FPS..cap.maxFps
+    int bitrate = 4000;          // DVS_TX_MIN_BR_KBPS..cap.maxBitrateKbps
+    int gopMs = 0;               // 0 = encoder default; else DVS_TX_GOP_MS_MIN..MAX
 };
 
 struct TxTarget {
@@ -34,10 +36,10 @@ struct TxParams {
 
 struct TxCaps {
     std::string codecs = "h264,h265";
-    int maxW = 3840;
-    int maxH = 2160;
-    int maxFps = 60;
-    int maxBr = 20000;
+    int maxW = DVS_TX_MAX_W;
+    int maxH = DVS_TX_MAX_H;
+    int maxFps = DVS_TX_MAX_FPS;
+    int maxBr = DVS_TX_MAX_BR_KBPS;
 };
 
 /* Read capabilities.tx when present; otherwise keep the frozen ceilings. */

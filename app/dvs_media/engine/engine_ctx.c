@@ -2,6 +2,7 @@
 
 #include <json-c/json.h>
 
+#include "dvs_node_bundle.h" /* DVS_OUT_* redlines: single source shared with the agent */
 #include "file_playout_config.h"      /* file_playout_mtl_init_dual, mode_dims, apply_drm_mode */
 #include "engine/tx_backend.h"
 #include "display_layout.h" /* file_playout_pip_validate, MP4_PIP_MAX_LANES */
@@ -600,14 +601,6 @@ int dvs_engine_start(dvs_engine* e) {
     if (!e) return -1;
     return dvs_engine_apply_layout(e, e->cfg.pip_streams, e->cfg.pip_stream_count);
 }
-
-/* Output mode bounds: single-wall canvas ceiling with a 480p floor. */
-#define DVS_OUT_MIN_W 640
-#define DVS_OUT_MAX_W 7680
-#define DVS_OUT_MIN_H 480
-#define DVS_OUT_MAX_H 4320
-#define DVS_OUT_MIN_HZ 24
-#define DVS_OUT_MAX_HZ 120
 
 int dvs_engine_set_output(dvs_engine* e, const char* connector, int width,
                           int height, int refresh_hz, const char* mode) {

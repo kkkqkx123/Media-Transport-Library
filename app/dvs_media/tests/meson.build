@@ -30,7 +30,8 @@ test_tx_session = executable('test_tx_session',
   files('test_tx_session.c', '../engine/tx_session.c'),
   c_args: common_c_args,
   dependencies: [libjson_c_dep],
-  include_directories: include_directories('..'),
+  include_directories: [include_directories('..'),
+                        include_directories('../../dvs_common/include')],
 )
 
 test_tx_port_map = executable('test_tx_port_map',

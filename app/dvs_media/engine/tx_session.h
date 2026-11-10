@@ -14,6 +14,8 @@
 
 #include <stddef.h>
 
+#include "dvs_node_bundle.h"
+
 struct json_object;
 
 typedef enum {
@@ -24,20 +26,9 @@ typedef enum {
 
 const char* dvs_tx_state_name(dvs_tx_state_t s);
 
-/* Frozen SoC ceilings (RK3588 public limits). Used when the caller has no
- * reported capability; a reported capability overrides per-field. */
-#define DVS_TX_MAX_W      3840
-#define DVS_TX_MAX_H      2160
-#define DVS_TX_MAX_FPS    60
-#define DVS_TX_MAX_BR_KBPS 20000
-#define DVS_TX_MIN_W      640
-#define DVS_TX_MIN_H      480
-#define DVS_TX_MIN_FPS    24
-#define DVS_TX_MIN_BR_KBPS 500
-
-/* GOP interval bounds (ms). 0 selects the encoder default (follows fps). */
-#define DVS_TX_GOP_MS_MIN 250
-#define DVS_TX_GOP_MS_MAX 4000
+/* TX ceilings live in dvs_node_bundle.h (single source shared with the
+ * agent admission defaults). Used when the caller has no reported
+ * capability; a reported capability overrides per-field. */
 
 typedef struct {
     char port[32];        /* capture port id, e.g. "HDMI1" */

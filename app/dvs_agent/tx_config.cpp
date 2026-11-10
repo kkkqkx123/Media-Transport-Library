@@ -4,6 +4,8 @@
 
 #include <cstdlib>
 
+#include "dvs_node_bundle.h"
+
 static bool valid_ip4(const std::string& s) {
     if (s.empty() || s.size() > 15) return false;
     struct in_addr a;
@@ -121,22 +123,23 @@ bool tx_validate(const TxParams& p, const TxCaps& caps, std::string& err) {
             err = "编码格式超出本机能力";
             return false;
         }
-        if (p.enc.width < 640 || p.enc.width > caps.maxW ||
-            p.enc.height < 480 || p.enc.height > caps.maxH) {
+        if (p.enc.width < DVS_TX_MIN_W || p.enc.width > caps.maxW ||
+            p.enc.height < DVS_TX_MIN_H || p.enc.height > caps.maxH) {
             err = "编码分辨率超出本机能力范围";
             return false;
         }
-        if (p.enc.fps < 24 || p.enc.fps > caps.maxFps) {
+        if (p.enc.fps < DVS_TX_MIN_FPS || p.enc.fps > caps.maxFps) {
             err = "编码帧率超出本机能力范围";
             return false;
         }
-        if (p.enc.bitrate < 500 || p.enc.bitrate > caps.maxBr) {
+        if (p.enc.bitrate < DVS_TX_MIN_BR_KBPS || p.enc.bitrate > caps.maxBr) {
             err = "编码码率超出本机能力范围";
             return false;
         }
         // GOP 间隔：0 取编码器默认（跟随帧率），显式值 250..4000ms。
         // 短间隔换场景切换速度，长间隔省带宽，由平台按墙策略下发。
-        if (p.enc.gopMs != 0 && (p.enc.gopMs < 250 || p.enc.gopMs > 4000)) {
+        if (p.enc.gopMs != 0 &&
+            (p.enc.gopMs < DVS_TX_GOP_MS_MIN || p.enc.gopMs > DVS_TX_GOP_MS_MAX)) {
             err = "编码 GOP 间隔超出范围 (250..4000ms, 0=默认)";
             return false;
         }

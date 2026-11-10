@@ -33,11 +33,41 @@ mkdir -p "$OUT_DIR"
 fail() { echo "FAIL: $*"; return 1; }
 note() { echo "  $*"; }
 
+# 跑流子进程登记：trap 用 INT 宽限停机，再 KILL 兜底。
+CUR_RX=""; CUR_TX2=""
+cleanup_composite() {
+  trap - INT TERM EXIT
+  for p in ${CUR_RX:-} ${CUR_TX2:-}; do
+    [ -n "$p" ] && kill -0 "$p" 2>/dev/null || continue
+    kill -INT "$p" 2>/dev/null || true
+  done
+  sleep 5
+  for p in ${CUR_RX:-} ${CUR_TX2:-}; do
+    [ -n "$p" ] && kill -0 "$p" 2>/dev/null || continue
+    kill -9 "$p" 2>/dev/null || true
+  done
+  pkill -9 live_ingest 2>/dev/null || true
+  pkill -9 file_playout_rx 2>/dev/null || true
+  CUR_RX=""; CUR_TX2=""
+}
+trap cleanup_composite INT TERM
+
+# file 重定向下 libc 全缓冲，轮询类检查必须实时可见：优先 stdbuf 行缓冲。
+if command -v stdbuf >/dev/null 2>&1; then UNBUF="stdbuf -o0 -e0"; else UNBUF=""; fi
+
 preflight() {
   [ -x "$RX_BIN" ] || { fail "缺 $RX_BIN"; return 1; }
   [ -x "$TX_BIN" ] || { fail "缺 $TX_BIN"; return 1; }
   [ -c /dev/video0 ] || { fail "无 /dev/video0（HDMI 采集缺失）"; return 1; }
   [ -f "$FILE_MP4" ] || { fail "缺文件片源 $FILE_MP4"; return 1; }
+  command -v ffprobe >/dev/null 2>&1 || { fail "缺 ffprobe（T1/T2 探针对齐用）"; return 1; }
+  if command -v fuser >/dev/null 2>&1; then
+    fuser /dev/video0 >/dev/null 2>&1 && { fail "/dev/video0 被占用，先停旧进程再跑"; return 1; }
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    ss -ulpn 2>/dev/null | grep -qE ":$UDP_HDMI\b|:$UDP_FILE\b" \
+      && { fail "UDP $UDP_HDMI/$UDP_FILE 已被占用（残留 RX/TX 未退）"; return 1; }
+  fi
   pgrep -f MtlManager >/dev/null || { fail "MtlManager 未运行"; return 1; }
   return 0
 }
@@ -124,8 +154,13 @@ PY
 }
 
 kill_apps() {
+  CUR_RX=""; CUR_TX2=""
+  pkill -INT live_ingest 2>/dev/null || true
+  pkill -INT file_playout_rx 2>/dev/null || true
+  sleep 1
   pkill -9 live_ingest 2>/dev/null || true
   pkill -9 file_playout_rx 2>/dev/null || true
+  pkill -9 hdmi_passthrough drm_smoke 2>/dev/null || true
   sleep 2
 }
 
@@ -139,12 +174,13 @@ t0_baseline() {
   nohup $UNBUF "$RX_BIN" "$sec" --port "$PORT" --lip "$IP" --sip "$IP" \
     --udp "$UDP_HDMI" --width 1920 --height 1080 --fps 60 \
     --ptp-mode monotonic --stats-interval 10 >"$rx_log" 2>&1 &
-  local rx_pid=$!
+  local rx_pid=$!; CUR_RX="$rx_pid"
   sleep 3
-  if ! kill -0 "$rx_pid" 2>/dev/null; then tail -n 20 "$rx_log"; fail "T0 RX 启动失败"; return 1; fi
+  if ! kill -0 "$rx_pid" 2>/dev/null; then tail -n 20 "$rx_log"; CUR_RX=""; fail "T0 RX 启动失败"; return 1; fi
   "$TX_BIN" "$sec" --port "$PORT" --lip "$IP" --dip "$IP" --udp "$UDP_HDMI" \
     --pacing tsc_narrow --log-level warning >"$tx_log" 2>&1
   wait "$rx_pid" || true
+  CUR_RX=""
   SEC0="$sec" python3 - "$rx_log" "$tx_log" <<'PY'
 import os, re, sys
 rx, tx = open(sys.argv[1], errors="replace").read(), open(sys.argv[2], errors="replace").read()
@@ -193,12 +229,13 @@ t1_file_single() {
   nohup $UNBUF "$RX_BIN" "$sec" --port "$PORT" --lip "$IP" --sip "$IP" \
     --udp "$UDP_FILE" --audio-udp "$AUDIO_FILE" --width "$w1" --height "$h1" --fps "$fps1" \
     --ptp-mode monotonic --stats-interval 10 >"$rx_log" 2>&1 &
-  local rx_pid=$!
+  local rx_pid=$!; CUR_RX="$rx_pid"
   sleep 3
-  if ! kill -0 "$rx_pid" 2>/dev/null; then tail -n 20 "$rx_log"; fail "T1 RX 启动失败"; return 1; fi
+  if ! kill -0 "$rx_pid" 2>/dev/null; then tail -n 20 "$rx_log"; CUR_RX=""; fail "T1 RX 启动失败"; return 1; fi
   "$TX_BIN" --config "$tx_json" \
     >"$tx_log" 2>&1
   wait "$rx_pid" || true
+  CUR_RX=""
   FPS1="$fps1" SEC1="$sec" HAS_AUDIO="$has_audio" python3 - "$rx_log" "$tx_log" <<'PY'
 import os, re, sys
 rx, tx = open(sys.argv[1], errors="replace").read(), open(sys.argv[2], errors="replace").read()
@@ -262,7 +299,7 @@ t2_composite() {
   nohup $UNBUF "$RX_BIN" "$rx_sec" --config "$CFG_2LANE" \
     --port "$PORT" --lip "$IP" --sip "$IP" \
     --ptp-mode monotonic >"$rx_log" 2>&1 &
-  local rx_pid=$!
+  local rx_pid=$!; CUR_RX="$rx_pid"
   # 合成器启动含 MTL 初始化与双 lane 会话建立，轮询等 marker（stdout 有缓冲，不可一次 grep 定死）。
   local waited=0
   while [ $waited -lt 40 ]; do
@@ -275,13 +312,14 @@ t2_composite() {
     || { tail -n 30 "$rx_log"; fail "T2 合成器未进入 2-lane（40s 超时）"; kill "$rx_pid"; return 1; }
   note "合成器已进入 2-lane，依次起两个 TX"
   nohup $UNBUF "$TX_BIN" --config "$tx_json" >"$tx2_log" 2>&1 &
-  local tx2_pid=$!
+  local tx2_pid=$!; CUR_TX2="$tx2_pid"
   sleep 2
   "$TX_BIN" "$tx_sec" --port "$PORT" --lip "$IP" --dip "$IP" --udp "$UDP_HDMI" \
     --pacing tsc_narrow --log-level warning >"$tx1_log" 2>&1
   echo "HDMI TX 退出=$?"
   wait "$tx2_pid" || true
   wait "$rx_pid" || true
+  CUR_RX=""; CUR_TX2=""
   TXSEC="$tx_sec" FPS1="$fps1" python3 - "$rx_log" "$tx1_log" "$tx2_log" <<'PY'
 import os, re, sys
 rx, tx1, tx2 = (open(p, errors="replace").read() for p in sys.argv[1:4])
@@ -321,9 +359,19 @@ sys.exit(0 if ok else 1)
 PY
 }
 
+# T3 独立运行保障：缺省配置来自 T2 产物，单独跑 T3 时现场生成。
+ensure_cfg_2lane() {
+  [ -f "$CFG_2LANE" ] && return 0
+  note "缺 $CFG_2LANE，现场生成默认 2-lane 配置（T3 独立运行）"
+  read -r w1 h1 fps1 <<<"$(probe_file)"
+  [ -n "${fps1:-}" ] || { w1=1920; h1=1080; fps1=24; }
+  gen_rx_2lane "$w1" "$h1" "$fps1"
+}
+
 # T3：非法多流配置必须被明确拒绝（不跑流，校验先于 MTL 初始化）。
 t3_negative() {
   echo "=== T3 配置反例（期望：明确拒绝，退出非零）==="
+  ensure_cfg_2lane || return 1
   local bad1="$OUT_DIR/t3_dup.json" bad2="$OUT_DIR/t3_nomain.json"
   python3 - "$CFG_2LANE" "$bad1" "$bad2" <<'PY'
 import json, sys
@@ -357,8 +405,6 @@ PY
 }
 
 preflight || exit 1
-# file 重定向下 libc 全缓冲，轮询类检查必须实时可见：优先 stdbuf 行缓冲。
-if command -v stdbuf >/dev/null 2>&1; then UNBUF="stdbuf -o0 -e0"; else UNBUF=""; fi
 echo "OUT_DIR=$OUT_DIR SEC=$SEC IP=$IP PORT=$PORT MP4=$FILE_MP4"
 case "$WHICH" in
   T0) t0_baseline "$SEC" ;;

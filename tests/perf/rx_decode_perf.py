@@ -80,6 +80,8 @@ def run_offline_mpp(dec_binary, h264, max_au, duration_hint):
     try:
         r = subprocess.run(cmd, capture_output=True, text=True,
                            timeout=duration_hint + 120)
+    except KeyboardInterrupt:
+        return {"error": "interrupted by user"}
     except Exception as ex:
         return {"error": str(ex)}
     text = r.stdout + r.stderr
@@ -103,6 +105,8 @@ def run_offline(h264, duration_hint):
     print("run: " + " ".join(cmd))
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=duration_hint + 60)
+    except KeyboardInterrupt:
+        return {"error": "interrupted by user"}
     except Exception as ex:
         return {"error": str(ex)}
     text = r.stdout + r.stderr
@@ -121,6 +125,8 @@ def run_mtl(binary, duration, udp, sip, width, height, fps):
     print("run: " + " ".join(cmd))
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=duration + 60)
+    except KeyboardInterrupt:
+        return {"error": "interrupted by user"}
     except Exception as ex:
         return {"error": str(ex)}
     return {"log": r.stdout + r.stderr, "rc": r.returncode}

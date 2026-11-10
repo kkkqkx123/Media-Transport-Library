@@ -14,6 +14,8 @@ PROBE="$OUT/probe"
 W=1920; H=1080; NFR=8
 
 mkdir -p "$OUT"
+command -v gcc >/dev/null 2>&1 || { echo "缺 gcc（板上直编探针用）"; exit 1; }
+command -v mpi_dec_test >/dev/null 2>&1 || { echo "缺 mpi_dec_test（回放解码用）"; exit 1; }
 if [ ! -x "$PROBE" ]; then
   echo "build probe (native)..."
   gcc "$SRC_DIR/mpp_enc_frame_latency.c" -o "$PROBE" -lrockchip_mpp

@@ -1,7 +1,8 @@
 #!/bin/bash
 # 合成预置流：无 HDMI 时的解码上限与回归输入，NV12 与 H264 各一版。
 # 板上持久目录 ~/code/mtl/streams，输出长期保留。
-set -u
+set -euo pipefail
+command -v ffmpeg >/dev/null 2>&1 || { echo "缺 ffmpeg（生成预置流用）"; exit 1; }
 
 OUT="$HOME/code/mtl/streams"
 FPS=60
@@ -27,6 +28,10 @@ gen() {
   name="$1"; src="$2"; w="$3"; h="$4"
   nv12="$OUT/${name}_${w}x${h}.nv12"
   h264="$OUT/${name}_${w}x${h}.h264"
+  if [ -s "$nv12" ] && [ -s "$h264" ]; then
+    echo "[gen] $name ${w}x${h} 已存在，跳过（删文件后重跑可强制再生）"
+    return 0
+  fi
   echo "[gen] $name ${w}x${h} fps=$FPS n=$N"
   ffmpeg -y -v error -f lavfi -i "$src=size=${w}x${h}:rate=$FPS:duration=$((N / FPS))" \
     -frames:v "$N" -pix_fmt nv12 -f rawvideo "$nv12"

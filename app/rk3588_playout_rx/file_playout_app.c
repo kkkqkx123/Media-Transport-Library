@@ -363,6 +363,7 @@ static int run_legacy_pipeline(file_playout_cfg* cfg) {
 
 int main(int argc, char** argv) {
     signal(SIGINT, sig_handler);
+    signal(SIGTERM, sig_handler);
 
     file_playout_cfg cfg;
     file_playout_cfg_defaults(&cfg);

@@ -4,7 +4,7 @@
 # 对每个候选 fourcc 做 S_FMT + G_FMT 回读校验, 汇总驱动真实接受情况。
 # 枚举列表不可信, 以本矩阵为准。
 # 用法: [PROBE=/path/to/v4l2_cap_latency] bash v4l2_fmt_matrix.sh [count]
-set -u
+set -euo pipefail
 
 BIN="${PROBE:-$HOME/code/mtl/bin/v4l2_cap_latency}"
 COUNT="${1:-5}"

@@ -510,6 +510,7 @@ static void file_stack_free(struct file_stack* fss) {
 
 int main(int argc, char** argv) {
   signal(SIGINT, sig_handler);
+  signal(SIGTERM, sig_handler);
 
   struct live_ingest_cfg cfg = live_ingest_cfg_defaults();
   if (parse_args(argc, argv, &cfg) != 0) {

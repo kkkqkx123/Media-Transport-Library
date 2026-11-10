@@ -56,15 +56,32 @@ def main():
     print("run TX: " + " ".join(tx_cmd))
     tx = subprocess.Popen(tx_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     try:
-        tx_out = tx.communicate(timeout=args.duration + 60)[0]
-    except subprocess.TimeoutExpired:
-        tx.kill()
-        tx_out = tx.communicate()[0]
-    try:
-        rx_out = rx.communicate(timeout=60)[0]
-    except subprocess.TimeoutExpired:
-        rx.kill()
-        rx_out = rx.communicate()[0]
+        try:
+            tx_out = tx.communicate(timeout=args.duration + 60)[0]
+        except subprocess.TimeoutExpired:
+            tx.kill()
+            tx_out = tx.communicate()[0]
+        try:
+            rx_out = rx.communicate(timeout=60)[0]
+        except subprocess.TimeoutExpired:
+            rx.kill()
+            rx_out = rx.communicate()[0]
+    except KeyboardInterrupt:
+        print("\n[INT] 中断，停 TX/RX 后退出…")
+        for p in (tx, rx):
+            try:
+                p.terminate()
+            except Exception:
+                pass
+        import time as _t
+        _t.sleep(5)
+        for p in (tx, rx):
+            if p.poll() is None:
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+        raise SystemExit(130)
 
     tx_rows = [r for line in tx_out.splitlines()
                for r in [parse_tx_line(line)] if r]

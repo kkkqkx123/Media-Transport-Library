@@ -27,6 +27,33 @@ BASE="/tmp/verify_phase"
 fail() { echo "FAIL: $*"; exit 1; }
 pass() { echo "PASS: $*"; }
 
+RX_PID=""; TX_PID=""
+# 单板回环同 IP：历史硬编码 .213/.212 会导致 RX 收不到包，统一经 L2_IP 覆盖。
+L2_IP="${L2_IP:-192.168.80.202}"
+cleanup_l2() {
+  trap - INT TERM EXIT
+  for p in ${RX_PID:-} ${TX_PID:-}; do
+    [ -n "$p" ] && kill -0 "$p" 2>/dev/null || continue
+    kill -INT "$p" 2>/dev/null || true
+  done
+  sleep 5
+  for p in ${RX_PID:-} ${TX_PID:-}; do
+    [ -n "$p" ] && kill -0 "$p" 2>/dev/null || continue
+    kill -9 "$p" 2>/dev/null || true
+  done
+}
+trap cleanup_l2 INT TERM EXIT
+preflight_l2() {
+  pgrep -f MtlManager >/dev/null || fail "MtlManager 未运行（先起 MtlManager 再跑 L2）"
+  [ -c /dev/video0 ] || fail "无 /dev/video0（L2 需 HDMI 真实源）"
+  pkill -INT live_ingest 2>/dev/null || true
+  pkill -INT file_playout_rx 2>/dev/null || true
+  sleep 1
+  pkill -9 live_ingest 2>/dev/null || true
+  pkill -9 file_playout_rx 2>/dev/null || true
+  sleep 1
+}
+
 l1_p0() {
     echo "=== P0: toolchain + cross-package binaries ==="
     [ -x ./build/file_playout_rx ] || fail "build/file_playout_rx missing — run: meson setup build && ninja -C build"
@@ -60,21 +87,24 @@ l1_p1() {
 
 l2_run() {
     local sec="$1" mp4="$2" fps="${3:-60.0}"
-    echo "=== L2: RX + live_ingest sender ${sec}s (fps=$fps, HDMI required) ==="
+    echo "=== L2: RX + live_ingest sender ${sec}s (fps=$fps, ip=$L2_IP, HDMI required) ==="
+    preflight_l2
     rm -f "${BASE}"*.csv "$IDX" /tmp/rx_capture.h264
     export FILE_PLAYOUT_AU_TRACE="$BASE"
     export FILE_PLAYOUT_DUMP_RX=/tmp/rx_capture.h264
     export FILE_PLAYOUT_DUMP_RX_IDX="$IDX"
 
-    ./build/file_playout_rx "$sec" --udp 15000 --sip 192.168.80.213 \
+    ./build/file_playout_rx "$sec" --udp 15000 --sip "$L2_IP" \
         --width 1920 --height 1080 --fps "$fps" 2>&1 | tee "$LOG" &
     RX_PID=$!
     sleep 2
+    kill -0 "$RX_PID" 2>/dev/null || fail "RX 启动失败（查 MtlManager 与 $LOG）"
     ../rk3588_live_tx/build/live_ingest "$sec" --udp 15000 \
-        --dip 192.168.80.212 2>&1 | tee -a "$LOG" &
+        --dip "$L2_IP" 2>&1 | tee -a "$LOG" &
     TX_PID=$!
     wait "$RX_PID" || true
     wait "$TX_PID" || true
+    RX_PID=""; TX_PID=""
 
     grep -E 'rx_pipe:|mpp_dec stats|mtl_rx_bridge:' "$LOG" || true
 }

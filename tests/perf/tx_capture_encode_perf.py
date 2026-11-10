@@ -88,15 +88,27 @@ def main():
     t = threading.Thread(target=_bg, daemon=True)
     t.start()
     assert proc.stdout is not None
-    for line in proc.stdout:
-        r = parse_tx_line(line)
-        if r:
-            rows.append(r)
-            print("enc_fps={enc_fps} cost={enc_cost_us}us "
-                  "p99={enc_p99}us cap_int={cap_int_us}us rga_ema={rga_ema_us}us".format(**r))
-    proc.wait()
-    stop["v"] = True
-    t.join(timeout=3)
+    try:
+        for line in proc.stdout:
+            r = parse_tx_line(line)
+            if r:
+                rows.append(r)
+                print("enc_fps={enc_fps} cost={enc_cost_us}us "
+                      "p99={enc_p99}us cap_int={cap_int_us}us rga_ema={rga_ema_us}us".format(**r))
+        proc.wait()
+    except KeyboardInterrupt:
+        print("\n[INT] 中断，停 live_ingest 后退出…")
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+        raise SystemExit(130)
+    finally:
+        stop["v"] = True
+        t.join(timeout=3)
+        if proc.poll() is None:
+            proc.kill()
 
     if not rows:
         print("[FAIL] 未解析到 tx_pipe[1s] 行（检查 HDMI 信号或二进制路径）")

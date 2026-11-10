@@ -17,13 +17,37 @@ set -euo pipefail
 SEC="${1:-120}"
 shift || true
 LOG="/tmp/run1.log"
+RX_LOG="/tmp/run1.rx.log"
 BASE="/tmp/run1"
 CD="$(cd "$(dirname "$0")/.." && pwd)"
 LIVE_INGEST="$CD/../rk3588_live_tx/build/live_ingest"
+# 单板回环同 IP：历史硬编码 .213/.212 会导致 RX 收不到包，统一经 L2_IP 覆盖。
+L2_IP="${L2_IP:-192.168.80.202}"
+RX_PID=""; TX_PID=""
+cleanup_plan_a() {
+  trap - INT TERM EXIT
+  for p in ${RX_PID:-} ${TX_PID:-}; do
+    [ -n "$p" ] && kill -0 "$p" 2>/dev/null || continue
+    kill -INT "$p" 2>/dev/null || true
+  done
+  sleep 5
+  for p in ${RX_PID:-} ${TX_PID:-}; do
+    [ -n "$p" ] && kill -0 "$p" 2>/dev/null || continue
+    kill -9 "$p" 2>/dev/null || true
+  done
+}
+trap cleanup_plan_a INT TERM EXIT
 
 cd "$CD"
 [ -x ./build/file_playout_rx ] || { echo "run: ninja -C build first"; exit 1; }
 [ -x "$LIVE_INGEST" ] || { echo "run: build rk3588_live_tx first (encode sender)"; exit 1; }
+pgrep -f MtlManager >/dev/null || { echo "MtlManager 未运行（先起 MtlManager 再跑）"; exit 1; }
+pkill -INT live_ingest 2>/dev/null || true
+pkill -INT file_playout_rx 2>/dev/null || true
+sleep 1
+pkill -9 live_ingest 2>/dev/null || true
+pkill -9 file_playout_rx 2>/dev/null || true
+sleep 1
 
 echo "=== clean old trace/dump (avoid NUL/corrupt csv) ==="
 rm -f "${BASE}.rx_mtl.csv" "${BASE}.rx_br.csv" \
@@ -39,18 +63,22 @@ echo "  test_sec=$SEC  log=$LOG"
 echo "  FILE_PLAYOUT_MPP_WHOLE_AU=${FILE_PLAYOUT_MPP_WHOLE_AU:-<unset>}"
 echo "  FILE_PLAYOUT_MPP_AGGRESSIVE_PULL=${FILE_PLAYOUT_MPP_AGGRESSIVE_PULL:-<unset>}"
 
-echo "=== RX ${SEC}s (sender: live_ingest, HDMI required) ==="
-./build/file_playout_rx "$SEC" --udp 15000 --sip 192.168.80.213 \
-  --width 1920 --height 1080 --fps 60.0 "$@" &
+echo "=== RX ${SEC}s (sender: live_ingest, ip=$L2_IP, HDMI required) ==="
+rm -f "$LOG" "$RX_LOG"
+./build/file_playout_rx "$SEC" --udp 15000 --sip "$L2_IP" \
+  --width 1920 --height 1080 --fps 60.0 "$@" >"$RX_LOG" 2>&1 &
 RX_PID=$!
 
 sleep 2
-"$LIVE_INGEST" "$SEC" --udp 15000 --dip 192.168.80.212 2>&1 | tee "$LOG" &
+kill -0 "$RX_PID" 2>/dev/null || { tail -n 20 "$RX_LOG"; echo "RX 启动失败"; exit 1; }
+"$LIVE_INGEST" "$SEC" --udp 15000 --dip "$L2_IP" 2>&1 | tee "$LOG" &
 TX_PID=$!
 
 wait "$RX_PID" && RX_ST=0 || RX_ST=$?
 wait "$TX_PID" && TX_ST=0 || TX_ST=$?
-echo "=== done rx=$RX_ST tx=$TX_ST ==="
+RX_PID=""; TX_PID=""
+cat "$RX_LOG" >>"$LOG"
+echo "=== done rx=$RX_ST tx=$TX_ST (rx log: $RX_LOG, merged: $LOG) ==="
 
 echo ""
 echo "=== live decode summary ==="

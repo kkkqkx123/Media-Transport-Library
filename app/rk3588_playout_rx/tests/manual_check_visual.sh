@@ -27,6 +27,22 @@ fail() { echo "FAIL: $*"; return 1; }
 note() { echo "  $*"; }
 need() { [ -x "$1" ] || { fail "缺 $1"; return 1; }; }
 
+RUN_PID=""
+cleanup_visual() {
+  trap - INT TERM EXIT
+  if [ -n "${RUN_PID:-}" ] && kill -0 "$RUN_PID" 2>/dev/null; then
+    kill -INT "$RUN_PID" 2>/dev/null || true
+    for _ in 1 2 3 4 5; do kill -0 "$RUN_PID" 2>/dev/null || break; sleep 1; done
+    kill -9 "$RUN_PID" 2>/dev/null || true
+  fi
+  pkill -INT live_ingest 2>/dev/null || true
+  pkill -INT file_playout_rx 2>/dev/null || true
+  sleep 1
+  pkill -9 live_ingest 2>/dev/null || true
+  pkill -9 file_playout_rx 2>/dev/null || true
+}
+trap cleanup_visual INT TERM EXIT
+
 case "$STAGE" in
   T0|T1|T2) ;;
   *) echo "用法：$0 [T0|T1|T2] [hold秒数]"; exit 1 ;;
@@ -87,6 +103,7 @@ RUN_PID=$!
 sleep 20
 if ! kill -0 "$RUN_PID" 2>/dev/null; then
   tail -n 20 "$OUT_DIR/manual_${STAGE}_run.log"
+  RUN_PID=""
   fail "$STAGE 场景启动失败"
   echo "result: SETUP_FAILED" >>"$WITNESS"
   exit 1
@@ -119,6 +136,8 @@ done
 
 echo "等待场景自然结束（剩余时间）…"
 wait "$RUN_PID" || true
+RUN_PID=""
+trap - EXIT
 {
 echo "--- 机器证据（本轮 $STAGE 日志判定行） ---"
 grep -aE "^(PASS|FAIL|INFO)" "$OUT_DIR/manual_${STAGE}_run.log" | tail -n 20 || true

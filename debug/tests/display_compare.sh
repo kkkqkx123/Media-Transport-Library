@@ -9,6 +9,10 @@ PASS_SEC="${PASS_SEC:-20}"
 CHAIN_SEC="${CHAIN_SEC:-30}"
 
 need() { [ -x "$BIN/$1" ] || { echo "缺 $BIN/$1"; echo "补：$2"; exit 1; }; }
+trap "exit 130" INT; trap "exit 143" TERM
+if command -v fuser >/dev/null 2>&1; then
+  fuser /dev/video0 >/dev/null 2>&1 && { echo "FAIL: /dev/video0 被占用，先停旧采集进程再跑 A/B 对比"; exit 1; }
+fi
 need hdmi_passthrough "gcc $HOME/code/mtl/debug/tests/hdmi_passthrough.c -o $BIN/hdmi_passthrough -I/usr/include/libdrm -ldrm"
 need file_playout_rx "交叉编译 app/rk3588_playout_rx 后同步二进制"
 need live_ingest "交叉编译 app/rk3588_live_tx 后同步二进制"

@@ -2,7 +2,7 @@
 # v4l2_stream_check.sh — HDMI RX 采集可用性一键检查 (板端执行)
 #
 # 按序执行: 输入状态 -> 时序快照 -> 试采 -> dmesg 定责, 退出码说明结论:
-#   0 = 可采 (能跑采集验证); 1 = 格式被拒; 2 = 时序/停流 (源端问题, 稍后重试):
+#   0 = 可采 (能跑采集验证); 1 = 格式被拒; 2 = 时序/停流/无信号 (源端问题, 稍后重试):
 #   3 = 设备忙或不可用。
 # 长命令全部收敛在本脚本, 文档只引用脚本不贴长命令。
 set -u
@@ -31,7 +31,7 @@ if ! QTIMS=$(v4l2-ctl -d "$DEV" --query-dv-timings 2>&1); then
   say "FAIL: 无信号 (QUERY_DV_TIMINGS 未锁存)"
   echo "$QTIMS" | grep -E "Active|Pixelclock" | head -3
   log "no-lock: [$QTIMS]"
-  exit 4
+  exit 2
 fi
 say "时序快照 (已锁存):"
 echo "$QTIMS" | grep -E "Active|Pixelclock|Frame format"

@@ -27,17 +27,34 @@ ssh "$TX_BOARD" "pgrep -f MtlManager" >/dev/null || fail "TX 板 MtlManager 未�
 
 RX_LOG="$OUT_DIR/rx.log"; TX_LOG="$OUT_DIR/tx.log"
 rm -f "$RX_LOG" "$TX_LOG"
+RX_PID=""
+cleanup_dual() {
+  trap - INT TERM EXIT
+  if [ -n "${RX_PID:-}" ] && kill -0 "$RX_PID" 2>/dev/null; then
+    kill -INT "$RX_PID" 2>/dev/null || true
+    for _ in 1 2 3 4 5; do kill -0 "$RX_PID" 2>/dev/null || break; sleep 1; done
+    kill -9 "$RX_PID" 2>/dev/null || true
+  fi
+  pkill -9 live_ingest 2>/dev/null || true
+  pkill -9 file_playout_rx 2>/dev/null || true
+  ssh "$TX_BOARD" "pkill -INT live_ingest; sleep 1; pkill -9 live_ingest" 2>/dev/null || true
+}
+trap cleanup_dual INT TERM EXIT
+ssh "$TX_BOARD" "pkill -INT live_ingest; sleep 1; pkill -9 live_ingest" 2>/dev/null || true
+pkill -INT file_playout_rx 2>/dev/null || true; sleep 1; pkill -9 file_playout_rx 2>/dev/null || true
 echo "=== RX 起（本机 $RX_IP 监听 TX 板 $TX_IP）==="
 nohup "$BIN_DIR/file_playout_rx" "$SEC" --port "$PORT_RX" --lip "$RX_IP" --sip "$TX_IP" \
   --udp "$UDP" --width "$W" --height "$H" --fps "$FPS" \
   --ptp-mode monotonic --stats-interval 10 >"$RX_LOG" 2>&1 &
 RX_PID=$!
 sleep 3
-kill -0 "$RX_PID" 2>/dev/null || { tail -n 20 "$RX_LOG"; fail "RX 启动失败"; }
+kill -0 "$RX_PID" 2>/dev/null || { tail -n 20 "$RX_LOG"; RX_PID=""; fail "RX 启动失败"; }
 echo "=== TX 起（$TX_BOARD）==="
 ssh "$TX_BOARD" "$BIN_DIR/live_ingest $SEC --port $PORT_TX --lip $TX_IP --dip $RX_IP \
   --udp $UDP --pacing tsc_narrow --log-level warning" >"$TX_LOG" 2>&1
 wait "$RX_PID" || true
+RX_PID=""
+trap - EXIT
 echo "=== 判定（口径同单板 run_tx_rx_e2e.sh，另看跨机丢包）==="
 grep -a "rx_pipe:" "$RX_LOG" | tail -n 1 || fail "无 RX 汇总行"
 grep -aE "captured, .* encoded" "$TX_LOG" | tail -n 1 || fail "无 TX 汇总行"

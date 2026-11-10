@@ -109,8 +109,11 @@ int dvs_base_decode(const char* path,
         if (err && errlen > 0) snprintf(err, errlen, "empty still path");
         return -1;
     }
-    if (canvas_w <= 0 || canvas_h <= 0 || canvas_w > 7680 || canvas_h > 4320) {
-        if (err && errlen > 0) snprintf(err, errlen, "bad canvas size");
+    if (canvas_w <= 0 || canvas_h <= 0 || canvas_w > DVS_BASE_MAX_W ||
+        canvas_h > DVS_BASE_MAX_H) {
+        if (err && errlen > 0)
+            snprintf(err, errlen, "bad canvas size %dx%d (max %dx%d)",
+                     canvas_w, canvas_h, DVS_BASE_MAX_W, DVS_BASE_MAX_H);
         return -1;
     }
     AVFormatContext* fmt = NULL;
@@ -176,11 +179,13 @@ int dvs_base_decode(const char* path,
         if (rgb && convert_frame(got, rgb, got->width, got->height) == 0)
             rc = 0;
         else {
+            int bad_fmt = got ? (int)got->format : -1;
             free(rgb);
             rgb = NULL;
             rc = -1;
             if (err && errlen > 0)
-                snprintf(err, errlen, "unsupported still pixel format");
+                snprintf(err, errlen,
+                         "unsupported still pixel format %d", bad_fmt);
         }
     } else if (err && errlen > 0) {
         snprintf(err, errlen, "no still frame decoded");

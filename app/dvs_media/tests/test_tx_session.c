@@ -115,15 +115,15 @@ int main(void) {
     CHECK(s.state == DVS_TX_FAILED, "role mismatch leaves failed state");
     CHECK(strstr(err, "TX_ROLE_MISMATCH") != NULL, "role mismatch is explicit");
 
-    /* no backend: configured + pending, never running */
+    /* no backend: loud failure, never running nor pending */
     dvs_tx_init(&s);
     good_params(&p);
-    CHECK(dvs_tx_start(&s, &p, "input", err, sizeof(err)) == 0,
-          "tx_start without backend stores params");
-    CHECK(s.state == DVS_TX_CONFIGURED, "no backend means configured");
-    CHECK(s.backend_pending == 1, "backend pending flagged");
-    CHECK(strcmp(dvs_tx_state_name(s.state), "configured") == 0,
-          "state name configured");
+    CHECK(dvs_tx_start(&s, &p, "input", err, sizeof(err)) != 0,
+          "tx_start without backend fails");
+    CHECK(s.state == DVS_TX_FAILED, "no backend means failed");
+    CHECK(s.backend_pending == 0, "no backend never pending");
+    CHECK(strstr(s.error, "TX_BACKEND_MISSING") != NULL,
+          "missing backend is explicit");
 
     /* backend ok: running, error cleared */
     dvs_tx_init(&s);
@@ -164,10 +164,11 @@ int main(void) {
     /* status json carries the minimal field set */
     dvs_tx_init(&s);
     good_params(&p);
+    dvs_tx_set_backend(&s, fake_backend_ok);
     dvs_tx_start(&s, &p, "input", err, sizeof(err));
     struct json_object* st = dvs_tx_status_json(&s);
-    CHECK(st && jstr(st, "state") && strcmp(jstr(st, "state"), "configured") == 0,
-          "status json state configured");
+    CHECK(st && jstr(st, "state") && strcmp(jstr(st, "state"), "running") == 0,
+          "status json state running");
     struct json_object* t = NULL;
     json_object_object_get_ex(st, "target", &t);
     struct json_object* tv = NULL;

@@ -16,6 +16,11 @@
 
 #include <stddef.h>
 
+/* Wall canvas ceiling shared with the output path (8K wide, 4K high).
+ * Larger canvases are rejected instead of being silently downscaled. */
+#define DVS_BASE_MAX_W 7680
+#define DVS_BASE_MAX_H 4320
+
 #ifdef __cplusplus
 extern "C" {
 #endif

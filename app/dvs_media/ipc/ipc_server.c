@@ -44,7 +44,10 @@ static dvs_client_t g_clients[DVS_IPC_MAX_CLIENTS];
 static pthread_mutex_t g_clients_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_seq_mu = PTHREAD_MUTEX_INITIALIZER;
 static long g_seq = 0;
-static int g_prepare_delay_ms = 50;
+/* Pacing guard between admission and the prepare-result event. The commit
+ * path still waits for the first frame via the shadow compositor; this
+ * delay only spaces the async notification. Default 0, tests may raise. */
+static int g_prepare_delay_ms = 0;
 
 static dvs_capability g_cap;
 
@@ -228,16 +231,14 @@ static void* prepare_worker(void* arg) {
   pthread_setname_np(pthread_self(), "dvs_prep");
 #endif
 
-  /* Simulated preparation work (decode-first-frame wait, plane allocation).
-   * Real engine work lands here when engine/session_mgr is wired up. */
   if (g_prepare_delay_ms > 0) usleep((useconds_t)g_prepare_delay_ms * 1000);
 
   int rc = dvs_state_finish_prepare(job->opid);
   if (rc != 0) dvs_state_fail_prepare(job->opid);
   /* The result carries the channel summary so the barrier can check per
-   * lane, not just per node. Empty when the engine exposes no lane source;
-   * readiness itself stays simulated until the pending layout stages real
-   * sessions. */
+   * lane, not just per node. Empty when the engine exposes no lane source.
+   * Admission was already reserved by the prepare hook; decode readiness is
+   * verified at commit time by the shadow compositor wait. */
   json_object* lanes = (g_hooks.lane_stats) ? g_hooks.lane_stats() : NULL;
   if (!lanes) lanes = json_object_new_array();
   json_object* datao = json_object_new_object();
@@ -358,6 +359,15 @@ static void exec_run_job(const exec_job_t* req, exec_job_t* res) {
 
 #define DVS_EXEC_TIMEOUT_MS 15000
 
+static int exec_timeout_ms(void) {
+  const char* v = getenv("DVS_IPC_EXEC_TIMEOUT_MS");
+  if (v && *v) {
+    long n = atol(v);
+    if (n >= 1000 && n <= 60000) return (int)n;
+  }
+  return DVS_EXEC_TIMEOUT_MS;
+}
+
 /* Submit a heavy verb. Returns 0 with *res filled, -1 when another heavy
  * verb is running (caller should answer BUSY), -2 on wait timeout. When
  * the worker thread is unavailable the job runs inline on the caller. */
@@ -366,10 +376,11 @@ static int exec_submit(const exec_job_t* req, exec_job_t* res) {
     exec_run_job(req, res);
     return 0;
   }
+  int timeout_ms = exec_timeout_ms();
   struct timespec deadline;
   clock_gettime(CLOCK_REALTIME, &deadline);
-  deadline.tv_sec += DVS_EXEC_TIMEOUT_MS / 1000;
-  deadline.tv_nsec += (DVS_EXEC_TIMEOUT_MS % 1000) * 1000000L;
+  deadline.tv_sec += timeout_ms / 1000;
+  deadline.tv_nsec += (timeout_ms % 1000) * 1000000L;
   if (deadline.tv_nsec >= 1000000000L) {
     deadline.tv_sec++;
     deadline.tv_nsec -= 1000000000L;
@@ -866,7 +877,12 @@ int dvs_ipc_server_run(const char* sock_path) {
     close(listen_fd);
     return -1;
   }
-  /* Owner-only IPC socket: only the node user may drive media verbs. */
+  /* Owner-only IPC socket: the node runs agent + engine as one unit under
+   * a single user, so only that uid may drive media verbs. Group or other
+   * access is intentionally absent; relaxing this needs a group allowlist,
+   * not a bare mode change. Concurrency caps (DVS_IPC_MAX_CLIENTS,
+   * DVS_IPC_IDEM) and the heavy-verb timeout (DVS_IPC_EXEC_TIMEOUT_MS)
+   * are sized for one agent with command + query channels. */
   chmod(sock_path, S_IRWXU);
 
   dvs_state_init();

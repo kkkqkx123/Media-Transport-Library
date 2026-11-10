@@ -76,10 +76,10 @@ int dvs_tx_default_gop(int fps);
 /* Explicit GOP interval (ms) to encoder frame count (see .c). */
 int dvs_tx_gop_ms_to_frames(int gop_ms, int fps);
 
-/* Rescan /dev/video0..7 into the array form used by table_build.
+/* Rescan /dev/videoN into the array form used by table_build.
  * Fills device paths, stable IDs (QUERYCAP card|bus|input, device fallback),
- * and per-device signal flags (G_FMT placeholder check). Returns device
- * count, 0 when none present. Never fails hard. */
+ * and per-device signal flags (format-based hint, conservative on failure).
+ * Returns device count, 0 when none present. Never fails hard. */
 int dvs_tx_scan_devices(char devices[][DVS_TX_DEV_LEN],
                         char stable_ids[][DVS_TX_STABLE_LEN],
                         int* has_signal, int cap);

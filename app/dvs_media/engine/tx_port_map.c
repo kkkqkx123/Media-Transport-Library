@@ -1,6 +1,7 @@
 #include "tx_port_map.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -40,8 +41,12 @@ int dvs_tx_port_index(const char* port) {
     if (!port) return -1;
     if (strncmp(port, "HDMI", 4) != 0) return -1;
     const char* d = port + 4;
-    if (*d < '1' || *d > '8' || d[1] != '\0') return -1;
-    return *d - '0';
+    if (!d[0]) return -1;
+    char* end = NULL;
+    long v = strtol(d, &end, 10);
+    if (!end || *end != '\0') return -1;
+    if (v < 1 || v > DVS_TX_PORT_MAX) return -1;
+    return (int)v;
 }
 
 int dvs_tx_format_available(const dvs_tx_port_entry* table, int n,
@@ -210,6 +215,10 @@ int dvs_tx_gop_ms_to_frames(int gop_ms, int fps) {
     return (int)frames;
 }
 
+/* Format-based signal hint: a capture device with no negotiated format or
+ * with a tiny format is treated as no-signal. This is a hint,
+ * not a hardware lock-state read; a failed query is conservative (0). */
+#define DVS_TX_SIGNAL_MIN_DIM 128
 #ifdef __linux__
 static int query_signal(int fd) {
     struct v4l2_format fmt;
@@ -218,7 +227,9 @@ static int query_signal(int fd) {
     if (ioctl(fd, VIDIOC_G_FMT, &fmt) == 0) {
         int w = (int)fmt.fmt.pix_mp.width;
         int h = (int)fmt.fmt.pix_mp.height;
-        if (w <= 0 || h <= 0 || (w <= 128 && h <= 128)) return 0;
+        if (w <= 0 || h <= 0 ||
+            (w <= DVS_TX_SIGNAL_MIN_DIM && h <= DVS_TX_SIGNAL_MIN_DIM))
+            return 0;
         return 1;
     }
     memset(&fmt, 0, sizeof(fmt));
@@ -226,7 +237,9 @@ static int query_signal(int fd) {
     if (ioctl(fd, VIDIOC_G_FMT, &fmt) == 0) {
         int w = (int)fmt.fmt.pix.width;
         int h = (int)fmt.fmt.pix.height;
-        if (w <= 0 || h <= 0 || (w <= 128 && h <= 128)) return 0;
+        if (w <= 0 || h <= 0 ||
+            (w <= DVS_TX_SIGNAL_MIN_DIM && h <= DVS_TX_SIGNAL_MIN_DIM))
+            return 0;
         return 1;
     }
     return 0;
@@ -239,7 +252,7 @@ int dvs_tx_scan_devices(char devices[][DVS_TX_DEV_LEN],
     if (cap <= 0) return 0;
     if (cap > DVS_TX_PORT_MAX) cap = DVS_TX_PORT_MAX;
     int n = 0;
-    for (int i = 0; i < 16 && n < cap; i++) {
+    for (int i = 0; i < 32 && n < cap; i++) {
         char path[DVS_TX_DEV_LEN];
         snprintf(path, sizeof(path), "/dev/video%d", i);
         if (access(path, F_OK) != 0) continue;

@@ -13,12 +13,8 @@
  * prepare(): validate + stash the desired layout (does not touch the running
  *            compositor — current picture stays).
  * commit() : swap the running layout to the pending one (engine recreates the
- *            compositor).
- * abort()  : discard the pending layout (rollback to current).
- *
- * NOTE: this is the pragmatic first implementation. A future refinement adds
- * a frame-N vblank atomic plane switch and rollback from a saved shadow copy on
- * commit failure, instead of full compositor recreation. */
+ *            compositor at the staged frame anchor).
+ * abort()  : discard the pending layout (rollback to current). */
 
 static file_playout_pip_stream g_pending[MP4_PIP_MAX_LANES];
 static uint64_t g_pending_apply_at_ns = 0;
@@ -148,7 +144,7 @@ int dvs_layout_prepare_from_json(struct json_object* req) {
     dvs_frame_anchor_t frame;
     memset(&frame, 0, sizeof(frame));
     frame.frame_index = -1;
-    frame.fps = 60.0;
+    frame.fps = 60.0; /* legacy wall rate when the payload names no fps */
     {
         struct json_object* e = NULL, *f = NULL, *i = NULL;
         if (req && json_object_object_get_ex(req, "epochTaiNs", &e) && e)
@@ -326,7 +322,8 @@ void dvs_layout_clear(dvs_engine* e) {
      * windows while the decoded base image (or black when no still is set)
      * stays on screen. The compositor is rebuilt with zero lanes instead of
      * being freed so the backdrop plane keeps scanning out; MTL stays up
-     * for fast future commits. */
+     * for fast future commits. The empty layout carries no frame anchor:
+     * frameIndex -1 commits at the current frame (see engine_ctx). */
     dvs_engine_apply_layout_frame(e, NULL, 0, 0, 0, 60.0, -1);
     pthread_mutex_lock(&g_pending_mu);
     g_pending_count = 0;

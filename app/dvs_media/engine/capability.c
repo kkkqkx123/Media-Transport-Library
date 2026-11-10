@@ -1,8 +1,10 @@
 #include "capability.h"
 #include "engine/session_admit.h"
 #include "engine/tx_port_map.h"
+#include "engine/tx_session.h"
 
 #include "display_layout.h"
+#include "file_playout_app.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -29,24 +31,25 @@ static void cap_defaults(dvs_capability* cap) {
     cap->input_stable = NULL;
     cap->input_signal = NULL;
     cap->input_port_count = 0;
-    /* Conservative default; real MPP-measured value is filled at S1 end and
-     * may be overridden via DVS_MAX_DECODE_SESSIONS for bring-up. */
+    /* SoC spec defaults, not probe results. max_decode_sessions is the
+     * conservative MPP ceiling until measured; max_layers is the plane
+     * count fallback until the DRM probe replaces it. */
     cap->max_decode_sessions = 4;
-    cap->max_layers = 4; /* overridden by DRM plane probe when available */
+    cap->max_layers = 4;
     dvs_capability_tx_defaults(cap);
     snprintf(cap->ptp_state, sizeof(cap->ptp_state), "unknown");
     cap->ptp_offset_us = 0;
     snprintf(cap->mtl_version, sizeof(cap->mtl_version), "unknown");
-    snprintf(cap->mtl_backend, sizeof(cap->mtl_backend), "dpdk");
+    snprintf(cap->mtl_backend, sizeof(cap->mtl_backend), "unknown");
 }
 
 void dvs_capability_tx_defaults(dvs_capability* cap) {
     if (!cap) return;
     snprintf(cap->tx_codecs, sizeof(cap->tx_codecs), "h264,h265");
-    cap->tx_max_w = 3840;
-    cap->tx_max_h = 2160;
-    cap->tx_max_fps = 60;
-    cap->tx_max_br_kbps = 20000;
+    cap->tx_max_w = DVS_TX_MAX_W;
+    cap->tx_max_h = DVS_TX_MAX_H;
+    cap->tx_max_fps = DVS_TX_MAX_FPS;
+    cap->tx_max_br_kbps = DVS_TX_MAX_BR_KBPS;
 }
 
 void dvs_capability_free(dvs_capability* cap) {
@@ -118,6 +121,7 @@ static void probe_drm(dvs_capability* cap) {
             if (h > mh) mh = h;
             if (z > mz) mz = z;
         }
+        /* EDID-empty connector: safe mode, not a probe result. */
         cap->output_max_w[k] = mw > 0 ? mw : 1920;
         cap->output_max_h[k] = mh > 0 ? mh : 1080;
         cap->output_max_hz[k] = mz > 0 ? mz : 60;
@@ -205,7 +209,7 @@ const char* dvs_capability_backend_name(const char* port) {
     if (strncmp(port, "native_af_xdp:", 14) == 0) return "af_xdp";
     if (strncmp(port, "dpdk_af_xdp:", 12) == 0) return "af_xdp";
     if (strncmp(port, "dpdk_af_packet:", 15) == 0) return "af_xdp";
-    if (port[0]) return "dpdk";
+    if (strncmp(port, "dpdk:", 5) == 0) return "dpdk";
     return "unknown";
 }
 
@@ -285,10 +289,15 @@ void dvs_capability_refresh_backend(dvs_capability* cap, const char* tx_port,
 void dvs_capability_refresh_ptp(dvs_capability* cap, void* mtl_handle,
                                 int ptp_mode) {
     if (!cap) return;
-    /* Monotonic mode has no TAI discipline: always unknown. Live offset math
+    /* Monotonic mode has no TAI discipline: report unsynced so the caller
+     * can tell "known-not-synced" apart from "no data". Live offset math
      * lives in hook_ptp_state where the MTL handle is available. */
     (void)mtl_handle;
-    (void)ptp_mode;
+    if (ptp_mode == FILE_PLAYOUT_PTP_MONOTONIC) {
+        snprintf(cap->ptp_state, sizeof(cap->ptp_state), "unsynced");
+        cap->ptp_offset_us = 0;
+        return;
+    }
     snprintf(cap->ptp_state, sizeof(cap->ptp_state), "unknown");
     cap->ptp_offset_us = 0;
 }
@@ -331,9 +340,10 @@ char* dvs_capability_to_json(const dvs_capability* cap) {
                                json_object_new_boolean(cap->input_signal
                                                            ? cap->input_signal[i]
                                                            : 0));
-        json_object_object_add(p, "maxWidth", json_object_new_int(3840));
-        json_object_object_add(p, "maxHeight", json_object_new_int(2160));
-        json_object_object_add(p, "maxRefreshHz", json_object_new_int(60));
+        /* SoC capture ceiling shared with the TX path, not a per-port probe. */
+        json_object_object_add(p, "maxWidth", json_object_new_int(DVS_TX_MAX_W));
+        json_object_object_add(p, "maxHeight", json_object_new_int(DVS_TX_MAX_H));
+        json_object_object_add(p, "maxRefreshHz", json_object_new_int(DVS_TX_MAX_FPS));
         json_object_array_add(in_ports, p);
     }
     json_object_object_add(o, "inputPorts", in_ports);

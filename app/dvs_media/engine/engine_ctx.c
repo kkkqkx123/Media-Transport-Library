@@ -12,6 +12,14 @@
 
 #include <mtl_api.h> /* mtl_ptp_read_time, mtl_stop, mtl_uninit */
 
+/* Last-resort canvas when the base config omits dimensions. Static and
+ * controlled modes normally carry explicit geometry; this only keeps an
+ * empty config from failing before the first layout arrives. */
+#define DVS_DEFAULT_CANVAS_W 1920
+#define DVS_DEFAULT_CANVAS_H 1080
+#define DVS_DEFAULT_FPS 24.0f
+#define DVS_LEGACY_FPS 60.0
+
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -188,13 +196,13 @@ static rx_compositor* build_compositor(dvs_engine* e,
     }
     cfg->pip_stream_count = count;
 
-    if (cfg->width <= 0) cfg->width = 1920;
-    if (cfg->height <= 0) cfg->height = 1080;
+    if (cfg->width <= 0) cfg->width = DVS_DEFAULT_CANVAS_W;
+    if (cfg->height <= 0) cfg->height = DVS_DEFAULT_CANVAS_H;
     if (cfg->fps <= 0.0f) {
         if (count > 0 && streams)
-            cfg->fps = streams[0].fps > 0 ? streams[0].fps : 24.0f;
+            cfg->fps = streams[0].fps > 0 ? streams[0].fps : DVS_DEFAULT_FPS;
         else
-            cfg->fps = 24.0f;
+            cfg->fps = DVS_DEFAULT_FPS;
     }
     file_playout_apply_drm_mode(cfg);
 
@@ -256,7 +264,7 @@ int dvs_engine_apply_layout_at(dvs_engine* e,
                                const file_playout_pip_stream* streams, int count,
                                uint64_t apply_at_ns) {
     return dvs_engine_apply_layout_frame(e, streams, count, apply_at_ns,
-                                          0, 60.0, -1);
+                                          0, (double)DVS_LEGACY_FPS, -1);
 }
 
 /* Frame number math shared with the platform (same truncation):
@@ -297,8 +305,8 @@ static void engine_push_display_locked(dvs_engine* e) {
         e->base_error[0] = '\0';
         int mw = 0, mh = 0;
         file_playout_mode_dims(&e->cfg, &mw, &mh);
-        if (mw <= 0) mw = 1920;
-        if (mh <= 0) mh = 1080;
+        if (mw <= 0) mw = DVS_DEFAULT_CANVAS_W;
+        if (mh <= 0) mh = DVS_DEFAULT_CANVAS_H;
         /* The agent downloads to a file and passes its path; the url alone
          * is not fetchable from C. */
         unsigned char* px = NULL;
@@ -593,11 +601,21 @@ int dvs_engine_start(dvs_engine* e) {
     return dvs_engine_apply_layout(e, e->cfg.pip_streams, e->cfg.pip_stream_count);
 }
 
+/* Output mode bounds: single-wall canvas ceiling with a 480p floor. */
+#define DVS_OUT_MIN_W 640
+#define DVS_OUT_MAX_W 7680
+#define DVS_OUT_MIN_H 480
+#define DVS_OUT_MAX_H 4320
+#define DVS_OUT_MIN_HZ 24
+#define DVS_OUT_MAX_HZ 120
+
 int dvs_engine_set_output(dvs_engine* e, const char* connector, int width,
                           int height, int refresh_hz, const char* mode) {
     if (!e) return -1;
-    if (width < 640 || width > 7680 || height < 480 || height > 4320) return -1;
-    if (refresh_hz < 24 || refresh_hz > 120) return -1;
+    if (width < DVS_OUT_MIN_W || width > DVS_OUT_MAX_W ||
+        height < DVS_OUT_MIN_H || height > DVS_OUT_MAX_H)
+        return -1;
+    if (refresh_hz < DVS_OUT_MIN_HZ || refresh_hz > DVS_OUT_MAX_HZ) return -1;
     if (!mode) mode = "force";
     if (strcmp(mode, "force") != 0 && strcmp(mode, "hotplug") != 0) return -1;
     pthread_mutex_lock(&e->mu);
@@ -620,7 +638,9 @@ int dvs_engine_set_output(dvs_engine* e, const char* connector, int width,
     pthread_mutex_unlock(&e->mu);
     /* Rebuild through the frame path so a backdrop-only compositor survives
      * a mode change instead of being torn down. */
-    if (has_comp) return dvs_engine_apply_layout_frame(e, cur, cur_n, 0, 0, 60.0, -1);
+    if (has_comp)
+        return dvs_engine_apply_layout_frame(e, cur, cur_n, 0, 0,
+                                              (double)DVS_LEGACY_FPS, -1);
     return 0;
 }
 

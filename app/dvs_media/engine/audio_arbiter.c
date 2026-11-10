@@ -4,13 +4,21 @@
 #include "rx/rx_compositor.h"
 
 #include <alsa/asoundlib.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* Apply a 0..100 linear volume to the ALSA "Master" playback element of the
- * given device. Returns 0 on success; negative ALSA error code otherwise.
- * Gracefully no-ops if the device has no Master element (soft-mute only). */
+/* Apply a 0..100 linear volume to the ALSA playback element of the given
+ * device. Element name defaults to "Master" and follows
+ * DVS_ALSA_MIXER_ELEMENT when set. Returns 0 on success; negative ALSA
+ * error code otherwise. A missing element is an error, never a silent
+ * no-op, so the caller can report not-applied instead of fake success. */
+static const char* mixer_element_name(void) {
+    const char* v = getenv("DVS_ALSA_MIXER_ELEMENT");
+    return (v && *v) ? v : "Master";
+}
+
 static int apply_volume(const char* device, int volume) {
     snd_mixer_t* mixer = NULL;
     snd_mixer_selem_id_t* sid = NULL;
@@ -23,15 +31,19 @@ static int apply_volume(const char* device, int volume) {
 
     snd_mixer_selem_id_alloca(&sid);
     snd_mixer_selem_id_set_index(sid, 0);
-    snd_mixer_selem_id_set_name(sid, "Master");
+    snd_mixer_selem_id_set_name(sid, mixer_element_name());
     snd_mixer_elem_t* elem = snd_mixer_find_selem(mixer, sid);
-    if (elem && snd_mixer_selem_has_playback_volume(elem)) {
+    if (!elem || !snd_mixer_selem_has_playback_volume(elem)) {
+        rc = -ENODEV;
+        goto out;
+    }
+    {
         long min = 0, max = 0;
         snd_mixer_selem_get_playback_volume_range(elem, &min, &max);
         long v = min + (long)((double)(max - min) * volume / 100.0);
         if (v < min) v = min;
         if (v > max) v = max;
-        snd_mixer_selem_set_playback_volume_all(elem, v);
+        rc = snd_mixer_selem_set_playback_volume_all(elem, v);
     }
 out:
     if (mixer) snd_mixer_close(mixer);

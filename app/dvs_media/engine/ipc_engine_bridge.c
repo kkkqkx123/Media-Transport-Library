@@ -360,7 +360,8 @@ static void hook_counts(int* rx_sessions, int* decoding, int* layers) {
 static void hook_ptp_state(char* state, size_t n, int* offset_us) {
     if (!s_eng || !s_eng->st) return;
     if (s_eng->cfg.ptp_mode == FILE_PLAYOUT_PTP_MONOTONIC) {
-        dvs_ptp_state_from_delta(state, n, offset_us, 0, 0);
+        if (state && n > 0) snprintf(state, n, "unsynced");
+        if (offset_us) *offset_us = 0;
         return;
     }
     uint64_t t = mtl_ptp_read_time(s_eng->st);

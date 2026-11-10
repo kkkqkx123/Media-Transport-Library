@@ -7,7 +7,8 @@
 
 struct dvs_engine; /* forward declaration; full type in engine/engine_ctx.h */
 
-/* Tuneable simulated prepare duration (ms). Default 50; tests may set 0. */
+/* Pacing guard (ms) between admission and the prepare-result event.
+ * Default 0; tests may raise to observe async ordering. */
 void dvs_ipc_set_prepare_delay_ms(int ms);
 
 /* Engine hook table. main() installs the real implementation (engine/

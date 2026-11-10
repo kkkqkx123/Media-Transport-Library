@@ -24,27 +24,29 @@ typedef struct {
     int*   input_signal;   /* 1 = signal present */
     int    input_port_count;
 
-    /* max simultaneous decode sessions (MPP measured; default conservative) */
+    /* SoC spec: conservative MPP ceiling until measured. */
     int    max_decode_sessions;
 
-    /* max DRM layers (plane count) */
+    /* SoC spec fallback until the DRM plane probe replaces it. */
     int    max_layers;
 
-    /* TX/send static ceiling (SoC public limits, not probed). Per-board
-     * variance, if any, is documented by the board bring-up. */
+    /* TX/send static ceiling (SoC public limits, not probed). Shares the
+     * DVS_TX_* constants with engine/tx_session.h; a reported capability
+     * from bring-up overrides per-field at the caller. */
     char   tx_codecs[64]; /* comma list, e.g. "h264,h265" */
     int    tx_max_w;
     int    tx_max_h;
     int    tx_max_fps;
     int    tx_max_br_kbps;
 
-    /* PTP */
-    char   ptp_state[32];  /* "synced" | "unsynced" | "unknown" */
+    /* PTP: synced = disciplined, unsynced = known-not-synced (e.g. monotonic
+     * mode), unknown = no data yet. */
+    char   ptp_state[32];
     int    ptp_offset_us;  /* TAI offset in microseconds */
 
     /* MTL */
     char   mtl_version[32];
-    char   mtl_backend[32]; /* "dpdk" | "af_xdp" | "kernel" */
+    char   mtl_backend[32]; /* "dpdk" | "af_xdp" | "kernel" | "unknown" */
 } dvs_capability;
 
 /* Probe all subsystems. Returns 0 on success (best-effort; never fails hard). */
@@ -59,8 +61,8 @@ void dvs_capability_refresh_mtl(dvs_capability* cap, void* mtl_handle);
  * file_playout_mtl_init_dual. Single/dual merge uses the registered ports. */
 void dvs_capability_refresh_backend(dvs_capability* cap, const char* tx_port,
                                      const char* rx_port);
-/* PTP refresh honoring the playout clock mode (0 external, 1 builtin,
- * 2 monotonic). Monotonic always reports unknown. */
+/* PTP refresh honoring the playout clock mode. Monotonic reports unsynced
+ * (known-not-synced); other modes without a handle report unknown. */
 void dvs_capability_refresh_ptp(dvs_capability* cap, void* mtl_handle,
                                 int ptp_mode);
 
@@ -70,9 +72,9 @@ void dvs_capability_refresh_ptp(dvs_capability* cap, void* mtl_handle,
  * DVS_MAX_DECODE_SESSIONS environment override still wins. */
 void dvs_capability_set_mpp_ceiling(int n);
 
-/* Backend name for one MTL port string. Never NULL: "dpdk" | "af_xdp" |
- * "kernel" | "unknown". Shared by the capability refresh and the IPC
- * bridge so both paths report the same name. */
+/* Backend name for one MTL port string. Never NULL. Unrecognized prefixes
+ * report "unknown", never a guessed backend. Shared by the capability
+ * refresh and the IPC bridge so both paths report the same name. */
 const char* dvs_capability_backend_name(const char* port);
 
 /* PTP state math without clock reads (unit-testable). tai_valid == 0

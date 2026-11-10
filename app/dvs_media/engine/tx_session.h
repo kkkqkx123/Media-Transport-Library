@@ -5,12 +5,9 @@
  * and unit-tests on x86. The compositor engine (engine_ctx.c) owns role
  * mutual exclusion (stopping RX before TX starts) and owns data-plane
  * teardown; the data-plane backend (live_ingest capture/encode/MTL TX)
- * is installed by the engine when linked with it.
- *
- * Honesty rule: without a backend the session reports configured (params
- * stored and validated) with backend_pending set — it never claims packets
- * are flowing. The shipped binary always installs the live_ingest backend;
- * the NULL-backend case exists only as the x86 unit-test seam. Lanes keep their RX meaning; TX status is a separate object.
+ * is installed by the engine when linked with it. The shipped binary always
+ * installs the backend; a missing backend is a start failure, never a
+ * pending state. Lanes keep their RX meaning; TX status is a separate object.
  */
 #ifndef _DVS_TX_SESSION_H_
 #define _DVS_TX_SESSION_H_
@@ -21,7 +18,6 @@ struct json_object;
 
 typedef enum {
     DVS_TX_IDLE = 0,      /* no TX params, nothing running */
-    DVS_TX_CONFIGURED,    /* params validated/stored, backend pending */
     DVS_TX_RUNNING,       /* backend accepted, packets flowing */
     DVS_TX_FAILED         /* last start failed, see error */
 } dvs_tx_state_t;
@@ -57,9 +53,8 @@ typedef struct {
 } dvs_tx_params_t;
 
 /* Data-plane backend. Returns 0 when packets flow, <0 on failure.
- * NULL means absent (unit-test seam only): the session stays configured
- * with backend_pending set. The engine always installs the live_ingest
- * backend entry in the shipped binary. */
+ * NULL means absent: the start fails loudly. The engine always installs
+ * the live_ingest backend entry in the shipped binary. */
 typedef int (*dvs_tx_backend_fn)(const dvs_tx_params_t* p,
                                  char* err, size_t errlen);
 
@@ -67,7 +62,7 @@ typedef struct {
     dvs_tx_state_t    state;
     dvs_tx_params_t   params;
     char              error[256];
-    int               backend_pending;
+    int               backend_pending; /* always 0: kept for status JSON shape */
     dvs_tx_backend_fn backend;
 } dvs_tx_session_t;
 
@@ -95,9 +90,9 @@ int dvs_tx_validate_against_capability(const dvs_tx_params_t* p,
                                        char* err, size_t errlen);
 
 /* Start TX. Requires role "input" (else TX_ROLE_MISMATCH); validates params;
- * NULL backend (unit-test seam only) reports configured+pending, a real
- * backend success reports running, a real backend failure reports failed.
- * Never claims running without backend success. */
+ * a missing backend fails loudly, a backend success reports running, a
+ * backend failure reports failed. Never claims running without backend
+ * success. */
 int dvs_tx_start(dvs_tx_session_t* s, const dvs_tx_params_t* p,
                  const char* role, char* err, size_t errlen);
 

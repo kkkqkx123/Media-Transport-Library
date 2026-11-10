@@ -7,7 +7,6 @@
 
 const char* dvs_tx_state_name(dvs_tx_state_t s) {
     switch (s) {
-        case DVS_TX_CONFIGURED: return "configured";
         case DVS_TX_RUNNING:    return "running";
         case DVS_TX_FAILED:     return "failed";
         case DVS_TX_IDLE:
@@ -168,14 +167,12 @@ int dvs_tx_start(dvs_tx_session_t* s, const dvs_tx_params_t* p,
     s->backend_pending = 0;
 
     if (!s->backend) {
-        /* No backend installed (x86 unit-test seam only; the shipped binary
-         * always installs the live_ingest backend). Params are stored and
-         * validated, but nothing flows: report configured, not running. */
-        s->state = DVS_TX_CONFIGURED;
-        s->backend_pending = 1;
+        s->state = DVS_TX_FAILED;
         snprintf(s->error, sizeof(s->error),
-                 "TX_BACKEND_PENDING: tx data plane not linked on this build");
-        return 0;
+                 "TX_BACKEND_MISSING: tx data plane not linked");
+        if (err && errlen > 0)
+            snprintf(err, errlen, "%s", s->error);
+        return -1;
     }
     int rc = s->backend(p, s->error, sizeof(s->error));
     if (rc == 0) {

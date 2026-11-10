@@ -1,5 +1,6 @@
       (function () {
         var nodeId = null;
+        var loginUser = "admin";
         var nodeSnapshot = {};
         var currentRole = "output";
         var pendingRole = null;
@@ -440,6 +441,7 @@
             $("field-pwd").classList.remove("is-error");
             $("login-err").style.display = "none";
             $("login-mask").style.display = "none";
+            loginUser = u || "admin";
             var req = result.data && result.data.requirement;
             if (req && req.passwordChangeRequired) {
               protoToast("首次登录请修改密码");
@@ -465,7 +467,7 @@
           var o = $("pwd-old").value, n = $("pwd-new").value, n2 = $("pwd-new2").value;
           if (!o || !n) { $("pwd-err").style.display = "block"; $("pwd-err").textContent = "请填写完整"; return; }
           if (n !== n2) { $("pwd-err").style.display = "block"; $("pwd-err").textContent = "两次输入的新密码不一致"; return; }
-          apiAsync("POST", "/api/v1/node/password", { oldPassword: o, newPassword: n }).then(function (r) {
+          apiAsync("POST", "/api/v1/node/password", { username: loginUser, oldPassword: o, newPassword: n }).then(function (r) {
             if (!r || !r.ok) { $("pwd-err").style.display = "block"; $("pwd-err").textContent = (r && r.msg) || "修改失败"; return; }
             closeModal("pwd-modal");
             protoToast("密码修改成功");
@@ -869,7 +871,7 @@
           $("sip-state").className = "tag-pending";
           applyConfig("sip-config-state", {
             scope: "sip",
-            desiredValue: { enabled: true, server: server, port: port, deviceId: device, user: user },
+            desiredValue: { enabled: true, server: server, port: port, deviceId: device, user: user, password: $("sip-pwd").value },
             button: $("btn-save-sip"),
             pendingText: "配置已保存，等待 SIP 探测",
             applyingText: "应用中 · 正在探测 SIP 服务",

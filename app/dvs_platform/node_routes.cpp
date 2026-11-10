@@ -48,6 +48,7 @@ bool route_nodes(PlatformContext& ctx, const HttpRequest& req,
                                json_object_new_string(dvs::iso_now().c_str()));
         json_object_object_add(b, "transport",
                                json_object_new_string("short"));
+        project_hello_fields(b);
         ctx.store->put_doc("node", id, b);
         ctx.channels.set_transport(id, "short");
         ctx.store->audit("{\"register\":\"" + dvs::json_escape(id) + "\"}");
@@ -111,6 +112,7 @@ bool route_nodes(PlatformContext& ctx, const HttpRequest& req,
         }
         store_ptp_playback(cur, b);
         store_role_intent(cur, b);
+        project_heartbeat_fields(cur, b);
         json_object_object_add(cur, "transport",
                                json_object_new_string("short"));
         ctx.store->put_doc("node", id, cur);

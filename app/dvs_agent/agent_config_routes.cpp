@@ -844,6 +844,8 @@ bool agent_handle_config(AgentContext& ctx, const HttpRequest& req,
             (val && json_object_object_get_ex(val, "user", &uv) && uv)
                 ? json_object_get_string(uv)
                 : "";
+        // Password is accepted but never persisted or uplinked: the current
+        // mode is a TCP connectivity probe, not a SIP REGISTER exchange.
         if (srv.empty() || port < 1 || port > 65535 || dev.empty() ||
             usr.empty()) {
           fail_code = "INVALID_ARGUMENT";
@@ -859,6 +861,10 @@ bool agent_handle_config(AgentContext& ctx, const HttpRequest& req,
           json_object_object_add(sip_probe, "server",
                                  json_object_new_string(srv.c_str()));
           json_object_object_add(sip_probe, "port", json_object_new_int(port));
+          json_object_object_add(sip_probe, "deviceId",
+                                 json_object_new_string(dev.c_str()));
+          json_object_object_add(sip_probe, "user",
+                                 json_object_new_string(usr.c_str()));
           json_object_object_add(probing, "sip", sip_probe);
           ctx.store->update_node(probing);
           json_object_put(probing);
@@ -872,6 +878,10 @@ bool agent_handle_config(AgentContext& ctx, const HttpRequest& req,
             json_object_object_add(sip, "server",
                                    json_object_new_string(srv.c_str()));
             json_object_object_add(sip, "port", json_object_new_int(port));
+            json_object_object_add(sip, "deviceId",
+                                   json_object_new_string(dev.c_str()));
+            json_object_object_add(sip, "user",
+                                   json_object_new_string(usr.c_str()));
             json_object_object_add(node_patch, "sip", sip);
             ctx.store->update_node(node_patch);
             json_object_put(node_patch);
@@ -888,6 +898,10 @@ bool agent_handle_config(AgentContext& ctx, const HttpRequest& req,
             json_object_object_add(sip, "server",
                                    json_object_new_string(srv.c_str()));
             json_object_object_add(sip, "port", json_object_new_int(port));
+            json_object_object_add(sip, "deviceId",
+                                   json_object_new_string(dev.c_str()));
+            json_object_object_add(sip, "user",
+                                   json_object_new_string(usr.c_str()));
             json_object_object_add(node_patch, "sip", sip);
             ctx.store->update_node(node_patch);
             json_object_put(node_patch);

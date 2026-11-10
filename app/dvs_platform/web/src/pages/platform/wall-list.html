@@ -356,20 +356,20 @@
           }
           var btn = $("btn-save");
           btn.disabled = true;
-          setTimeout(function () {
+          store.createWall({
+            groupId: store.currentGroupId(), name: t,
+            mode: $("sel-mode").value, type: $("sel-type").value,
+            rows: rows, cols: cols, firstRes: $("sel-firstres").value,
+            rowPixels: rowPixels, colPixels: colPixels
+          }).then(function () {
             btn.disabled = false;
-            try {
-              store.createWall({
-                groupId: store.currentGroupId(), name: t,
-                mode: $("sel-mode").value, type: $("sel-type").value,
-                rows: rows, cols: cols, firstRes: $("sel-firstres").value,
-                rowPixels: rowPixels, colPixels: colPixels
-              });
-            } catch (error) { showErr("field-name", "name-err", error.message); return; }
             protoCloseDrawer("drawer-new");
             protoToast("保存成功，已生成默认场景");
             render();
-          }, 300);
+          }, function (error) {
+            btn.disabled = false;
+            showErr("field-name", "name-err", error.message);
+          });
         }
 
         $("kw").addEventListener("keydown", function (e) {
@@ -410,10 +410,10 @@
             title: "删除确认",
             content: "确认删除拼墙「" + w.name + "」及其 " + w.sceneCount + " 个场景？将进入 7 天恢复期；恢复拼墙时不会自动恢复原输出绑定。",
             onOk: function () {
-              try { store.deleteWall(w.id); }
-              catch (error) { protoToast(error.message); return; }
-              protoToast("已移入回收状态，可在 7 天内恢复");
-              render();
+              store.deleteWall(w.id).then(function () {
+                protoToast("已移入回收状态，可在 7 天内恢复");
+                render();
+              }, function (error) { protoToast(error.message); });
             }
           });
         });

@@ -153,26 +153,32 @@
       (function () {
         var store = window.DvsPlatformStore;
         var requestedWallId = new URLSearchParams(window.location.search).get("wallId");
-        if (requestedWallId && store.getWall(requestedWallId)) store.setCurrentWall(requestedWallId);
-        var wall = requestedWallId ? store.getWall(requestedWallId) : store.getCurrentWall();
-        if (!wall) { window.location.href = "wall-list.html"; return; }
+        var baseWall = requestedWallId ? store.getWall(requestedWallId) : store.getCurrentWall();
+        if (!baseWall) { window.location.href = "wall-list.html"; return; }
+        if (requestedWallId) store.setCurrentWall(baseWall.id);
+        function outputPortsOf(node) {
+          var raw = (node && node.raw) || node || {};
+          var cap = raw.capability || {};
+          if (Array.isArray(cap.outputPorts) && cap.outputPorts.length) return cap.outputPorts.length;
+          return 1;
+        }
+        function boot(wall) {
         var ROWS = Number(wall.rows), COLS = Number(wall.cols);
-        var portCapacity = { d1: 4, d2: 2 }; /* 原型的逻辑 HDMI 格位容量；名称/IP/在线状态从注册节点读取 */
-        var nodes = window.DvsNodeState.list().filter(function (node) {
-          return (node.role === "output" || node.type === "output") && node.lifecycle === "active";
-        }).map(function (node) {
-          return {
-            id: node.id.toUpperCase(), name: node.name, ip: node.ip,
-            ports: portCapacity[node.id] || (node.capabilities && node.capabilities.outputPorts || []).length || 1,
-            offline: !node.online
-          };
-        });
         var cells = Array.from({ length: ROWS }, function (_, r) {
           return Array.from({ length: COLS }, function (_, c) { return wall.bindings && wall.bindings[r] ? wall.bindings[r][c] || null : null; });
         });
         var saved = JSON.parse(JSON.stringify(cells));
         var selectedNode = null;
         var pendingCell = null;
+        var nodes = window.DvsNodeState.list().filter(function (node) {
+          return (node.role === "output" || node.type === "output") && node.lifecycle === "active";
+        }).map(function (node) {
+          return {
+            id: node.id, name: node.name, ip: node.ip,
+            ports: outputPortsOf(node),
+            offline: !node.online
+          };
+        });
 
         function $(id) { return document.getElementById(id); }
         function esc(value) { return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
@@ -343,9 +349,9 @@
             if (b && nodeById(b.node).offline && offline.indexOf(b.node) < 0) offline.push(b.node);
           }
           setTimeout(function () {
-            btn.disabled = false;
-            try {
-              wall = store.updateWall(wall.id, { bindings: cells });
+            store.updateWall(wall.id, { bindings: cells }).then(function (savedWall) {
+              btn.disabled = false;
+              wall = savedWall;
               saved = JSON.parse(JSON.stringify(cells));
               protoToast("保存成功，绑定已下发（绑定为本墙所有场景共享）");
               if (offline.length) {
@@ -354,7 +360,10 @@
                 }, 1900);
               }
               if (done) done();
-            } catch (error) { protoToast(error.message || "保存失败"); }
+            }, function (error) {
+              btn.disabled = false;
+              protoToast(error.message || "保存失败");
+            });
           }, 300);
         }
         $("btn-save").onclick = function () { doSave(null); };
@@ -398,6 +407,10 @@
         var heading = document.querySelector(".bind-right h4");
         if (heading) heading.textContent = "格位矩阵 · " + wall.name + "（" + ROWS + " 行 × " + COLS + " 列）";
         renderCells();
+        } /* end boot */
+        store.loadWallDetail(baseWall.id).then(function (joined) {
+          boot(joined && joined.id ? joined : baseWall);
+        }, function () { protoToast("平台不可达：绑定显示本地缓存，保存时将重试"); boot(baseWall); });
       })();
     </script>
   </body>

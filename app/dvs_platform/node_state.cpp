@@ -150,6 +150,68 @@ void store_ptp_playback(json_object* cur, json_object* data) {
     }
 }
 
+void project_hello_fields(json_object* doc) {
+    if (!doc || !json_object_is_type(doc, json_type_object)) return;
+    std::string id = dvs::json_get_str(doc, "id");
+    json_object_object_del(doc, "registerState");
+    json_object_object_add(doc, "registerState",
+                           json_object_new_string("registered"));
+    if (dvs::json_get_str(doc, "name").empty() && !id.empty()) {
+        json_object_object_add(doc, "name",
+                               json_object_new_string(id.c_str()));
+    }
+    std::string fw = dvs::json_get_str(doc, "firmware");
+    if (!fw.empty()) {
+        json_object_object_del(doc, "fw");
+        json_object_object_add(doc, "fw",
+                               json_object_new_string(fw.c_str()));
+    }
+    json_object* net = nullptr;
+    if (json_object_object_get_ex(doc, "network", &net) && net &&
+        json_object_is_type(net, json_type_object)) {
+        std::string ip = dvs::json_get_str(net, "ip");
+        if (!ip.empty() && dvs::json_get_str(doc, "ip").empty()) {
+            json_object_object_add(doc, "ip",
+                                   json_object_new_string(ip.c_str()));
+        }
+    }
+}
+
+void project_heartbeat_fields(json_object* doc, json_object* data) {
+    if (!doc || !json_object_is_type(doc, json_type_object)) return;
+    std::string fw = data ? dvs::json_get_str(data, "firmware") : "";
+    if (!fw.empty()) {
+        json_object_object_del(doc, "fw");
+        json_object_object_add(doc, "fw",
+                               json_object_new_string(fw.c_str()));
+    }
+    json_object* up = nullptr;
+    if (data && json_object_object_get_ex(data, "uptimeSec", &up) && up &&
+        json_object_is_type(up, json_type_int)) {
+        json_object_object_del(doc, "uptime");
+        json_object_object_add(doc, "uptime",
+                               json_object_new_int(json_object_get_int(up)));
+    }
+    json_object* res = nullptr;
+    if (data && json_object_object_get_ex(data, "resources", &res) && res &&
+        json_object_is_type(res, json_type_object)) {
+        json_object* met = nullptr;
+        if (!json_object_object_get_ex(doc, "metrics", &met) || !met ||
+            !json_object_is_type(met, json_type_object)) {
+            met = json_object_new_object();
+            json_object_object_add(doc, "metrics", met);
+        }
+        const char* keys[] = {"cpu", "memMb", "tempC"};
+        for (auto k : keys) {
+            json_object* v = nullptr;
+            if (json_object_object_get_ex(res, k, &v) && v) {
+                json_object_object_del(met, k);
+                json_object_object_add(met, k, json_object_get(v));
+            }
+        }
+    }
+}
+
 void apply_hello_doc(PlatformContext& ctx, json_object* data) {
     std::string id = dvs::json_get_str(data, "id");
     if (id.empty()) return;
@@ -158,6 +220,7 @@ void apply_hello_doc(PlatformContext& ctx, json_object* data) {
     json_object_object_add(merged, "lastHeartbeat",
                            json_object_new_string(dvs::iso_now().c_str()));
     json_object_object_add(merged, "transport", json_object_new_string("ws"));
+    project_hello_fields(merged);
     ctx.store->put_doc("node", id, merged);
     json_object_put(merged);
     ctx.channels.set_transport(id, "ws");
@@ -199,6 +262,7 @@ void apply_heartbeat_doc(PlatformContext& ctx, const std::string& id,
     }
     store_ptp_playback(cur, data);
     store_role_intent(cur, data);
+    project_heartbeat_fields(cur, data);
     ctx.store->put_doc("node", id, cur);
     json_object_put(cur);
     ctx.channels.set_transport(id, "ws");

@@ -230,24 +230,46 @@
     <script>
       (function () {
         /* 节点列表只消费注册 / 心跳状态，不在页面内维护设备示例数据。 */
-        function readDevices() {
-          var response = DvsApi.request("GET", "/api/v1/nodes?pageSize=100");
-          var nodes = response.ok ? response.data.items : [];
-          var walls = DvsPlatformStore.listWalls();
-          return nodes.map(function (node) {
-            var references = [];
-            walls.forEach(function (wall) {
-              var count = node.type === "output"
-                ? (wall.bindings || []).flat().filter(function (cell) { return cell && String(cell.node).toLowerCase() === node.id; }).length
-                : (wall.whitelist || []).filter(function (item) { return item.id === node.id; }).length;
-              if (count) references.push(wall.name + (node.type === "output" ? " · " + count + " 格位" : ""));
-            });
-            node.bind = references.length ? (node.type === "input" ? "白名单：" : "") + references.join("、") :
-              (node.type === "input" ? "未入白名单" : "未绑定");
-            return node;
-          });
+        function normalizeNode(raw) {
+          var node = raw || {};
+          if (!node.type && node.role) node.type = node.role;
+          if ((node.ip == null || node.ip === "") && node.network && node.network.ip) node.ip = node.network.ip;
+          if (node.fw == null && node.firmware != null) node.fw = node.firmware;
+          if (node.sip == null && node.sipDigest != null) node.sip = node.sipDigest;
+          if (node.uptime == null && node.uptimeSec != null) node.uptime = node.uptimeSec;
+          var res = node.resources || {};
+          var met = node.metrics && typeof node.metrics === "object" ? node.metrics : {};
+          if (met.cpu == null && res.cpu != null) met.cpu = res.cpu;
+          if (met.memMb == null && res.memMb != null) met.memMb = res.memMb;
+          if (met.tempC == null && res.tempC != null) met.tempC = res.tempC;
+          node.metrics = met;
+          if (!node.output && node.geometry) {
+            node.output = { width: node.geometry.w, height: node.geometry.h, refreshHz: 60 };
+          }
+          if (node.registerState == null) node.registerState = "registered";
+          return node;
         }
-        var devices = readDevices();
+        function readDevices() {
+          return DvsApi.request("GET", "/api/v1/nodes?pageSize=100").then(function (response) {
+            var nodes = (response && response.ok && response.data && response.data.items) || [];
+            var walls = DvsPlatformStore.listWalls();
+            return nodes.map(function (raw) {
+              var node = normalizeNode(raw);
+              var nodeKey = String(node.id).toLowerCase();
+              var references = [];
+              walls.forEach(function (wall) {
+                var count = node.type === "output"
+                  ? (wall.bindings || []).flat().filter(function (cell) { return cell && String(cell.node).toLowerCase() === nodeKey; }).length
+                  : (wall.whitelist || []).filter(function (item) { return String(item.id).toLowerCase() === nodeKey; }).length;
+                if (count) references.push(wall.name + (node.type === "output" ? " · " + count + " 格位" : ""));
+              });
+              node.bind = references.length ? (node.type === "input" ? "白名单：" : "") + references.join("、") :
+                (node.type === "input" ? "未入白名单" : "未绑定");
+              return node;
+            });
+          }, function () { return []; });
+        }
+        var devices = [];
         var editingId = null;
         var page = 1;
         var PAGE_SIZE = 8;
@@ -265,6 +287,12 @@
           if (d.registerState === "registered") return "已注册";
           if (d.registerState === "registering") return "注册中";
           return "连接失败";
+        }
+        function capabilityText(d) {
+          if (d.output && d.output.capability) return d.output.capability.maxWidth + "×" + d.output.capability.maxHeight + " @" + d.output.capability.maxRefreshHz + "Hz";
+          var ports = (d.capability && d.capability.outputPorts) || [];
+          if (ports.length) return ports[0].maxWidth + "×" + ports[0].maxHeight + " @" + ports[0].maxRefreshHz + "Hz";
+          return "—";
         }
         function runtimeText(d) {
           var state = d.runtimeState || (d.online ? "online" : "offline");
@@ -335,8 +363,10 @@
         }
 
         function syncDevices() {
-          devices = readDevices();
-          render();
+          readDevices().then(function (list) {
+            devices = list;
+            render();
+          });
           /* 抽屉打开时不重置别名输入，避免定时回传打断未保存编辑；关闭后重新打开即读取最新快照。 */
         }
 
@@ -360,7 +390,7 @@
           } else {
             cfg += '<div><span class="k">输出能力：</span>' + outputText(d) + "</div>" +
                    '<div><span class="k">输出模式：</span>' + (d.output && d.output.mode === "hotplug" ? "热插拔" : "强推") + "</div>" +
-                   '<div><span class="k">能力上限：</span>' + (d.output && d.output.capability ? d.output.capability.maxWidth + "×" + d.output.capability.maxHeight + " @" + d.output.capability.maxRefreshHz + "Hz" : "—") + "</div>";
+                   '<div><span class="k">能力上限：</span>' + capabilityText(d) + "</div>";
           }
           $("ro-cfg").innerHTML = cfg;
           var network = d.network || {};
@@ -385,9 +415,9 @@
             '<div><span class="k">播放状态：</span>' + (playback ? playback.status : "—") + "</div>" +
             '<div><span class="k">在线时长：</span>' + (d.uptime || "—") + "</div>" +
             '<div><span class="k">最后心跳：</span>' + formatAt(d.lastHeartbeat) + "</div>" +
-            '<div><span class="k">CPU：</span>' + (d.metrics && d.metrics.cpu || "—") + "</div>" +
-            '<div><span class="k">内存：</span>' + (d.metrics && d.metrics.memory || "—") + "</div>" +
-            '<div><span class="k">温度：</span>' + (d.metrics && d.metrics.temperature || "—") + "</div>" +
+            '<div><span class="k">CPU：</span>' + (d.metrics && d.metrics.cpu != null ? d.metrics.cpu : "—") + "</div>" +
+            '<div><span class="k">内存：</span>' + (d.metrics && d.metrics.memMb != null ? d.metrics.memMb + "MB" : "—") + "</div>" +
+            '<div><span class="k">温度：</span>' + (d.metrics && d.metrics.tempC != null ? d.metrics.tempC + "℃" : (d.metrics && d.metrics.temperature) || "—") + "</div>" +
             '<div><span class="k">节点状态：</span>' + runtimeText(d) + " · " + (d.runtimeMessage || "—") + "</div>" +
             '<div><span class="k">异常原因：</span>' + exceptionText(d) + "</div>";
           protoOpenDrawer("drawer-edit");
@@ -410,15 +440,16 @@
           if (dup) { showErr("已存在同名别名"); return; }
           var btn = $("btn-save");
           btn.disabled = true;
-          setTimeout(function () {
+          DvsApi.request("PUT", "/api/v1/nodes/" + encodeURIComponent(editingId), { name: t }, { idempotencyKey: "rename-node-" + editingId + "-" + t }).then(function (response) {
             btn.disabled = false;
-            var response = DvsApi.request("PUT", "/api/v1/nodes/" + encodeURIComponent(editingId), { name: t }, { idempotencyKey: "rename-node-" + editingId + "-" + t });
-            if (!response.ok) { protoToast(response.msg); btn.disabled = false; return; }
-            devices = readDevices();
+            if (!response.ok) { protoToast(response.msg); return; }
+            syncDevices();
             protoCloseDrawer("drawer-edit");
             protoToast("别名已更新（列表与信号源面板同步显示）");
-            render();
-          }, 300);
+          }, function (err) {
+            btn.disabled = false;
+            protoToast((err && err.message) || "改名请求失败");
+          });
         };
         document.querySelectorAll("#drawer-edit [data-drawer-close]").forEach(function (btn) {
           btn.addEventListener("click", function () { editingId = null; });
@@ -437,48 +468,121 @@
             content: content,
             onOk: function () {
               var wasOnline = d.online;
-              var response = DvsApi.request("POST", "/api/v1/nodes/" + encodeURIComponent(d.id) + "/retire", {}, { idempotencyKey: "retire-node-" + d.id });
-              if (!response.ok) { protoToast(response.msg); return; }
-              DvsPlatformStore.listWalls().forEach(function (wall) {
-                var patch = {};
-                if (d.type === "output") {
-                  var removed = [];
-                  (wall.bindings || []).forEach(function (row, r) { row.forEach(function (cell, c) {
-                    if (cell && String(cell.node).toLowerCase() === d.id) removed.push({ r: r, c: c });
-                  }); });
-                  function hitsRemoved(x, y, width, height) {
-                    return removed.some(function (cell) {
-                      return x < (cell.c + 1) * 130 && x + width > cell.c * 130 && y < (cell.r + 1) * 90 && y + height > cell.r * 90;
+              var nodeId = String(d.id).toLowerCase();
+              /* 退役要求先解除服务端引用：逐个删除该节点的绑定与白名单条目，再调 retire。 */
+              function serverRefs() {
+                return Promise.all([
+                  DvsApi.request("GET", "/api/v1/bindings"),
+                  DvsApi.request("GET", "/api/v1/whitelist")
+                ]).then(function (results) {
+                  var dels = [];
+                  function itemsOf(r) {
+                    if (!r || !r.ok || !r.data) return [];
+                    if (Array.isArray(r.data)) return r.data;
+                    return r.data.items || [];
+                  }
+                  itemsOf(results[0]).forEach(function (b) {
+                    if (b && String(b.nodeId || "").toLowerCase() === nodeId && b.id) {
+                      dels.push(DvsApi.request("DELETE", "/api/v1/bindings/" + encodeURIComponent(b.id)));
+                    }
+                  });
+                  itemsOf(results[1]).forEach(function (w) {
+                    if (w && String(w.sig == null ? w.id : w.sig).toLowerCase() === nodeId && w.id) {
+                      dels.push(DvsApi.request("DELETE", "/api/v1/whitelist/" + encodeURIComponent(w.id)));
+                    }
+                  });
+                  return Promise.all(dels);
+                });
+              }
+              serverRefs().then(function () {
+                return DvsApi.request("POST", "/api/v1/nodes/" + encodeURIComponent(d.id) + "/retire", {}, { idempotencyKey: "retire-node-" + d.id });
+              }).then(function (response) {
+                if (!response.ok) { protoToast(response.msg); return; }
+                var nodeKey = nodeId;
+                var affected = DvsPlatformStore.listWalls().filter(function (wall) {
+                  if (d.type === "output") {
+                    return (wall.bindings || []).some(function (row) {
+                      return (row || []).some(function (cell) { return cell && String(cell.node).toLowerCase() === nodeKey; });
                     });
                   }
-                  patch.bindings = wall.bindings.map(function (row) {
-                    return row.map(function (cell) { return cell && String(cell.node).toLowerCase() === d.id ? null : cell; });
+                  return (wall.whitelist || []).some(function (item) { return String(item.id).toLowerCase() === nodeKey; });
+                });
+                /* 逐墙 Join 后再算清理补丁：矩阵/场景以服务端像素口径为准。 */
+                var chain = Promise.resolve();
+                affected.forEach(function (w) {
+                  chain = chain.then(function () {
+                    return DvsPlatformStore.loadWallDetail(w.id).catch(function () { return DvsPlatformStore.getWall(w.id); });
+                  }).then(function (wall) {
+                    if (!wall) return null;
+                    var patch = {};
+                    if (d.type === "output") {
+                      var rp = wall.rowPixels, cp = wall.colPixels;
+                      var rows = Number(wall.rows) || 1, cols = Number(wall.cols) || 1;
+                      if (!Array.isArray(rp) || rp.length !== rows) rp = null;
+                      if (!Array.isArray(cp) || cp.length !== cols) cp = null;
+                      var removed = [];
+                      (wall.bindings || []).forEach(function (row, r) {
+                        (row || []).forEach(function (cell, c) {
+                          if (cell && String(cell.node).toLowerCase() === nodeKey) removed.push({ r: r, c: c });
+                        });
+                      });
+                      var offX = function (c) { var x = 0; for (var i = 0; i < c; i++) x += (cp ? cp[i] : 1920); return x; };
+                      var offY = function (r) { var y = 0; for (var j = 0; j < r; j++) y += (rp ? rp[j] : 1080); return y; };
+                      var cellBox = function (r, c) {
+                        return { x: offX(c), y: offY(r), w: cp ? cp[c] : 1920, h: rp ? rp[r] : 1080 };
+                      };
+                      var itemBox = function (item) {
+                        if (item.x != null) return { x: item.x, y: item.y, w: item.w, h: item.h };
+                        var b = cellBox(item.r || 0, item.c || 0);
+                        var w = 0, h = 0, k;
+                        for (k = 0; k < (item.cs || 1); k++) w += (cp ? cp[(item.c || 0) + k] : 1920) || 0;
+                        for (k = 0; k < (item.rs || 1); k++) h += (rp ? rp[(item.r || 0) + k] : 1080) || 0;
+                        return { x: b.x, y: b.y, w: w, h: h };
+                      };
+                      var hitsRemoved = function (x, y, width, height) {
+                        return removed.some(function (cell) {
+                          var rc = cellBox(cell.r, cell.c);
+                          return x < rc.x + rc.w && x + width > rc.x && y < rc.y + rc.h && y + height > rc.y;
+                        });
+                      };
+                      patch.bindings = (wall.bindings || []).map(function (row) {
+                        return (row || []).map(function (cell) { return cell && String(cell.node).toLowerCase() === nodeKey ? null : cell; });
+                      });
+                      patch.windows = (wall.windows || []).filter(function (win) { return !hitsRemoved(win.x, win.y, win.w, win.h); });
+                      patch.scenes = (wall.scenes || []).map(function (scene) {
+                        return Object.assign({}, scene, { layout: (scene.layout || []).filter(function (item) {
+                          var b = itemBox(item);
+                          return !hitsRemoved(b.x, b.y, b.w, b.h);
+                        }) });
+                      });
+                    } else {
+                      patch.whitelist = (wall.whitelist || []).filter(function (item) { return String(item.id).toLowerCase() !== nodeKey; });
+                      /* 信号标识以白名单设备标识为准；历史别名映射已归一删除。 */
+                      patch.windows = (wall.windows || []).filter(function (win) { return String(win.sig).toLowerCase() !== nodeKey; });
+                      patch.scenes = (wall.scenes || []).map(function (scene) {
+                        return Object.assign({}, scene, { layout: (scene.layout || []).filter(function (item) { return String(item.sig).toLowerCase() !== nodeKey; }) });
+                      });
+                    }
+                    if (Object.keys(patch).length) return DvsPlatformStore.updateWall(wall.id, patch);
+                    return null;
                   });
-                  patch.windows = (wall.windows || []).filter(function (win) { return !hitsRemoved(win.x, win.y, win.w, win.h); });
-                  patch.scenes = (wall.scenes || []).map(function (scene) {
-                    return Object.assign({}, scene, { layout: (scene.layout || []).filter(function (item) {
-                      return !hitsRemoved(item.c * 130, item.r * 90, item.cs * 130, item.rs * 90);
-                    }) });
-                  });
-                } else {
-                  patch.whitelist = (wall.whitelist || []).filter(function (item) { return item.id !== d.id; });
-                  /* 信号标识以白名单设备标识为准；历史别名映射已归一删除。 */
-                  patch.windows = (wall.windows || []).filter(function (win) { return win.sig !== d.id; });
-                  patch.scenes = (wall.scenes || []).map(function (scene) {
-                    return Object.assign({}, scene, { layout: (scene.layout || []).filter(function (item) { return item.sig !== d.id; }) });
-                  });
-                }
-                DvsPlatformStore.updateWall(wall.id, patch);
+                });
+                chain.then(function () {
+                syncDevices();
+                protoToast(wasOnline ? "退役完成，身份记录保留 30 天" : "已进入退役待执行；节点重连后先执行退役");
+              }, function (err) {
+                syncDevices();
+                protoToast((err && err.message) || "本地清理失败，请刷新后确认");
               });
-              devices = readDevices();
-              protoToast(wasOnline ? "退役完成，身份记录保留 30 天" : "已进入退役待执行；节点重连后先执行退役");
-              render();
+              }, function (err) { protoToast((err && err.message) || "退役请求失败"); });
             }
           });
         }
 
         /* ---------- 平台批量升级（Q-40：归设备管理）---------- */
+        var fwSha = "";
         function renderFwBody() {
+          fwSha = "";
           $("fw-body").innerHTML =
             '<div class="fw-pick">' +
             '<label class="fw-upload-trigger" for="fw-file"><i class="t-icon t-icon-upload" aria-hidden="true"></i><span>上传文件</span></label>' +
@@ -487,15 +591,34 @@
             '</div>' +
             '<div class="hint" style="font-size: 12px; color: var(--proto-text-tertiary); margin-top: 6px; line-height: 1.6">' +
             "固件包 .bin + 版本与完整性校验；单台节点的本地上传升级见节点单机后台。示意：文件名含「V1.0.1」且扩展名 .bin 可通过校验。</div>" +
+            '<div class="proto-field" style="margin-top:10px"><label for="fw-filename">服务端固件包名称</label>' +
+            '<input class="proto-input" id="fw-filename" type="text" placeholder="平台主机上的固件包名，如 V1.0.1-fw.bin" /></div>' +
+            '<div class="proto-field" style="margin-top:6px"><label for="fw-sha">SHA-256（选择文件后自动计算，可手工覆盖）</label>' +
+            '<input class="proto-input" id="fw-sha" type="text" placeholder="选择固件包后自动计算" /></div>' +
             '<div class="fw-nodes" id="fw-nodes">' +
             '<p style="font-size: 13px; margin: 0 0 6px">选择在线节点（离线节点不可升级）</p>' +
             devices.filter(function (d) { return d.type === "output" && d.lifecycle === "active"; }).map(function (d) {
               return '<label class="fw-node' + (d.online ? "" : " is-disabled") + '">' +
-                '<input type="checkbox" value="' + d.id + '"' + (d.online && d.id === "d1" ? " checked" : "") + (d.online ? "" : " disabled") + " /> " +
+                '<input type="checkbox" value="' + d.id + '"' + (d.online ? "" : " disabled") + " /> " +
                 esc(d.name) + ' <span class="meta">' + esc(d.ip) + " · 当前 " + esc(d.fw) + (d.online ? "" : " · 离线") + "</span></label>";
             }).join("") + "</div>";
           $("fw-file").addEventListener("change", function () {
-            $("fw-file-name").textContent = this.files && this.files[0] ? this.files[0].name : "未选择任何文件";
+            var f = this.files && this.files[0];
+            $("fw-file-name").textContent = f ? f.name : "未选择任何文件";
+            fwSha = "";
+            if ($("fw-sha")) $("fw-sha").value = "";
+            if (!f) return;
+            if ($("fw-filename") && !$("fw-filename").value) $("fw-filename").value = f.name;
+            if (window.crypto && window.crypto.subtle) {
+              if ($("fw-sha")) $("fw-sha").placeholder = "计算中…";
+              f.arrayBuffer().then(function (buf) { return window.crypto.subtle.digest("SHA-256", buf); }).then(function (hash) {
+                fwSha = Array.from(new Uint8Array(hash)).map(function (b) { return b.toString(16).padStart(2, "0"); }).join("");
+                if ($("fw-sha")) { $("fw-sha").value = fwSha; $("fw-sha").placeholder = "选择固件包后自动计算"; }
+              }).catch(function () {
+                fwSha = "";
+                if ($("fw-sha")) $("fw-sha").placeholder = "自动计算失败，请手工填写";
+              });
+            }
           });
         }
         $("btn-upgrade").onclick = function () {
@@ -516,6 +639,8 @@
           if (!picked.length) { protoToast("请至少选择一台在线节点"); return; }
           var btn = $("fw-start");
           btn.disabled = true;
+          var filename = ($("fw-filename") && $("fw-filename").value.trim()) || f.name;
+          var sha = ($("fw-sha") && $("fw-sha").value.trim()) || fwSha;
           $("fw-body").innerHTML =
             '<p style="font-size: 13px">正在向 ' + picked.length + " 台节点下发固件（" + f.name + "）…</p>" +
             '<div class="fw-bar"><i id="fw-prog"></i></div>' +
@@ -528,13 +653,23 @@
             if (w >= 100) {
               clearInterval(timer);
               setTimeout(function () {
-                closeFw();
-                btn.disabled = false;
-                var response = DvsApi.request("POST", "/api/v1/nodes/upgrade", { targetNodeIds: picked.map(function (d) { return d.id; }), fwVersion: "V1.0.1" }, { idempotencyKey: "upgrade-nodes-" + picked.map(function (d) { return d.id; }).join(",") });
-                if (!response.ok) { protoToast(response.msg); btn.disabled = false; return; }
-                devices = readDevices();
-                protoToast("已下发 " + picked.length + " 台，升级结果以在线状态与固件版本回传为准");
-                render();
+                if (!/^[0-9a-fA-F]{64}$/.test(sha)) {
+                  closeFw();
+                  btn.disabled = false;
+                  protoToast("完整性校验值缺失或非法，请等待 SHA-256 计算完成或手工填写");
+                  return;
+                }
+                DvsApi.request("POST", "/api/v1/nodes/upgrade", { targetNodeIds: picked.map(function (d) { return d.id; }), filename: filename, sha256: sha.toLowerCase(), fwVersion: "V1.0.1" }, { idempotencyKey: "upgrade-nodes-" + picked.map(function (d) { return d.id; }).join(",") }).then(function (response) {
+                  closeFw();
+                  btn.disabled = false;
+                  if (!response.ok) { protoToast(response.msg); return; }
+                  syncDevices();
+                  protoToast("已下发 " + picked.length + " 台，升级结果以在线状态与固件版本回传为准");
+                }, function (err) {
+                  closeFw();
+                  btn.disabled = false;
+                  protoToast((err && err.message) || "升级下发失败");
+                });
               }, 500);
             }
           }, 220);

@@ -140,9 +140,14 @@
       (function () {
         var store = window.DvsPlatformStore;
         var requestedWallId = new URLSearchParams(window.location.search).get("wallId");
-        if (requestedWallId && store.getWall(requestedWallId)) store.setCurrentWall(requestedWallId);
-        var wall = requestedWallId ? store.getWall(requestedWallId) : store.getCurrentWall();
-        if (!wall) { window.location.href = "wall-list.html"; return; }
+        var baseWall = requestedWallId ? store.getWall(requestedWallId) : store.getCurrentWall();
+        if (!baseWall) { window.location.href = "wall-list.html"; return; }
+        if (requestedWallId) store.setCurrentWall(baseWall.id);
+        /* 设置读取/回写都以服务端为准，避免占位默认值覆盖已存参数。 */
+        store.loadWallDetail(baseWall.id).then(function (joined) {
+          boot(joined && joined.id ? joined : baseWall);
+        }, function () { protoToast("平台不可达：显示本地缓存，保存时将重试"); boot(baseWall); });
+        function boot(wall) {
         var DEFAULTS = { "adj-bright": 50, "adj-contrast": 50, "adj-saturation": 50, "adj-hue": 180 };
         var dirty = false;
         var navTarget = null;
@@ -162,18 +167,28 @@
           var btn = $("btn-save");
           btn.disabled = true;
           setTimeout(function () {
-            btn.disabled = false;
-            try {
-              wall = store.updateWall(wall.id, {
-                settings: Object.assign({}, store.getWall(wall.id).settings, { image: {
-                  brightness: Number($("adj-bright").value), contrast: Number($("adj-contrast").value),
-                  saturation: Number($("adj-saturation").value), hue: Number($("adj-hue").value)
-                } })
-              });
+            /* 服务端 imageAdjust 口径 −100~100：本地 0~100 线性映射；
+             * 色相为角度制，与服务端量纲不一致，保持纯本地。 */
+            var srv = function (v) { return Math.max(-100, Math.min(100, (Number(v) - 50) * 2)); };
+            store.updateWall(wall.id, {
+              imageAdjust: {
+                brightness: srv($("adj-bright").value), contrast: srv($("adj-contrast").value),
+                saturation: srv($("adj-saturation").value)
+              },
+              settings: Object.assign({}, store.getWall(wall.id).settings, { image: {
+                brightness: Number($("adj-bright").value), contrast: Number($("adj-contrast").value),
+                saturation: Number($("adj-saturation").value), hue: Number($("adj-hue").value)
+              } })
+            }).then(function (savedWall) {
+              btn.disabled = false;
+              wall = savedWall;
               dirty = false;
               protoToast("保存成功，已下发至本墙全部已绑定输出盒");
               if (done) done();
-            } catch (error) { protoToast(error.message || "保存失败"); }
+            }, function (error) {
+              btn.disabled = false;
+              protoToast(error.message || "保存失败");
+            });
           }, 300);
         }
 
@@ -228,8 +243,9 @@
         var wallTitle = document.querySelector(".wall-settings-title");
         if (wallTitle) wallTitle.textContent = wall.name;
         var note = document.querySelector(".adj-form .note-line");
-        if (note) note.textContent = "拼墙级参数：一次调整作用于本墙全部已绑定输出盒（当前 " + (wall.boundCount || 0) + "/" + (wall.totalCells || 0) + "）；各项取值范围以设备能力为准（示意值）。保存后立即下发、即时生效，不需重新开窗。";
+        if (note) note.textContent = "拼墙级参数：一次调整作用于本墙全部已绑定输出盒（当前 " + (wall.boundCount || 0) + "/" + (wall.totalCells || 0) + "）；亮度/对比度/饱和度随下发链路生效（色相仅本机预览）。保存后立即下发、即时生效，不需重新开窗。";
         loadSaved();
+        } /* end boot */
       })();
     </script>
   </body>

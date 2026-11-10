@@ -17,6 +17,10 @@ void mark_wall_committed(PlatformContext& ctx, const std::string& wall_id,
                          const std::string& hash);
 void store_role_intent(json_object* cur, json_object* data);
 void promote_pending_bindings(PlatformContext& ctx, const std::string& node_id);
+// Display projection shared by the HTTP and WS chains: register fills the
+// identity fields once, every heartbeat refreshes the volatile ones.
+void project_hello_fields(json_object* doc);
+void project_heartbeat_fields(json_object* doc, json_object* data);
 void store_ptp_playback(json_object* cur, json_object* data);
 void apply_hello_doc(PlatformContext& ctx, json_object* data);
 void apply_heartbeat_doc(PlatformContext& ctx, const std::string& id,

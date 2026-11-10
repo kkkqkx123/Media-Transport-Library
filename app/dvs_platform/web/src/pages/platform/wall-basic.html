@@ -181,9 +181,14 @@
       (function () {
         var store = window.DvsPlatformStore;
         var requestedWallId = new URLSearchParams(window.location.search).get("wallId");
-        if (requestedWallId && store.getWall(requestedWallId)) store.setCurrentWall(requestedWallId);
-        var wall = requestedWallId ? store.getWall(requestedWallId) : store.getCurrentWall();
-        if (!wall) { window.location.href = "wall-list.html"; return; }
+        var baseWall = requestedWallId ? store.getWall(requestedWallId) : store.getCurrentWall();
+        if (!baseWall) { window.location.href = "wall-list.html"; return; }
+        if (requestedWallId) store.setCurrentWall(baseWall.id);
+        /* 设置读取/回写都以服务端为准，避免占位默认值覆盖已存参数。 */
+        store.loadWallDetail(baseWall.id).then(function (joined) {
+          boot(joined && joined.id ? joined : baseWall);
+        }, function () { protoToast("平台不可达：显示本地缓存，保存时将重试"); boot(baseWall); });
+        function boot(wall) {
         var dirty = false;
         var navTarget = null;
 
@@ -267,26 +272,27 @@
           if (!validate()) { protoToast("存在校验失败项，已定位提示"); return; }
           var btn = $("btn-save");
           btn.disabled = true;
-          setTimeout(function () {
+          store.updateWall(wall.id, {
+            name: $("input-name").value.trim(), groupId: $("sel-group").value,
+            settings: Object.assign({}, store.getWall(wall.id).settings, {
+              colorFormat: $("sel-color").value, quality: $("sel-quality").value,
+              buffer: Number($("input-buffer").value),
+              timeServerMode: document.querySelector('input[name="ts"]:checked').value,
+              timeServerAddress: $("input-tsaddr").value.trim(),
+              syncMax: Number($("sync-max").value), syncMin: Number($("sync-min").value), syncStep: Number($("sync-step").value)
+            })
+          }).then(function (saved) {
             btn.disabled = false;
-            try {
-              wall = store.updateWall(wall.id, {
-                name: $("input-name").value.trim(), groupId: $("sel-group").value,
-                settings: Object.assign({}, store.getWall(wall.id).settings, {
-                  colorFormat: $("sel-color").value, quality: $("sel-quality").value,
-                  buffer: Number($("input-buffer").value),
-                  timeServerMode: document.querySelector('input[name="ts"]:checked').value,
-                  timeServerAddress: $("input-tsaddr").value.trim(),
-                  syncMax: Number($("sync-max").value), syncMin: Number($("sync-min").value), syncStep: Number($("sync-step").value)
-                })
-              });
-              store.setCurrentWall(wall.id);
-              dirty = false;
-              loadSaved();
-              protoToast("保存成功，已即时下发生效（不需重新开窗）");
-              if (cb) cb();
-            } catch (error) { protoToast(error.message || "保存失败"); }
-          }, 300);
+            wall = saved;
+            store.setCurrentWall(wall.id);
+            dirty = false;
+            loadSaved();
+            protoToast("保存成功，已即时下发生效（不需重新开窗）");
+            if (cb) cb();
+          }, function (error) {
+            btn.disabled = false;
+            protoToast(error.message || "保存失败");
+          });
         }
         $("btn-save").onclick = function () { doSave(); };
         $("btn-cancel").onclick = function () {
@@ -319,6 +325,7 @@
           doSave(function () { closeModal(); if (t) window.location.href = t; });
         };
         loadSaved();
+        } /* end boot */
       })();
     </script>
   </body>

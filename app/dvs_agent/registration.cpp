@@ -710,5 +710,17 @@ json_object* Registration::build_heartbeat() {
     json_object_object_add(res, "tempC", json_object_new_int((int)(temp / 1000)));
     json_object_object_add(o, "resources", res);
 
+    /* Playback projection for the platform truth: reuse the snapshot folded
+     * into the local node doc above so platform pages can render it. */
+    {
+        json_object* fresh = store_->node();
+        json_object* cur = nullptr;
+        if (fresh && json_object_object_get_ex(fresh, "currentPlayback", &cur) &&
+            cur && !json_object_is_type(cur, json_type_null))
+            json_object_object_add(o, "currentPlayback", json_object_get(cur));
+        else
+            json_object_object_add(o, "currentPlayback", json_object_new_null());
+    }
+
     return o;
 }

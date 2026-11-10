@@ -235,16 +235,16 @@
           if (dup) { showErr("该分组名称已存在"); return; }
           var btn = $("btn-save");
           btn.disabled = true;
-          setTimeout(function () {
+          var op = editingId ? store.renameGroup(editingId, t) : store.createGroup(t);
+          op.then(function () {
             btn.disabled = false;
-            try {
-              if (editingId) store.renameGroup(editingId, t);
-              else store.createGroup(t);
-            } catch (error) { showErr(error.message); return; }
             protoCloseDrawer("drawer-name");
             protoToast("保存成功");
             render();
-          }, 300);
+          }, function (error) {
+            btn.disabled = false;
+            showErr(error.message);
+          });
         }
 
         $("kw").addEventListener("keydown", function (e) {
@@ -286,10 +286,10 @@
               title: "删除确认",
               content: "确认删除分组「" + g.name + "」？删除后不可恢复。",
               onOk: function () {
-                try { store.deleteGroup(g.id); }
-                catch (error) { protoToast(error.message); return; }
-                protoToast("删除成功");
-                render();
+                store.deleteGroup(g.id).then(function () {
+                  protoToast("删除成功");
+                  render();
+                }, function (error) { protoToast(error.message); });
               }
             });
           }

@@ -270,16 +270,25 @@
     <script>
       (function () {
         var requestedWallId = new URLSearchParams(location.search).get("wallId");
-        var wall = requestedWallId ? DvsPlatformStore.getWall(requestedWallId) : DvsPlatformStore.getCurrentWall();
-        if (!wall) {
+        var baseWall = requestedWallId ? DvsPlatformStore.getWall(requestedWallId) : DvsPlatformStore.getCurrentWall();
+        if (!baseWall) {
           window.DvsScheduleUnavailable = true;
           var content = document.querySelector(".proto-content");
           content.innerHTML = '<section class="proto-card" style="padding:24px 48px 48px"><h2 id="no-wall-title" style="margin:0 0 12px">暂无可调度的拼墙</h2><p id="no-wall-detail" style="margin:0;color:var(--proto-text-secondary)"></p></section>';
           document.getElementById("no-wall-detail").textContent = requestedWallId ? "该拼墙不存在或已删除，请从拼墙列表重新选择。" : "当前分组下暂无拼墙，请先新建拼墙。";
           return;
         }
-        if (requestedWallId) DvsPlatformStore.setCurrentWall(wall.id);
-        window.DvsScheduleWallId = wall.id;
+        if (requestedWallId) DvsPlatformStore.setCurrentWall(baseWall.id);
+        window.DvsScheduleWallId = baseWall.id;
+        /* 服务端 Join 后单次启动：几何/场景/运行时窗口以服务端为准，
+         * 离线则回退本地缓存（loadWallDetail 失败时仅提示一次）。 */
+        DvsPlatformStore.loadWallDetail(baseWall.id).then(function (joined) {
+          boot(joined && joined.id ? joined : baseWall);
+        }, function () {
+          protoToast("平台不可达：显示本地缓存，操作将在恢复后同步");
+          boot(baseWall);
+        });
+        function boot(wall) {
         document.getElementById("sched-back").href = "wall-list.html?groupId=" + encodeURIComponent(wall.groupId);
         var CELL_W = 130, CELL_H = 90, GAP = 0, ROWS = wall.rows, COLS = wall.cols; /* 连续墙面 */
         var bound = wall.bindings.map(function (row) { return row.map(Boolean); });
@@ -296,6 +305,8 @@
             note: !allowedSignals.has(node.id) ? "未加入白名单" : "设备离线" };
         });
         var scenes = wall.scenes || [];
+        /* 离线占位墙可能没有场景：种子本地默认草稿，上线后收编服务端默认场景。 */
+        if (!scenes.length) scenes = [{ id: "draft-" + wall.id + "-default", name: "默认场景", isDefault: true, volume: 80, layout: [] }];
         var current = scenes.find(function (item) { return String(item.id) === String(wall.currentSceneId); }) || scenes[0];
         var windows = [];
         var zTop = 1;
@@ -341,18 +352,38 @@
         }
         function updateWall(patch) {
           writingStore = true;
-          try {
-            DvsPlatformStore.updateWall(wall.id, patch);
+          return DvsPlatformStore.updateWall(wall.id, patch).then(function (savedWall) {
+            /* 服务端收编后的场景标识（新建/默认场景）回填本地引用。 */
+            wall = savedWall;
+            if (savedWall.scenes) {
+              var curName = current ? current.name : null;
+              scenes = savedWall.scenes;
+              current = scenes.filter(function (s) { return curName != null && s.name === curName; })[0] ||
+                scenes.filter(function (s) { return String(s.id) === String(savedWall.currentSceneId); })[0] ||
+                scenes[0] || current;
+            }
             lastSeenWall = JSON.stringify(DvsPlatformStore.getWall(wall.id));
-          } finally { writingStore = false; }
+            writingStore = false;
+          }, function (err) {
+            writingStore = false;
+            protoToast((err && err.message) || "保存失败");
+          });
         }
-        function persistRuntime() {
+        /* 运行时窗口入库走当前场景文档：拖拽/缩放/音量是高频操作，服务端
+         * 同步按 800ms 尾随合并，本地渲染不受影响。快照走像素口径
+         *（与 persistScenes 同源），画布逻辑单位不出页面。 */
+        var rtTimer = null;
+        function flushRuntime() {
+          rtTimer = null;
+          if (!current.serverId) { rtTimer = setTimeout(flushRuntime, 800); return; }
           updateWall({
-            windows: windows.map(function (win) {
-              return { id: win.id, sig: win.sigId, x: win.x, y: win.y, w: win.w, h: win.h, z: win.z, muted: win.muted };
-            }),
+            windows: snapshotLayout(),
             currentSceneId: current.id, volume: Number($("vol").value), layoutMode: layoutMode
           });
+        }
+        function persistRuntime() {
+          if (rtTimer) clearTimeout(rtTimer);
+          rtTimer = setTimeout(flushRuntime, 800);
         }
         function persistScenes() {
           updateWall({ scenes: scenes, currentSceneId: current.id });
@@ -414,8 +445,24 @@
         function pxY(r) { var y = 0; for (var i = 0; i < r; i++) y += rowPx(i); return y; }
         function pxW(c, cs) { var w = 0; for (var i = c; i < c + cs; i++) w += colPx(i); return w; }
         function pxH(r, rs) { var h = 0; for (var i = r; i < r + rs; i++) h += rowPx(i); return h; }
-        function wallPixelW() { var w = 0; for (var i = 0; i < COLS; i++) w += colPx(i); return w; }
-        function wallPixelH() { var h = 0; for (var i = 0; i < ROWS; i++) h += rowPx(i); return h; }
+        /* 整墙像素 → 画布逻辑单位（applyScene 与启动恢复用；与 pxX 互逆，
+         * 非均匀格（LED）按实际列像素比例换算）。 */
+        function colAtPx(x) { var c = 0; while (c + 1 < COLS && pxX(c + 1) <= x) c++; return c; }
+        function rowAtPx(y) { var r = 0; while (r + 1 < ROWS && pxY(r + 1) <= y) r++; return r; }
+        function logicalX(x) {
+          var c = colAtPx(Math.max(0, x));
+          var w = colPx(c) || 1;
+          return cx(c) + (x - pxX(c)) / w * cw(1);
+        }
+        function logicalY(y) {
+          var r = rowAtPx(Math.max(0, y));
+          var h = rowPx(r) || 1;
+          return cy(r) + (y - pxY(r)) / h * ch(1);
+        }
+        function logicalBox(x, y, w, h) {
+          var lx = logicalX(x), ly = logicalY(y);
+          return { x: lx, y: ly, w: Math.max(1, logicalX(x + Math.max(1, w)) - lx), h: Math.max(1, logicalY(y + Math.max(1, h)) - ly) };
+        }
 
         /* ---------- 画布 ---------- */
         function buildCells() {
@@ -634,8 +681,9 @@
             if (!signal.ok) return null;
             var px, py, pw, ph;
             if (l.x != null) {
-              /* 像素快照（新）：直接使用整墙像素。 */
-              px = l.x; py = l.y; pw = l.w; ph = l.h;
+              /* 像素快照（服务端口径）：换算为画布逻辑单位再渲染。 */
+              var box = logicalBox(l.x, l.y, l.w, l.h);
+              px = box.x; py = box.y; pw = box.w; ph = box.h;
             } else {
               /* 旧格位快照：换算成像素（只读兼容，存量数据不迁移）。 */
               px = pxX(l.c); py = pxY(l.r); pw = pxW(l.c, l.cs); ph = pxH(l.r, l.rs);
@@ -693,10 +741,17 @@
                   title: "删除场景",
                   content: "确认删除场景「" + s.name + "」？删除后不可恢复。",
                   onOk: function () {
-                    scenes = scenes.filter(function (x) { return x.id !== s.id; });
-                    persistScenes();
-                    protoToast("删除成功");
-                    renderScenes();
+                    var drop = function () {
+                      scenes = scenes.filter(function (x) { return x.id !== s.id; });
+                      persistScenes();
+                      protoToast("删除成功");
+                      renderScenes();
+                    };
+                    if (s.serverId) {
+                      DvsPlatformStore.deleteServerScene(s.serverId).then(drop, function (err) {
+                        protoToast((err && err.message) || "删除失败");
+                      });
+                    } else drop();
                   }
                 });
               }
@@ -795,45 +850,39 @@
           protoOpenDrawer("drawer-scene");
         };
 
-        /* ---------- 平台真实下发（原型提示替换为真实分发 + 回执等待） ---------- */
-        function boundNodeIds() {
-          var ids = [];
-          (wall.bindings || []).forEach(function (row) {
-            (row || []).forEach(function (b) {
-              if (b && b.node && ids.indexOf(String(b.node).toLowerCase()) < 0)
-                ids.push(String(b.node).toLowerCase());
-            });
+        /* 无服务端标识的草稿场景先入库再下发，保证 sceneId 归属本墙。 */
+        function ensureSceneSynced(scene) {
+          if (scene.serverId) return Promise.resolve(scene);
+          return updateWall({ scenes: scenes, currentSceneId: current.id }).then(function () {
+            var found = scenes.filter(function (s) { return s.name === scene.name; })[0];
+            if (found && found.serverId) return found;
+            throw new Error("场景同步失败，请重试");
           });
-          return ids;
-        }
-        function nextRevision() {
-          var key = "dvs-op-rev-" + wall.id;
-          var rev = Number(localStorage.getItem(key) || 0) + 1;
-          localStorage.setItem(key, String(rev));
-          return rev;
         }
         function scenePixelWindows(s) {
-          return (s.layout || []).map(function (l) {
-            if (l.x != null) return { id: "w-" + s.id + "-" + l.sig, sig: l.sig, x: l.x, y: l.y, w: l.w, h: l.h, z: 1, muted: !!l.muted };
-            return { id: "w-" + s.id + "-" + l.sig, sig: l.sig, x: pxX(l.c), y: pxY(l.r), w: pxW(l.c, l.cs), h: pxH(l.r, l.rs), z: 1, muted: !!l.muted };
+          var sid = s.serverId || s.id;
+          return (s.layout || []).map(function (l, i) {
+            if (l.x != null) return { id: "w-" + sid + "-" + i, sig: l.sig, x: l.x, y: l.y, w: Math.max(1, Math.round(l.w)), h: Math.max(1, Math.round(l.h)), z: 1, muted: !!l.muted };
+            return { id: "w-" + sid + "-" + i, sig: l.sig, x: pxX(l.c), y: pxY(l.r), w: pxW(l.c, l.cs), h: pxH(l.r, l.rs), z: 1, muted: !!l.muted };
           });
         }
-        /* POST /api/v1/ops/prepare 后长轮询操作状态直至终态。
-         * 单次 hanging read 代替固定间隔短轮询；返回 Promise<true>
-         *（屏障达成）或 false（超时/回退）。 */
-        function dispatchAndWait(pixelWindows, volume) {
-          var members = boundNodeIds();
-          if (!members.length) return Promise.resolve(false);
-          var opId = "op-" + wall.id + "-" + Date.now().toString(36);
-          return DvsApi.requestAsync("POST", "/api/v1/ops/prepare", {
-            operationId: opId,
-            revision: nextRevision(),
-            members: members,
-            wall: { w: wallPixelW(), h: wallPixelH() },
-            windows: pixelWindows,
+        /* ---------- 平台真实下发：带墙 prepare + 回执等待 ---------- */
+        /* revision 取自服务端 appliedRevision（+1），过期自动重试一次；
+         * 不带 members：成员由服务端从生效绑定派生并强校验。pending 非空
+         *（离线绑定成员）按离线格位同款处理：阻止下发并点名。 */
+        function dispatchAndWait(pixelWindows, volume, sceneId) {
+          return DvsPlatformStore.prepareWall({
+            wallId: wall.id, sceneId: sceneId, windows: pixelWindows,
             volume: volume == null ? Number($("vol").value) : volume
-          }).then(function (r) {
-            if (!r.ok) { protoToast(r.msg || "平台拒绝该操作"); return false; }
+          }).then(function (resp) {
+            var pending = (resp.data && resp.data.pending) || [];
+            if (pending.length) {
+              protoToast("存在离线格位下发目标（" + pending.length + " 个成员待生效），已阻止下发");
+              return false;
+            }
+            var opId = resp.operationId;
+            /* 长轮询操作状态直至终态：单次 hanging read 代替固定间隔短轮询；
+             * 返回 Promise<true>（屏障达成）或 false（超时/回退）。 */
             return new Promise(function (resolve) {
               var attempts = 0;
               function pollOnce() {
@@ -879,10 +928,20 @@
               return;
             }
             protoToast("已下发切换，等待各节点准备回执…");
-            dispatchAndWait(scenePixelWindows(target), target.volume).then(function (ok) {
-              if (!ok) { $("dd-scene").value = current.id; protoToast("切换失败：节点未全部就绪，当前场景保持不变"); return; }
-              applyScene(target);
+            ensureSceneSynced(target).then(function (synced) {
+              return dispatchAndWait(scenePixelWindows(synced), synced.volume, synced.serverId || synced.id).then(function (ok) {
+                return { ok: ok, synced: synced };
+              });
+            }).then(function (r) {
+              if (!r.ok) { $("dd-scene").value = current.id; protoToast("切换失败：节点未全部就绪，当前场景保持不变"); return; }
+              applyScene(r.synced);
+              DvsPlatformStore.markSceneCurrent(wall.id, r.synced.id);
+              wall = DvsPlatformStore.getWall(wall.id);
+              lastSeenWall = JSON.stringify(wall);
               protoToast("场景已同帧生效，全部节点回执成功");
+            }, function (err) {
+              $("dd-scene").value = current.id;
+              protoToast((err && err.message) || "切换请求失败");
             });
           });
         });
@@ -971,13 +1030,18 @@
             content: "将关闭当前 " + windows.length + " 个窗口（已保存的场景不受影响）。确认清屏？",
             onOk: function () {
               /* 空窗口数组 = 显式清屏（保留底图），走真实两阶段分发。 */
-              dispatchAndWait([], null).then(function (ok) {
+              ensureSceneSynced(current).then(function (synced) {
+                return dispatchAndWait([], Number($("vol").value), synced.serverId || synced.id);
+              }).then(function (ok) {
                 btn.disabled = false;
                 if (!ok) { protoToast("清屏未达成：节点未全部就绪，当前画面保持不变"); return; }
                 windows = [];
                 clearDirty();
                 renderWindows();
                 protoToast("已清屏：不改变绑定与设置，不产生未保存改动，场景名保留");
+              }, function (err) {
+                btn.disabled = false;
+                protoToast((err && err.message) || "清屏请求失败");
               });
             },
             onCancel: function () { btn.disabled = false; }
@@ -993,13 +1057,15 @@
         $("mode-seg").querySelectorAll("button").forEach(function (button) { button.classList.toggle("is-active", button.getAttribute("data-mode") === layoutMode); });
         windows = (wall.windows || []).map(function (saved) {
           var signal = sigById(saved.sig);
-          return { id: winSeq++, sigId: signal.id, sigName: signal.name + " · " + signal.port, x: saved.x, y: saved.y,
-            w: saved.w, h: saved.h, z: saved.z || ++zTop, muted: !!saved.muted };
+          var box = logicalBox(saved.x || 0, saved.y || 0, saved.w || 64, saved.h || 64);
+          return { id: winSeq++, sigId: signal.id, sigName: signal.name + " · " + signal.port, x: box.x, y: box.y,
+            w: box.w, h: box.h, z: saved.z || ++zTop, muted: !!saved.muted };
         });
         $("cur-scene").textContent = current.name;
         renderWindows();
         renderScenes();
         clearDirty();
+        } /* end boot */
       })();
     </script>
     <script>
@@ -1010,8 +1076,9 @@
         function $(id) { return document.getElementById(id); }
         function esc(value) { return String(value == null ? "" : value).replace(/[&<>"']/g, function (ch) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]; }); }
         function taskTargets(currentWall) {
+          /* targetNodeId 发注册时的原始大小写：服务端按精确 id 查节点文档。 */
           var boundIds = Array.from(new Set((currentWall.bindings || []).flat().filter(Boolean).map(function (binding) {
-            return String(binding.node).toLowerCase();
+            return String(binding.node);
           })));
           return {
             boundCount: boundIds.length,
@@ -1022,12 +1089,22 @@
           };
         }
         function taskAction(task) {
-          var action = task.status === "pending_check" ? "check" : task.status === "pending_execution" ? "start" : task.status === "playing" ? "finish" : "";
+          if (task.status === "pending_check") {
+            var updated = Object.assign({}, task, { status: "pending_execution" });
+            DvsApi.request("PUT", "/api/v1/playback-tasks/" + encodeURIComponent(task.id), updated, { idempotencyKey: task.id + ":check" }).then(function (r) {
+              if (!r.ok) { protoToast(r.msg || "检查未通过"); return; }
+              protoToast("检查通过，任务进入待执行");
+              DvsPlaybackTasks.refresh().then(render);
+            }, function (err) { protoToast((err && err.message) || "检查请求失败"); });
+            return;
+          }
+          var action = task.status === "pending_execution" ? "start" : task.status === "playing" ? "finish" : "";
           if (!action) return;
-          var result = DvsApi.request("POST", "/api/v1/playback-tasks/" + encodeURIComponent(task.id) + "/" + action, {}, { idempotencyKey: task.id + ":" + action });
-          if (!result.ok) { protoToast(result.msg || "任务操作未完成"); return; }
-          protoToast(task.status === "pending_check" ? "检查通过，任务进入待执行" : task.status === "pending_execution" ? "任务已开始执行" : "任务已完成");
-          render();
+          DvsApi.request("POST", "/api/v1/playback-tasks/" + encodeURIComponent(task.id) + "/" + action, {}, { idempotencyKey: task.id + ":" + action }).then(function (r) {
+            if (!r.ok) { protoToast(r.msg || "任务操作未完成"); return; }
+            protoToast(task.status === "pending_execution" ? "任务已开始执行" : "任务已完成");
+            DvsPlaybackTasks.refresh().then(render);
+          }, function (err) { protoToast((err && err.message) || "任务操作请求失败"); });
         }
         function openTaskDrawer() {
           var currentWall = DvsPlatformStore.getWall(wall.id);
@@ -1060,20 +1137,23 @@
           var targets = taskTargets(currentWall);
           if (!targets.ready.length) { protoToast("当前拼墙没有在线且已注册的输出盒"); return; }
           var sceneSelect = $("select-task-scene");
-          var sceneOption = sceneSelect.options[sceneSelect.selectedIndex] || null;
           var name = $("input-task-name").value.trim();
-          var result = DvsApi.request("POST", "/api/v1/playback-tasks", {
-            name: name,
-            sceneId: sceneSelect.value,
-            sceneName: sceneOption ? sceneOption.textContent : "",
-            wallId: wall.id,
-            wallName: currentWall.name,
-            targetNodeIds: targets.ready
-          }, { idempotencyKey: "create-task-" + Date.now() });
-          if (!result.ok) { protoToast(result.msg); return; }
-          closeTaskDrawer();
-          protoToast("播放任务已创建，等待检查");
-          render();
+          if (!name) { protoToast("请输入任务名称"); return; }
+          /* 一个播放任务只驱动一个输出盒：多节点拼墙按节点一拆多创建。 */
+          var creates = targets.ready.map(function (nodeId, i) {
+            return DvsApi.request("POST", "/api/v1/playback-tasks", {
+              name: targets.ready.length > 1 ? name + "-" + (i + 1) : name,
+              sceneId: sceneSelect.value,
+              wallId: wall.id,
+              targetNodeId: nodeId
+            }, { idempotencyKey: "create-task-" + Date.now() + "-" + nodeId });
+          });
+          Promise.all(creates).then(function (results) {
+            var bad = results.filter(function (r) { return !r.ok; })[0];
+            if (bad) { protoToast(bad.msg || "部分任务创建失败"); }
+            else { closeTaskDrawer(); protoToast("播放任务已创建，等待检查"); }
+            DvsPlaybackTasks.refresh().then(render);
+          }, function (err) { protoToast((err && err.message) || "创建请求失败"); });
         };
         function render() {
           var wallTasks = DvsPlaybackTasks.list().filter(function (task) { return task.wallId === wall.id; });
@@ -1093,6 +1173,7 @@
         }
         DvsPlaybackTasks.subscribe(render);
         DvsNodeState.subscribe(render);
+        DvsPlatformStore.subscribe(render);
         render();
       })();
     </script>

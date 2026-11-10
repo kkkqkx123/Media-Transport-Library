@@ -218,7 +218,7 @@
           var src = URL.createObjectURL(f);
           var probe = new Image();
           probe.onload = function () {
-            pendingFile = { name: f.name, blob: f, size: f.size, type: f.type, src: src };
+            pendingFile = { name: f.name, blob: f, size: f.size, type: f.type, src: src, width: probe.width, height: probe.height };
             showImage(src);
             hasImage = true;
             syncButtons();
@@ -265,7 +265,16 @@
                   backdrop = { name: pendingFile.name, storageKey: wall.id, size: pendingFile.size, type: pendingFile.type };
                 } else backdrop = pendingFile.savedMeta;
               } else await imageRecord("delete");
-              wall = store.updateWall(wall.id, { backdrop: backdrop });
+              wall = await store.updateWall(wall.id, { backdrop: backdrop });
+              /* 字节不出浏览器：仅上报版本记录（revision/尺寸），供回执核对。 */
+              if (hasImage && pendingFile.blob && pendingFile.width && pendingFile.height) {
+                try {
+                  await store.postBaseImageRecord(wall.id, {
+                    revision: "img-" + pendingFile.blob.lastModified + "-" + pendingFile.size,
+                    width: pendingFile.width, height: pendingFile.height
+                  });
+                } catch (recordErr) { protoToast(recordErr.message || "底图版本记录失败"); }
+              }
               if (pendingFile) { pendingFile.savedMeta = backdrop; pendingFile.blob = null; }
               dirty = false;
               protoToast("保存成功，底图已按整墙铺满应用（最底层，被窗口覆盖）");

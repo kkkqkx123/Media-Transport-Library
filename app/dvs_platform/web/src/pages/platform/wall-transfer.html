@@ -152,9 +152,14 @@
       (function () {
         var store = window.DvsPlatformStore;
         var requestedWallId = new URLSearchParams(window.location.search).get("wallId");
-        if (requestedWallId && store.getWall(requestedWallId)) store.setCurrentWall(requestedWallId);
-        var wall = requestedWallId ? store.getWall(requestedWallId) : store.getCurrentWall();
-        if (!wall) { window.location.href = "wall-list.html"; return; }
+        var baseWall = requestedWallId ? store.getWall(requestedWallId) : store.getCurrentWall();
+        if (!baseWall) { window.location.href = "wall-list.html"; return; }
+        if (requestedWallId) store.setCurrentWall(baseWall.id);
+        /* 白名单保存要过滤各场景中的已移除信号，先 Join 服务端场景。 */
+        store.loadWallDetail(baseWall.id).then(function (joined) {
+          boot(joined && joined.id ? joined : baseWall);
+        }, function () { protoToast("平台不可达：显示本地缓存，保存时将重试"); boot(baseWall); });
+        function boot(wall) {
         var dirty = false;
         var navTarget = null;
         var keyword = "";
@@ -306,29 +311,31 @@
           var btn = $("btn-save");
           btn.disabled = true;
           setTimeout(function () {
-            btn.disabled = false;
             try {
               if (whitelist.some(function (device) {
                 var node = window.DvsNodeState.get(device.id);
                 return !node || node.lifecycle !== "active" || node.type !== "input";
               })) throw new Error("白名单中的设备已退役或不可用，请刷新后重试");
-              var kept = whitelist.map(function (device) { return device.id; });
-              var removedIds = savedWhitelist.filter(function (device) { return kept.indexOf(device.id) < 0; }).map(function (device) { return device.id; });
-              var latestWall = store.getWall(wall.id);
-              wall = store.updateWall(wall.id, {
-                whitelist: whitelist.map(function (device) {
-                  var registered = window.DvsNodeState.get(device.id);
-                  return { id: device.id, name: registered ? registered.name : device.name, ip: registered ? registered.ip : device.ip, port: device.port || 50010, transMode: device.transMode };
-                }),
-                windows: (latestWall.windows || []).filter(function (win) {
-                  return removedIds.indexOf(win.sig) < 0;
-                }),
-                scenes: (latestWall.scenes || []).map(function (scene) {
-                  return Object.assign({}, scene, { layout: (scene.layout || []).filter(function (item) {
-                    return removedIds.indexOf(item.sig) < 0;
-                  }) });
-                })
-              });
+            } catch (error) { btn.disabled = false; protoToast(error.message || "保存失败"); return; }
+            var kept = whitelist.map(function (device) { return device.id; });
+            var removedIds = savedWhitelist.filter(function (device) { return kept.indexOf(device.id) < 0; }).map(function (device) { return device.id; });
+            var latestWall = store.getWall(wall.id);
+            store.updateWall(wall.id, {
+              whitelist: whitelist.map(function (device) {
+                var registered = window.DvsNodeState.get(device.id);
+                return { id: device.id, name: registered ? registered.name : device.name, ip: registered ? registered.ip : device.ip, port: device.port || 50010, transMode: device.transMode };
+              }),
+              windows: (latestWall.windows || []).filter(function (win) {
+                return removedIds.indexOf(win.sig) < 0;
+              }),
+              scenes: (latestWall.scenes || []).map(function (scene) {
+                return Object.assign({}, scene, { layout: (scene.layout || []).filter(function (item) {
+                  return removedIds.indexOf(item.sig) < 0;
+                }) });
+              })
+            }).then(function (savedWall) {
+              btn.disabled = false;
+              wall = savedWall;
               whitelist = JSON.parse(JSON.stringify(wall.whitelist));
               whitelist.forEach(function (device) { device.inUse = useCount(device); });
               savedWhitelist = JSON.parse(JSON.stringify(whitelist));
@@ -336,7 +343,10 @@
               render();
               protoToast("保存成功，白名单已下发");
               if (done) done();
-            } catch (error) { protoToast(error.message || "保存失败"); }
+            }, function (error) {
+              btn.disabled = false;
+              protoToast(error.message || "保存失败");
+            });
           }, 300);
         }
         $("btn-save").onclick = function () { doSave(); };
@@ -372,6 +382,7 @@
         var wallTitle = document.querySelector(".wall-settings-title");
         if (wallTitle) wallTitle.textContent = wall.name;
         render();
+        } /* end boot */
       })();
     </script>
   </body>

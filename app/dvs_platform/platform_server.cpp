@@ -9,6 +9,10 @@
 #include "platform_store.h"
 #include "upgrade_jobs.h"
 
+// The platform owns a separate origin root: / serves the management
+// frontend and /api serves the platform interfaces. Cross-system browser
+// navigation uses hyperlinks to the stored agent base, never cross-origin
+// api calls; node writes always go through the platform backend.
 void handle_platform_request(PlatformContext& ctx, const HttpRequest& req,
                              HttpResponse& res) {
     if (req.path.rfind("/api/", 0) == 0 && req.method != "GET" &&

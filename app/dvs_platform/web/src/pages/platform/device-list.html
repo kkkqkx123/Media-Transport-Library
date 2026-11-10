@@ -274,6 +274,8 @@
           return d.currentPlayback && d.currentPlayback.status === "playing" ? d.currentPlayback.name : "未播放";
         }
         function exceptionText(d) { return d.exception && d.exception.reason ? d.exception.reason : "—"; }
+        /* Cross-system navigation opens the agent origin root in a new tab; never fetch it here. */
+        function agentRoot(d) { return d && d.agentBase ? String(d.agentBase).replace(/\/$/, "") : ""; }
         function formatAt(value) {
           if (!value) return "—";
           return String(value).replace("T", " ").replace(/\.\d{3}Z$/, "").replace(/Z$/, "");
@@ -319,7 +321,7 @@
                   "<td title=\"" + esc(playback) + "\">" + esc(playback) + "</td>" +
                   "<td>" + esc(d.bind || "—") + "</td>" +
                   '<td title="' + esc(exception) + '">' + esc(exception) + "</td>" +
-                  '<td class="ops-cell"><a class="link" data-act="edit" data-id="' + d.id + '">编辑</a>' + (d.lifecycle && d.lifecycle !== "active" ? '<span class="meta">不可操作</span>' : '<a class="link link-danger" data-act="retire" data-id="' + d.id + '">退役</a>') + '</td>' +
+                  '<td class="ops-cell"><a class="link" data-act="edit" data-id="' + d.id + '">编辑</a>' + (agentRoot(d) ? '<a class="link" href="' + esc(agentRoot(d)) + '/" target="_blank" rel="noopener">本机后台</a>' : '') + (d.lifecycle && d.lifecycle !== "active" ? '<span class="meta">不可操作</span>' : '<a class="link link-danger" data-act="retire" data-id="' + d.id + '">退役</a>') + '</td>' +
                   "</tr>";
               }).join("")
             : '<tr><td colspan="10"><div class="proto-empty">未找到匹配设备</div></td></tr>';

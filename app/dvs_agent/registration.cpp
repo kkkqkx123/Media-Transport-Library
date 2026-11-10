@@ -85,9 +85,7 @@ std::string Registration::transport() const {
 }
 
 std::string Registration::ws_channel_url() const {
-    std::string base = platform_url_;
-    while (!base.empty() && base.back() == '/') base.pop_back();
-    return base + "/api/v1/channel/ws";
+    return dvs::url_join(platform_url_, "/api/v1/channel/ws");
 }
 
 void Registration::loop() {
@@ -333,7 +331,8 @@ bool Registration::uplink_barrier_ack(const std::string& opid, const std::string
     barrier_frame_fill(c, frame);
     const char* cb = json_object_to_json_string(c);
     std::string resp;
-    int sc = cli.post_json(platform_url_ + "/api/v1/ops/commit", std::string(cb ? cb : "{}"),
+    int sc = cli.post_json(dvs::url_join(platform_url_, "/api/v1/ops/commit"),
+                           std::string(cb ? cb : "{}"),
                            resp, 5000, 2, control_token());
     json_object_put(c);
     return sc >= 200 && sc < 400;
@@ -354,7 +353,8 @@ bool Registration::uplink_config_ack(const std::string& node, int applied_revisi
     json_object_object_add(c, "appliedRevision", json_object_new_int(applied_revision));
     const char* cb = json_object_to_json_string(c);
     std::string resp;
-    int sc = cli.post_json(platform_url_ + "/api/v1/ops/config-ack", std::string(cb ? cb : "{}"),
+    int sc = cli.post_json(dvs::url_join(platform_url_, "/api/v1/ops/config-ack"),
+                           std::string(cb ? cb : "{}"),
                            resp, 5000, 2, control_token());
     json_object_put(c);
     return sc >= 200 && sc < 400;
@@ -382,7 +382,7 @@ bool Registration::uplink_upgrade_progress(const std::string& task_id, const std
         json_object_object_add(c, "detail", json_object_new_string(detail.c_str()));
     const char* cb = json_object_to_json_string(c);
     std::string resp;
-    int sc = cli.post_json(platform_url_ + "/api/v1/ops/upgrade-progress",
+    int sc = cli.post_json(dvs::url_join(platform_url_, "/api/v1/ops/upgrade-progress"),
                            std::string(cb ? cb : "{}"), resp, 5000, 2, control_token());
     json_object_put(c);
     return sc >= 200 && sc < 400;
@@ -399,7 +399,7 @@ bool Registration::register_once() {
     json_object* payload = build_register();
     const char* body = json_object_to_json_string(payload);
     std::string resp;
-    int status = cli.post_json(platform_url_ + "/api/v1/nodes/register", body, resp,
+    int status = cli.post_json(dvs::url_join(platform_url_, "/api/v1/nodes/register"), body, resp,
                                5000, 2, token);
     json_object_put(payload);
     if (status < 0 || status >= 400) return false;
@@ -460,7 +460,7 @@ bool Registration::heartbeat_once() {
     json_object* payload = build_heartbeat();
     const char* body = json_object_to_json_string(payload);
     std::string resp;
-    int status = cli.post_json(platform_url_ + "/api/v1/nodes/heartbeat", body, resp,
+    int status = cli.post_json(dvs::url_join(platform_url_, "/api/v1/nodes/heartbeat"), body, resp,
                                interval_ms_ + 1000, 2, control_token());
     json_object_put(payload);
     if (status < 0 || status >= 400) return false;

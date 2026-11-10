@@ -122,4 +122,12 @@ std::string idempotency_key(const HttpRequest& req) {
     return "";
 }
 
+std::string url_join(const std::string& base, const std::string& path) {
+    std::string b = base;
+    while (b.size() > 1 && b.back() == '/') b.pop_back();
+    if (path.empty()) return b;
+    if (path.front() == '/') return b + path;
+    return b + "/" + path;
+}
+
 }  // namespace dvs

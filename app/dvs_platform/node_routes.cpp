@@ -376,7 +376,7 @@ bool route_nodes(PlatformContext& ctx, const HttpRequest& req,
                     HttpClient cli;
                     const char* spb = json_object_to_json_string(sp);
                     std::string resp;
-                    int sc = cli.post_json(base + "/api/v1/node/config/sync",
+                    int sc = cli.post_json(dvs::url_join(base, "/api/v1/node/config/sync"),
                                            std::string(spb ? spb : "{}"), resp,
                                            5000, 2, ctx.api_token);
                     json_object_object_add(

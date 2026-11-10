@@ -29,5 +29,9 @@ bool http_bearer_ok(const HttpRequest& req, const std::string& token);
 bool require_bearer(const HttpRequest& req, HttpResponse& res,
                     const std::string& token, const char* origin = "p");
 std::string idempotency_key(const HttpRequest& req);
+// Join a service root URL with an absolute api path. Both services occupy
+// their own origin root, so callers pass the stored base unchanged and let
+// this helper absorb a trailing slash.
+std::string url_join(const std::string& base, const std::string& path);
 
 }  // namespace dvs

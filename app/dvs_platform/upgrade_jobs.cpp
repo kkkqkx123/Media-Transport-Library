@@ -152,7 +152,7 @@ void start_upgrade_worker(PlatformContext& ctx) {
                 std::string body = tb ? tb : "{}";
                 json_object_put(task);
                 std::string resp;
-                int sc = cli.post_json(base + "/api/v1/node/upgrade", body,
+                int sc = cli.post_json(dvs::url_join(base, "/api/v1/node/upgrade"), body,
                                        resp, 10000, 2, ctx.api_token);
                 ctx.store->audit("{\"upgrade-push\":\"" + dvs::json_escape(nid) +
                                  "\",\"status\":" + std::to_string(sc) + "}");

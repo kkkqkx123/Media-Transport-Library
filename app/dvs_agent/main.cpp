@@ -128,6 +128,9 @@ int main(int argc, char** argv) {
   ctx.store->update_node(patch);
   json_object_put(patch);
 
+  // The agent owns its origin root: / serves the node-admin frontend and
+  // /api serves the node interfaces. Never mount it under a sub-path and
+  // never let the browser call the platform origin directly.
   HttpServer::Handler handler = [&](const HttpRequest& req,
                                     HttpResponse& res) {
     if (agent_handle_auth(ctx, req, res)) return;

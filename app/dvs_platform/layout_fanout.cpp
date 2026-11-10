@@ -175,7 +175,7 @@ LayoutDelivery deliver_layout_prepare(
         const char* pb = json_object_to_json_string(payload);
         std::string resp;
         d.http_status = HttpClient().post_json(
-            agent_base + "/api/v1/node/media/layout",
+            dvs::url_join(agent_base, "/api/v1/node/media/layout"),
             std::string(pb ? pb : "{}"), resp, 5000, 2, token);
         d.sent = true;
     } else {

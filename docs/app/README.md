@@ -16,6 +16,7 @@
 | [`dvs_media.md`](./dvs_media.md) | `dvs_media` 节点媒体引擎功能分析：input/output 角色、IPC prepare/commit 状态机、帧锚定提交、准入/音频仲裁/TX 会话与能力上报 |
 | [`dvs_agent.md`](./dvs_agent.md) | `dvs_agent` 节点代理功能分析：注册/心跳与 WS 通道、六 scope 配置状态机、平台布局翻译、维护操作与安全门 |
 | [`dvs_platform.md`](./dvs_platform.md) | `dvs_platform` 平台服务功能分析：布局像素拆分、OpCoordinator 跨节点屏障与回退、升级与退役墓碑 |
+| [`dvs_url.md`](./dvs_url.md) | dvs URL 设置一览：两端源站/端口/静态根、全部 HTTP 与 WS 路径、端间调用、环境变量与反向代理规则 |
 
 ## 依赖分析
 

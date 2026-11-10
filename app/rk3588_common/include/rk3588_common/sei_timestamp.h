@@ -1,6 +1,7 @@
 #ifndef _LIVE_INGEST_SEI_TIMESTAMP_H_
 #define _LIVE_INGEST_SEI_TIMESTAMP_H_
 
+#include "codec_plugin.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -30,5 +31,25 @@ int sei_timestamp_extract(uint8_t* data, size_t* size,
 /** Read SEI at stream start without modifying data (for zero-copy RX). */
 int sei_timestamp_peek(const uint8_t* data, size_t size,
                        uint32_t* frame_seq, uint64_t* cap_ts_ns);
+
+/* H265 prefix-SEI variant (2-byte NAL header, type 39). Same payload/size. */
+void sei_timestamp_build_h265(uint8_t* dst, uint32_t frame_seq,
+                              uint64_t cap_ts_ns);
+int sei_timestamp_peek_h265(const uint8_t* data, size_t size,
+                            uint32_t* frame_seq, uint64_t* cap_ts_ns);
+int sei_timestamp_extract_h265(uint8_t* data, size_t* size,
+                               uint32_t* frame_seq, uint64_t* cap_ts_ns);
+
+/* Codec-dispatched helpers (H265 selects the H265 variant, else H264). */
+void sei_timestamp_build_for_codec(uint8_t* dst, uint32_t frame_seq,
+                                   uint64_t cap_ts_ns,
+                                   enum codec_format fmt);
+int sei_timestamp_peek_for_codec(const uint8_t* data, size_t size,
+                                 uint32_t* frame_seq, uint64_t* cap_ts_ns,
+                                 enum codec_format fmt);
+int sei_timestamp_extract_for_codec(uint8_t* data, size_t* size,
+                                    uint32_t* frame_seq,
+                                    uint64_t* cap_ts_ns,
+                                    enum codec_format fmt);
 
 #endif /* _LIVE_INGEST_SEI_TIMESTAMP_H_ */

@@ -461,7 +461,7 @@ static int lane_init(rx_compositor* comp, int idx, const file_playout_pip_stream
         return -1;
 
     struct codec_config codec_cfg = {
-        .format      = CODEC_FMT_H264,
+        .format      = comp->cfg.codec,
         .width       = stream->width,
         .height      = stream->height,
         .fps         = fps,
@@ -472,7 +472,7 @@ static int lane_init(rx_compositor* comp, int idx, const file_playout_pip_stream
     if (!lane->decoder)
         return -1;
 
-    lane->h264 = h264_prep_create();
+    lane->h264 = h264_prep_create_for_codec(comp->cfg.codec);
     if (!lane->h264)
         return -1;
 

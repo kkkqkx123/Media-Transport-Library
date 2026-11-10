@@ -4,9 +4,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+static const char* demux_bsf_name(int codec_id) {
+    return (codec_id == AV_CODEC_ID_HEVC) ? "hevc_mp4toannexb"
+                                          : "h264_mp4toannexb";
+}
+
 struct mp4_demux_ctx {
     AVFormatContext* fmt_ctx;
-    AVBSFContext*    bsf_ctx;       /* h264_mp4toannexb bitstream filter */
+    AVBSFContext*    bsf_ctx;       /* mp4toannexb bitstream filter */
     mp4_stream_info   video_info;
     mp4_stream_info   audio_info;
     bool              has_video;
@@ -100,8 +105,9 @@ int mp4_demux_open(const char* path, mp4_demux_ctx** ctx_out) {
         return -EINVAL;
     }
 
-    /* create h264_mp4toannexb bitstream filter to convert AVCC→Annex B */
-    const AVBitStreamFilter* bsf = av_bsf_get_by_name("h264_mp4toannexb");
+    /* create mp4toannexb bitstream filter to convert AVCC/HVCC→Annex B */
+    const AVBitStreamFilter* bsf = av_bsf_get_by_name(
+        demux_bsf_name(ctx->fmt_ctx->streams[vs]->codecpar->codec_id));
     if (bsf) {
         ret = av_bsf_alloc(bsf, &ctx->bsf_ctx);
         if (ret >= 0) {
@@ -109,7 +115,8 @@ int mp4_demux_open(const char* path, mp4_demux_ctx** ctx_out) {
                                     ctx->fmt_ctx->streams[vs]->codecpar);
             ret = av_bsf_init(ctx->bsf_ctx);
             if (ret >= 0) {
-                printf("demux: h264_mp4toannexb BSF initialized\n");
+                printf("demux: %s BSF initialized\n",
+                       demux_bsf_name(ctx->fmt_ctx->streams[vs]->codecpar->codec_id));
             } else {
                 fprintf(stderr, "demux: BSF init failed: %d\n", ret);
                 av_bsf_free(&ctx->bsf_ctx);
@@ -119,7 +126,8 @@ int mp4_demux_open(const char* path, mp4_demux_ctx** ctx_out) {
             fprintf(stderr, "demux: BSF alloc failed: %d\n", ret);
         }
     } else {
-        fprintf(stderr, "demux: h264_mp4toannexb BSF not available\n");
+        fprintf(stderr, "demux: %s BSF not available\n",
+                        demux_bsf_name(ctx->fmt_ctx->streams[vs]->codecpar->codec_id));
     }
 
     *ctx_out = ctx;

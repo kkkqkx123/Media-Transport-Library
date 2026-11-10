@@ -352,7 +352,7 @@ rx_pipeline* rx_pipeline_create(const rx_pipeline_params* params) {
                  params->time_now, params->time_priv);
 
     struct codec_config codec_cfg = {
-        .format      = CODEC_FMT_H264,
+        .format      = params->codec,
         .width       = params->width,
         .height      = params->height,
         .fps         = decode_fps,
@@ -362,7 +362,7 @@ rx_pipeline* rx_pipeline_create(const rx_pipeline_params* params) {
     rp->decoder = mpp_decoder_create(&codec_cfg);
     if (!rp->decoder) { fprintf(stderr, "rx_pipe: decoder create failed\n"); goto fail; }
 
-    rp->h264 = h264_prep_create();
+    rp->h264 = h264_prep_create_for_codec(params->codec);
     if (!rp->h264) { fprintf(stderr, "rx_pipe: h264_prep create failed\n"); goto fail; }
 
     rp->renderer = drm_renderer_create(&(drm_renderer_params){

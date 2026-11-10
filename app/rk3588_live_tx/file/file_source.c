@@ -107,7 +107,10 @@ static int slot_open(struct file_source* fs, struct demux_slot* s, int pos) {
     int ai = av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
 
     AVBSFContext* bsf = NULL;
-    const AVBitStreamFilter* filt = av_bsf_get_by_name("h264_mp4toannexb");
+    enum AVCodecID vcodec = fmt->streams[vi]->codecpar->codec_id;
+    const char* bsf_name =
+        (vcodec == AV_CODEC_ID_HEVC) ? "hevc_mp4toannexb" : "h264_mp4toannexb";
+    const AVBitStreamFilter* filt = av_bsf_get_by_name(bsf_name);
     if (filt) {
         if (av_bsf_alloc(filt, &bsf) == 0) {
             avcodec_parameters_copy(bsf->par_in,
@@ -189,11 +192,28 @@ static int read_one_video(struct file_source* fs, AVPacket* pkt) {
 
 static bool pkt_is_sps(const uint8_t* data, size_t size) {
     for (size_t i = 0; i + 4 < size; i++) {
-        if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 &&
-            (data[i + 3] & 0x1f) == 7)
-            return true;
+        size_t nal_start = 0;
+        if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1)
+            nal_start = i + 3;
+        else if (i + 4 < size && data[i] == 0 && data[i + 1] == 0 &&
+                 data[i + 2] == 0 && data[i + 3] == 1)
+            nal_start = i + 4;
+        else
+            continue;
+        if (nal_start >= size) continue;
+        if ((data[nal_start] & 0x1f) == 7) return true;
+        if (nal_start + 1 < size) {
+            uint32_t type = ((uint32_t)data[nal_start] >> 1) & 0x3f;
+            if (type == 32 || type == 33 || type == 34) return true;
+        }
     }
     return false;
+}
+
+static bool pkt_is_hevc(const struct demux_slot* s) {
+    return s && s->fmt && s->video_idx >= 0 &&
+           s->fmt->streams[s->video_idx]->codecpar->codec_id ==
+               AV_CODEC_ID_HEVC;
 }
 
 static void* video_thread(void* arg) {
@@ -222,7 +242,10 @@ static void* video_thread(void* arg) {
         const uint8_t* send_data = pkt->data;
         size_t send_size = (size_t)pkt->size;
         uint8_t* spliced = NULL;
-        if (fs->ext && extradata_is_idr(pkt->data, pkt->size) &&
+        bool is_idr = pkt_is_hevc(&fs->video)
+                          ? extradata_is_idr_hevc(pkt->data, pkt->size)
+                          : extradata_is_idr(pkt->data, pkt->size);
+        if (fs->ext && is_idr &&
             !pkt_is_sps(pkt->data, (size_t)pkt->size)) {
             spliced = extradata_splice_idr(fs->ext, pkt->data, pkt->size,
                                            &send_size);
@@ -247,7 +270,10 @@ static void* video_thread(void* arg) {
             continue;
         }
         uint64_t cap_tai = file_now_ns(fs);
-        sei_timestamp_build((uint8_t*)addr, fs->frame_seq++, cap_tai);
+        if (pkt_is_hevc(&fs->video))
+            sei_timestamp_build_h265((uint8_t*)addr, fs->frame_seq++, cap_tai);
+        else
+            sei_timestamp_build((uint8_t*)addr, fs->frame_seq++, cap_tai);
         memcpy((uint8_t*)addr + SEI_TS_NAL_SIZE, send_data, send_size);
         size_t total = send_size + SEI_TS_NAL_SIZE;
         au_trace_record(AU_TRACE_TX_PUBLISH, send_data, send_size, pkt->pts);
@@ -501,9 +527,13 @@ struct file_source* file_source_create(const struct file_source_params* p) {
 
     AVStream* vs = fs->video.fmt->streams[fs->video.video_idx];
     AVCodecParameters* vpar = vs->codecpar;
-    if (vpar->extradata && vpar->extradata_size > 0)
-        fs->ext = extradata_handler_create(vpar->extradata,
-                                           vpar->extradata_size);
+    if (vpar->extradata && vpar->extradata_size > 0) {
+        enum codec_format vfmt = (vpar->codec_id == AV_CODEC_ID_HEVC)
+                                     ? CODEC_FMT_H265
+                                     : CODEC_FMT_H264;
+        fs->ext = extradata_handler_create_for_codec(
+            vpar->extradata, vpar->extradata_size, vfmt);
+    }
     if (fs->cfg.fps <= 0) {
         if (vs->avg_frame_rate.num > 0 && vs->avg_frame_rate.den > 0)
             fs->cfg.fps = (float)vs->avg_frame_rate.num / (float)vs->avg_frame_rate.den;

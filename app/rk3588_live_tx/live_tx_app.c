@@ -54,6 +54,12 @@ static int parse_args(int argc, char** argv, struct live_ingest_cfg* cfg) {
       cfg->tx_lip = argv[++i];
     } else if (strcmp(argv[i], "--dip") == 0 && i + 1 < argc) {
       cfg->tx_dip = argv[++i];
+    } else if (strcmp(argv[i], "--codec") == 0 && i + 1 < argc) {
+      const char* s = argv[++i];
+      cfg->codec = (!strcmp(s, "h265") || !strcmp(s, "hevc") ||
+                    !strcmp(s, "H265") || !strcmp(s, "HEVC"))
+                       ? 1
+                       : 0;
     } else if (strcmp(argv[i], "--udp") == 0 && i + 1 < argc) {
       cfg->udp_port = (uint16_t)atoi(argv[++i]);
     } else if (strcmp(argv[i], "--audio-udp") == 0 && i + 1 < argc) {
@@ -246,6 +252,7 @@ static int tx_stack_create(struct tx_stack* ts, struct live_ingest_cfg* cfg,
       .v4l2_buf_count = 6,
       .drm_device = cfg->drm_device,
       .rga_pool_size = 12,
+      .codec = cfg->codec ? CODEC_FMT_H265 : CODEC_FMT_H264,
       .bitrate_bps = cfg->bitrate_bps,
       .gop_size = cfg->gop_size,
       .num_slices = cfg->num_slices,

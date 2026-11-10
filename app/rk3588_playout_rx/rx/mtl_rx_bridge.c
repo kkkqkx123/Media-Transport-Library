@@ -123,8 +123,10 @@ static void* bridge_thread(void* arg) {
         uint32_t seq = 0;
         uint64_t ts = 0;
         size_t sei_sz = sz;
-        if (sei_timestamp_peek(copy, sei_sz, &seq, &ts) &&
-            sei_timestamp_extract(copy, &sei_sz, &seq, &ts)) {
+        if ((sei_timestamp_peek(copy, sei_sz, &seq, &ts) &&
+             sei_timestamp_extract(copy, &sei_sz, &seq, &ts)) ||
+            (sei_timestamp_peek_h265(copy, sei_sz, &seq, &ts) &&
+             sei_timestamp_extract_h265(copy, &sei_sz, &seq, &ts))) {
             capture_tai = ts;
             b->stat_stamp_ok++;
             sz = sei_sz;

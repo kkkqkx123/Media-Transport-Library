@@ -20,6 +20,7 @@ struct live_ingest_cfg {
   uint16_t udp_port;
   uint16_t audio_udp_port;
   int num_slices;
+  int codec; /* 0=H264 default, 1=H265 */
   int bitrate_bps;
   int gop_size;
   int intra_refresh_mode;

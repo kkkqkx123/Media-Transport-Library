@@ -26,6 +26,7 @@
 size_t tx_encode_vui_fixup(struct tx_pipeline* tp, uint8_t* data, size_t size,
                            int is_key) {
     if (!is_key) return size;
+    if (tp->cfg.codec == CODEC_FMT_H265) return size;
     uint8_t* inj = slab_alloc(tp->slab);
     if (!inj) return size;
     int ir = sps_vui_inject(data, size, inj, slab_blk_size(tp->slab));
@@ -106,7 +107,8 @@ static int tx_encode_publish_mtl(struct tx_pipeline* tp,
     if (tp->cfg.mtl_sink->acquire_fb(tp->cfg.mtl_sink->priv, &fb_idx,
                                      &fb_addr) == 0) {
         uint8_t* fb = (uint8_t*)fb_addr;
-        sei_timestamp_build(fb, (uint32_t)f->frame_seq, cap_ts);
+        sei_timestamp_build_for_codec(fb, (uint32_t)f->frame_seq, cap_ts,
+                                      tp->cfg.codec);
         if (size <= payload_cap) {
             mtl_memcpy(fb + SEI_TS_NAL_SIZE, data, size);
             size_t total = size + SEI_TS_NAL_SIZE;
@@ -149,7 +151,8 @@ static int tx_encode_publish_ring(struct tx_pipeline* tp,
         free(f);
         return -1;
     }
-    sei_timestamp_build(base, (uint32_t)f->frame_seq, cap_ts);
+    sei_timestamp_build_for_codec(base, (uint32_t)f->frame_seq, cap_ts,
+                                  tp->cfg.codec);
     uint8_t* data;
     size_t sz;
     int key;

@@ -1,12 +1,15 @@
 #ifndef _H264_PREP_H_
 #define _H264_PREP_H_
 
+#include "codec_plugin.h"
 #include <stddef.h>
 #include <stdint.h>
 
 typedef struct h264_prep h264_prep;
 
 h264_prep* h264_prep_create(void);
+h264_prep* h264_prep_create_for_codec(enum codec_format fmt);
+void h264_prep_set_codec(h264_prep* hp, enum codec_format fmt);
 void h264_prep_free(h264_prep* hp);
 
 /**

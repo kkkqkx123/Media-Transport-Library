@@ -33,6 +33,7 @@ struct drain_pending {
 struct mpp_dec {
     MppCtx         ctx;
     MppApi*        api;
+    enum codec_format fmt;
     int            w, h;
     int            split_parse;
     int            feed_whole_au;
@@ -364,7 +365,10 @@ static int dec_init(void** out, struct codec_config* c) {
         d->api->control(d->ctx, MPP_DEC_SET_ENABLE_DEINTERLACE, &disable);
     }
 
-    r = mpp_init(d->ctx, MPP_CTX_DEC, MPP_VIDEO_CodingAVC);
+    d->fmt = c->format;
+    MppCodingType coding =
+        (c->format == CODEC_FMT_H265) ? MPP_VIDEO_CodingHEVC : MPP_VIDEO_CodingAVC;
+    r = mpp_init(d->ctx, MPP_CTX_DEC, coding);
     if (r) { mpp_destroy(d->ctx); free(d); return -EIO; }
 
     {
@@ -657,7 +661,8 @@ void mpp_dec_print_config(void* dec_priv) {
     const char* feed = d->feed_whole_au
         ? "whole_au (1 put/ST22 pkt, FILE_PLAYOUT_MPP_WHOLE_AU=1)"
         : "legacy_8k (mpp_dec_put 8KB chunks, default)";
-    printf("mpp_dec: %dx%d pool=%d split_parse=%d feed=%s%s\n",
+    printf("mpp_dec: %s %dx%d pool=%d split_parse=%d feed=%s%s\n",
+           d->fmt == CODEC_FMT_H265 ? "h265" : "h264",
            d->w, d->h, MPP_BUF_COUNT, d->split_parse, feed,
            d->aggressive_pull ? " aggressive_pull=on" : "");
     if (d->aggressive_pull)
@@ -693,7 +698,7 @@ struct codec_plugin* mpp_decoder_create(struct codec_config* cfg) {
     p->free  = dec_free;
     p->send  = dw_send;
     p->recv  = dw_recv;
-    p->caps  = (struct codec_caps){ .fmts={CODEC_FMT_H264}, .min_w=64, .max_w=4096,
+    p->caps  = (struct codec_caps){ .fmts={CODEC_FMT_H264, CODEC_FMT_H265}, .min_w=64, .max_w=4096,
         .min_h=64, .max_h=2160, .supports_dmabuf=true };
     return p;
 }

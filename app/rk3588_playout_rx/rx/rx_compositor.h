@@ -2,6 +2,7 @@
 #define _RX_COMPOSITOR_H_
 
 #include "../file_playout_app.h"
+#include "codec_plugin.h"
 #include "display_layout.h"
 #include <mtl_api.h>
 #include <stdint.h>
@@ -31,6 +32,9 @@ typedef struct rx_compositor_params {
     int cpu_decode;
     int cpu_render;
     int cpu_audio;
+
+    /* video codec for all lanes (CODEC_FMT_H264 default for zero-init). */
+    enum codec_format codec;
 
     uint64_t (*time_now)(void* priv);
     void*     time_priv;

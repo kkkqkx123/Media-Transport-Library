@@ -7,6 +7,7 @@
 
 struct h264_prep {
     h264_prep_stats stats;
+    enum codec_format fmt;
 };
 
 static bool h264_has_annexb_start(const uint8_t* data, size_t size) {
@@ -20,7 +21,19 @@ static bool h264_has_annexb_start(const uint8_t* data, size_t size) {
 }
 
 h264_prep* h264_prep_create(void) {
-    return calloc(1, sizeof(h264_prep));
+    h264_prep* hp = calloc(1, sizeof(h264_prep));
+    if (hp) hp->fmt = CODEC_FMT_H264;
+    return hp;
+}
+
+h264_prep* h264_prep_create_for_codec(enum codec_format fmt) {
+    h264_prep* hp = calloc(1, sizeof(h264_prep));
+    if (hp) hp->fmt = fmt;
+    return hp;
+}
+
+void h264_prep_set_codec(h264_prep* hp, enum codec_format fmt) {
+    if (hp) hp->fmt = fmt;
 }
 
 void h264_prep_free(h264_prep* hp) {
@@ -40,7 +53,7 @@ int h264_prep_for_mpp(h264_prep* hp, const uint8_t* data, size_t size,
         return -1;
     }
 
-    if (extradata_is_idr(data, size))
+    if (extradata_is_idr_for_codec(data, size, hp->fmt))
         hp->stats.idr_seen++;
 
     *out_data = data;

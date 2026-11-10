@@ -1,6 +1,7 @@
 #ifndef _EXTRADATA_HANDLER_H_
 #define _EXTRADATA_HANDLER_H_
 
+#include "codec_plugin.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -19,12 +20,19 @@ extradata_handler* extradata_handler_create(const uint8_t* data, size_t size);
 /**
  * Check if this packet is an IDR (key) frame that needs extradata prepended.
  * For H.264, checks for IDR NAL type (nal_unit_type == 5).
+ * For H.265, checks for IRAP types 16..23 (covers IDR 19..21, CRA, BLA).
  *
  * @param data  Annex B coded data
  * @param size  byte count
  * @return true if IDR
  */
 bool extradata_is_idr(const uint8_t* data, size_t size);
+bool extradata_is_idr_hevc(const uint8_t* data, size_t size);
+bool extradata_is_idr_for_codec(const uint8_t* data, size_t size,
+                               enum codec_format fmt);
+extradata_handler* extradata_handler_create_for_codec(const uint8_t* data,
+                                                    size_t size,
+                                                    enum codec_format fmt);
 
 /**
  * Build a combined buffer: [extradata ... | frame data ...].

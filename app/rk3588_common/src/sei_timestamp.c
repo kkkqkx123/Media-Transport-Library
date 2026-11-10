@@ -70,3 +70,90 @@ int sei_timestamp_extract(uint8_t* data, size_t* size,
   *size = remaining;
   return 1;
 }
+
+/* H265 prefix SEI: 4-byte start + 2-byte header (type 39) + same payload. */
+void sei_timestamp_build_h265(uint8_t* dst, uint32_t frame_seq,
+                              uint64_t cap_ts_ns) {
+  dst[0] = 0x00; dst[1] = 0x00; dst[2] = 0x00; dst[3] = 0x01;
+  dst[4] = 0x4e; /* nal_unit_type 39 (prefix SEI) << 1 */
+  dst[5] = 0x01; /* nuh_layer_id 0, temporal_id_plus1 1 */
+  dst[6] = 0x05; /* payloadType = user_data_unregistered */
+  dst[7] = 0x10; /* payloadSize = 16 */
+  memcpy(dst + 8, k_sei_uuid, 4);
+  dst[12] = (uint8_t)(frame_seq);
+  dst[13] = (uint8_t)(frame_seq >> 8);
+  dst[14] = (uint8_t)(frame_seq >> 16);
+  dst[15] = (uint8_t)(frame_seq >> 24);
+  dst[16] = (uint8_t)(cap_ts_ns);
+  dst[17] = (uint8_t)(cap_ts_ns >> 8);
+  dst[18] = (uint8_t)(cap_ts_ns >> 16);
+  dst[19] = (uint8_t)(cap_ts_ns >> 24);
+  dst[20] = (uint8_t)(cap_ts_ns >> 32);
+  dst[21] = (uint8_t)(cap_ts_ns >> 40);
+  dst[22] = (uint8_t)(cap_ts_ns >> 48);
+  dst[23] = (uint8_t)(cap_ts_ns >> 56);
+  dst[24] = 0x80; /* RBSP trailing */
+}
+
+static int sei_parse_header_h265(const uint8_t* data, size_t size,
+                                 uint32_t* frame_seq,
+                                 uint64_t* cap_ts_ns) {
+  if (!data || size < SEI_TS_NAL_SIZE) return 0;
+  if (data[0] != 0x00 || data[1] != 0x00 || data[2] != 0x00 ||
+      data[3] != 0x01 || data[4] != 0x4e || data[5] != 0x01 ||
+      data[6] != 0x05)
+    return 0;
+  if (memcmp(data + 8, k_sei_uuid, 4) != 0) return 0;
+  uint32_t seq = (uint32_t)data[12] | ((uint32_t)data[13] << 8) |
+                 ((uint32_t)data[14] << 16) | ((uint32_t)data[15] << 24);
+  uint64_t ts = (uint64_t)data[16] | ((uint64_t)data[17] << 8) |
+                ((uint64_t)data[18] << 16) | ((uint64_t)data[19] << 24) |
+                ((uint64_t)data[20] << 32) | ((uint64_t)data[21] << 40) |
+                ((uint64_t)data[22] << 48) | ((uint64_t)data[23] << 56);
+  if (frame_seq) *frame_seq = seq;
+  if (cap_ts_ns) *cap_ts_ns = ts;
+  return 1;
+}
+
+int sei_timestamp_peek_h265(const uint8_t* data, size_t size,
+                            uint32_t* frame_seq, uint64_t* cap_ts_ns) {
+  return sei_parse_header_h265(data, size, frame_seq, cap_ts_ns);
+}
+
+int sei_timestamp_extract_h265(uint8_t* data, size_t* size,
+                               uint32_t* frame_seq, uint64_t* cap_ts_ns) {
+  if (!data || !size ||
+      !sei_parse_header_h265(data, *size, frame_seq, cap_ts_ns))
+    return 0;
+  size_t remaining = *size - SEI_TS_NAL_SIZE;
+  if (remaining > 0)
+    memmove(data, data + SEI_TS_NAL_SIZE, remaining);
+  *size = remaining;
+  return 1;
+}
+
+void sei_timestamp_build_for_codec(uint8_t* dst, uint32_t frame_seq,
+                                   uint64_t cap_ts_ns,
+                                   enum codec_format fmt) {
+  if (fmt == CODEC_FMT_H265)
+    sei_timestamp_build_h265(dst, frame_seq, cap_ts_ns);
+  else
+    sei_timestamp_build(dst, frame_seq, cap_ts_ns);
+}
+
+int sei_timestamp_peek_for_codec(const uint8_t* data, size_t size,
+                                 uint32_t* frame_seq, uint64_t* cap_ts_ns,
+                                 enum codec_format fmt) {
+  if (fmt == CODEC_FMT_H265)
+    return sei_timestamp_peek_h265(data, size, frame_seq, cap_ts_ns);
+  return sei_timestamp_peek(data, size, frame_seq, cap_ts_ns);
+}
+
+int sei_timestamp_extract_for_codec(uint8_t* data, size_t* size,
+                                    uint32_t* frame_seq,
+                                    uint64_t* cap_ts_ns,
+                                    enum codec_format fmt) {
+  if (fmt == CODEC_FMT_H265)
+    return sei_timestamp_extract_h265(data, size, frame_seq, cap_ts_ns);
+  return sei_timestamp_extract(data, size, frame_seq, cap_ts_ns);
+}

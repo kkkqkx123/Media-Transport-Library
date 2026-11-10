@@ -119,6 +119,88 @@ bool extradata_is_idr(const uint8_t* data, size_t size) {
     return false;
 }
 
+bool extradata_is_idr_hevc(const uint8_t* data, size_t size) {
+    if (!data || size < 6) return false;
+    for (size_t i = 0; i + 5 < size; i++) {
+        if (data[i] == 0x00 && data[i+1] == 0x00 &&
+            (data[i+2] == 0x01 || (data[i+2] == 0x00 && data[i+3] == 0x01))) {
+            size_t nal_start = (data[i+2] == 0x01) ? (i + 3) : (i + 4);
+            if (nal_start + 1 >= size) continue;
+            uint32_t type = ((uint32_t)data[nal_start] >> 1) & 0x3f;
+            if (type >= 16 && type <= 23) return true;
+        }
+    }
+    return false;
+}
+
+bool extradata_is_idr_for_codec(const uint8_t* data, size_t size,
+                               enum codec_format fmt) {
+    if (fmt == CODEC_FMT_H265)
+        return extradata_is_idr_hevc(data, size);
+    return extradata_is_idr(data, size);
+}
+
+/* HVCC (ISO 14496-15) to Annex B: header 22 bytes, then arrays of NALs. */
+static extradata_handler* extradata_create_hvcc(const uint8_t* data,
+                                               size_t size) {
+    if (!data || size < 23 || data[0] != 0x01) return NULL;
+    uint8_t num_arrays = data[22];
+    size_t pos = 23;
+    size_t total = 0;
+    for (int a = 0; a < num_arrays; a++) {
+        if (pos + 3 > size) return NULL;
+        pos += 1; /* array completeness + NAL type */
+        uint16_t num_nalus =
+            ((uint16_t)data[pos] << 8) | data[pos + 1];
+        pos += 2;
+        for (int n = 0; n < num_nalus; n++) {
+            if (pos + 2 > size) return NULL;
+            uint16_t nal_len =
+                ((uint16_t)data[pos] << 8) | data[pos + 1];
+            pos += 2;
+            if (pos + nal_len > size) return NULL;
+            total += 4 + nal_len;
+            pos += nal_len;
+        }
+    }
+    if (!total) return NULL;
+    extradata_handler* h = calloc(1, sizeof(*h));
+    if (!h) return NULL;
+    h->annexb_data = malloc(total);
+    if (!h->annexb_data) { free(h); return NULL; }
+    pos = 23;
+    for (int a = 0; a < num_arrays; a++) {
+        pos += 1;
+        uint16_t num_nalus =
+            ((uint16_t)data[pos] << 8) | data[pos + 1];
+        pos += 2;
+        for (int n = 0; n < num_nalus; n++) {
+            uint16_t nal_len =
+                ((uint16_t)data[pos] << 8) | data[pos + 1];
+            pos += 2;
+            h->annexb_data[h->annexb_size + 0] = 0x00;
+            h->annexb_data[h->annexb_size + 1] = 0x00;
+            h->annexb_data[h->annexb_size + 2] = 0x00;
+            h->annexb_data[h->annexb_size + 3] = 0x01;
+            memcpy(h->annexb_data + h->annexb_size + 4, data + pos, nal_len);
+            h->annexb_size += 4 + nal_len;
+            pos += nal_len;
+        }
+    }
+    printf("extradata: parsed HVCC -> Annex B: %zu bytes\n", h->annexb_size);
+    return h;
+}
+
+extradata_handler* extradata_handler_create_for_codec(const uint8_t* data,
+                                                    size_t size,
+                                                    enum codec_format fmt) {
+    if (fmt == CODEC_FMT_H265) {
+        extradata_handler* h = extradata_create_hvcc(data, size);
+        if (h) return h;
+    }
+    return extradata_handler_create(data, size);
+}
+
 uint8_t* extradata_splice_idr(extradata_handler* h,
                               const uint8_t* frame_data, size_t frame_size,
                               size_t* out_size) {

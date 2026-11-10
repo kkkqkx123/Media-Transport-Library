@@ -51,6 +51,7 @@ struct mpp_enc {
   MppCtx ctx; MppApi* api; MppEncCfg cfg;
   struct slab_pool* pool;
   int w, h, gop, bitrate, qp_init;
+  enum codec_format fmt;
   int intra_refresh_mode, intra_refresh_arg;
   int frames_out;  /* completed frames emitted to the ring */
 
@@ -417,10 +418,13 @@ static int enc_init(void** out, struct codec_config* c) {
   e->intra_refresh_mode = c->intra_refresh_mode;
   e->intra_refresh_arg  = c->intra_refresh_arg;
 
+  e->fmt = c->format;
   MPP_RET r = mpp_create(&e->ctx, &e->api);
   if (r) { free(e); return -EIO; }
 
-  r = mpp_init(e->ctx, MPP_CTX_ENC, MPP_VIDEO_CodingAVC);
+  MppCodingType coding =
+      (c->format == CODEC_FMT_H265) ? MPP_VIDEO_CodingHEVC : MPP_VIDEO_CodingAVC;
+  r = mpp_init(e->ctx, MPP_CTX_ENC, coding);
   if (r) { mpp_destroy(e->ctx); free(e); return -EIO; }
 
   /* config via MPP API (MPP 1.5.0 uses MppEncCfg from rk_venc_cfg.h) */
@@ -453,10 +457,16 @@ static int enc_init(void** out, struct codec_config* c) {
   mpp_enc_cfg_set_s32(cfg, "rc:qp_max_i", 35);
   mpp_enc_cfg_set_s32(cfg, "rc:qp_min_i", 10);
   mpp_enc_cfg_set_s32(cfg, "rc:gop", e->gop);
-  /* codec */
-  mpp_enc_cfg_set_s32(cfg, "h264:profile", 66);
-  mpp_enc_cfg_set_s32(cfg, "h264:level", 42); /* 4.2 for 1080p60 */
-  mpp_enc_cfg_set_s32(cfg, "h264:stream_type", 0); /* Annex B start codes */
+  /* codec: H264 keeps existing profile/level; H265 uses main profile. */
+  if (e->fmt == CODEC_FMT_H265) {
+    mpp_enc_cfg_set_s32(cfg, "h265:profile", 1); /* main */
+    mpp_enc_cfg_set_s32(cfg, "h265:level", 120);  /* level 4 */
+    mpp_enc_cfg_set_s32(cfg, "h265:tier", 0);     /* main tier */
+  } else {
+    mpp_enc_cfg_set_s32(cfg, "h264:profile", 66);
+    mpp_enc_cfg_set_s32(cfg, "h264:level", 42); /* 4.2 for 1080p60 */
+    mpp_enc_cfg_set_s32(cfg, "h264:stream_type", 0); /* Annex B start codes */
+  }
 
   r = e->api->control(e->ctx, MPP_ENC_SET_CFG, cfg);
   if (r) {
@@ -500,7 +510,9 @@ static int enc_init(void** out, struct codec_config* c) {
   pthread_mutex_init(&e->lat_lock, NULL);
   pthread_mutex_init(&e->submit_lock, NULL);
   *out = e;
-  printf("mpp_enc: %dx%d gop=%d %dbps ready\n", e->w, e->h, e->gop, e->bitrate);
+  printf("mpp_enc: %s %dx%d gop=%d %dbps ready\n",
+         e->fmt == CODEC_FMT_H265 ? "h265" : "h264",
+         e->w, e->h, e->gop, e->bitrate);
   return 0;
 }
 
@@ -708,7 +720,7 @@ struct codec_plugin* mpp_encoder_create(struct codec_config* cfg,
   p->get_encode_stats = enc_get_encode_stats;
   p->take_packets_in_window = enc_take_packets;
   p->get_rc_state = enc_get_rc_state;
-  p->caps  = (struct codec_caps){ .fmts={CODEC_FMT_H264}, .min_w=64,.max_w=4096,
+  p->caps  = (struct codec_caps){ .fmts={CODEC_FMT_H264, CODEC_FMT_H265}, .min_w=64,.max_w=4096,
       .min_h=64,.max_h=2160, .supports_dmabuf=true };
   return p;
 }

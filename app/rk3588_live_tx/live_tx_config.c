@@ -119,6 +119,11 @@ int live_ingest_config_load(const char* path, struct live_ingest_cfg* cfg) {
 
     struct json_object* codec = NULL;
     if (json_object_object_get_ex(s0, "codec", &codec)) {
+      const char* name = json_get_string(codec, "name");
+      if (!name) name = json_get_string(codec, "codec");
+      if (name && (!strcmp(name, "h265") || !strcmp(name, "hevc") ||
+                   !strcmp(name, "H265") || !strcmp(name, "HEVC")))
+        cfg->codec = 1;
       cfg->bitrate_bps = json_get_int(codec, "bitrate_bps", cfg->bitrate_bps);
       cfg->gop_size = json_get_int(codec, "gop_size", cfg->gop_size);
       cfg->num_slices = json_get_int(codec, "num_slices", cfg->num_slices);

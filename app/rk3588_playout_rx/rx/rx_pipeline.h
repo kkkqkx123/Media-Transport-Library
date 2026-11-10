@@ -2,6 +2,7 @@
 #define _RX_PIPELINE_MP4_H_
 
 #include "../file_playout_app.h"
+#include "codec_plugin.h"
 #include "pipeline_common.h"
 #include "av_sync.h"
 #include "mtl_rx_mp4.h"
@@ -59,6 +60,9 @@ typedef struct rx_pipeline_params {
 
     /** UDP port label for stats/E2E reporting. */
     uint16_t  udp_port;
+
+    /* video codec (CODEC_FMT_H264 default for zero-init). */
+    enum codec_format codec;
 } rx_pipeline_params;
 
 rx_pipeline* rx_pipeline_create(const rx_pipeline_params* params);

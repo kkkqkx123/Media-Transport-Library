@@ -1,10 +1,9 @@
 /* TX data-plane backend hook — engine-owned, RK3588 only.
  *
- * This header is MTL-light (no live_ingest types) so engine_ctx.c compiles
- * with or without the backend. The live_ingest implementation lives in
- * tx_backend_live_ingest.c and is linked only when MPP+RGA are present
- * (HAVE_TX_BACKEND); otherwise the engine runs backend-less and TX start
- * honestly reports configured+pending via tx_session.c. */
+ * This header is MTL-light (no live_ingest types) so engine_ctx.c stays
+ * decoupled from the donor chain. The live_ingest implementation always
+ * links into the shipped binary (MPP+RGA are required at configure time);
+ * a NULL backend exists only as the x86 unit-test seam in tx_session.c. */
 
 #ifndef _DVS_TX_BACKEND_H_
 #define _DVS_TX_BACKEND_H_

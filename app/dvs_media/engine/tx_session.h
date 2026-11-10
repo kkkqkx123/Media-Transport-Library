@@ -9,7 +9,8 @@
  *
  * Honesty rule: without a backend the session reports configured (params
  * stored and validated) with backend_pending set — it never claims packets
- * are flowing. Lanes keep their RX meaning; TX status is a separate object.
+ * are flowing. The shipped binary always installs the live_ingest backend;
+ * the NULL-backend case exists only as the x86 unit-test seam. Lanes keep their RX meaning; TX status is a separate object.
  */
 #ifndef _DVS_TX_SESSION_H_
 #define _DVS_TX_SESSION_H_
@@ -55,10 +56,10 @@ typedef struct {
     int  audio_port;     /* 0 = no audio TX, else 1..65535 (ST2110-30) */
 } dvs_tx_params_t;
 
-/* Data-plane backend. Returns 0 when packets flow, 1 when the backend is
- * absent (session stays configured with backend_pending set), <0 on failure.
- * NULL backend means absent. The engine installs the live_ingest backend
- * entry when built with it; builds without it stay backend-less. */
+/* Data-plane backend. Returns 0 when packets flow, <0 on failure.
+ * NULL means absent (unit-test seam only): the session stays configured
+ * with backend_pending set. The engine always installs the live_ingest
+ * backend entry in the shipped binary. */
 typedef int (*dvs_tx_backend_fn)(const dvs_tx_params_t* p,
                                  char* err, size_t errlen);
 
@@ -94,8 +95,9 @@ int dvs_tx_validate_against_capability(const dvs_tx_params_t* p,
                                        char* err, size_t errlen);
 
 /* Start TX. Requires role "input" (else TX_ROLE_MISMATCH); validates params;
- * on backend absence reports configured+pending, on backend success running,
- * on backend failure failed. Never claims running without backend success. */
+ * NULL backend (unit-test seam only) reports configured+pending, a real
+ * backend success reports running, a real backend failure reports failed.
+ * Never claims running without backend success. */
 int dvs_tx_start(dvs_tx_session_t* s, const dvs_tx_params_t* p,
                  const char* role, char* err, size_t errlen);
 

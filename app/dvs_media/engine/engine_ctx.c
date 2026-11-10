@@ -3,9 +3,7 @@
 #include <json-c/json.h>
 
 #include "file_playout_config.h"      /* file_playout_mtl_init_dual, mode_dims, apply_drm_mode */
-#ifdef HAVE_TX_BACKEND
 #include "engine/tx_backend.h"
-#endif
 #include "display_layout.h" /* file_playout_pip_validate, MP4_PIP_MAX_LANES */
 #include "session_admit.h"         /* whitelist + LRU admission */
 #include "audio_arbiter.h"         /* ALSA audio routing */
@@ -58,9 +56,7 @@ dvs_engine* dvs_engine_create(const file_playout_cfg* base_cfg) {
     e->comp = NULL;
     snprintf(e->role, sizeof(e->role), "output");
     dvs_tx_init(&e->tx);
-#ifdef HAVE_TX_BACKEND
     dvs_tx_set_backend(&e->tx, dvs_tx_backend_entry);
-#endif
     atomic_store(&e->running, false);
     atomic_store(&e->rx_sessions, 0);
     atomic_store(&e->decoding, 0);
@@ -152,7 +148,6 @@ static int engine_shadow_wait_ready(rx_compositor* shadow) {
     return rx_compositor_ready_count(shadow) > 0 ? 0 : -1;
 }
 
-#ifdef HAVE_TX_BACKEND
 static void engine_push_tx_ctx(dvs_engine* e) {
     dvs_tx_backend_cfg bc;
     memset(&bc, 0, sizeof(bc));
@@ -165,7 +160,6 @@ static void engine_push_tx_ctx(dvs_engine* e) {
     bc.cpu_encode = 0;
     dvs_tx_backend_set_ctx(e->st, &bc);
 }
-#endif
 
 int dvs_engine_init_mtl(dvs_engine* e) {
     if (!e) return -1;
@@ -406,9 +400,7 @@ int dvs_engine_apply_layout_frame(dvs_engine* e,
         /* backdrop-only commit: drop the sessions and swap to a 0-lane
          * compositor so the still (or black) keeps scanning out. MTL stays
          * up for fast future commits. */
-#ifdef HAVE_TX_BACKEND
         dvs_tx_backend_stop();
-#endif
         dvs_tx_stop(&e->tx);
         file_playout_pip_stream old[MP4_PIP_MAX_LANES];
         int old_n = e->cfg.pip_stream_count;
@@ -678,9 +670,7 @@ int dvs_engine_set_role(dvs_engine* e, const char* role) {
     }
     snprintf(e->role, sizeof(e->role), "output");
     pthread_mutex_lock(&e->mu);
-#ifdef HAVE_TX_BACKEND
     dvs_tx_backend_stop();
-#endif
     dvs_tx_stop(&e->tx);
     pthread_mutex_unlock(&e->mu);
     return 0;
@@ -728,9 +718,7 @@ int dvs_engine_tx_start(dvs_engine* e, const dvs_tx_params_t* params,
             return -1;
         }
     }
-#ifdef HAVE_TX_BACKEND
     engine_push_tx_ctx(e);
-#endif
     int rc = dvs_tx_start(&e->tx, params, e->role, err, errlen);
     pthread_mutex_unlock(&e->mu);
     return rc;
@@ -739,9 +727,7 @@ int dvs_engine_tx_start(dvs_engine* e, const dvs_tx_params_t* params,
 void dvs_engine_tx_stop(dvs_engine* e) {
     if (!e) return;
     pthread_mutex_lock(&e->mu);
-#ifdef HAVE_TX_BACKEND
     dvs_tx_backend_stop();
-#endif
     dvs_tx_stop(&e->tx);
     pthread_mutex_unlock(&e->mu);
 }
@@ -771,9 +757,7 @@ void dvs_engine_stop(dvs_engine* e) {
         rx_compositor_free(e->comp);
         e->comp = NULL;
     }
-#ifdef HAVE_TX_BACKEND
     dvs_tx_backend_stop();
-#endif
     dvs_tx_stop(&e->tx);
     if (e->st) {
         mtl_stop(e->st);

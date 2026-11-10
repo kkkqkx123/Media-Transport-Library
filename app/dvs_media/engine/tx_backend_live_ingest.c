@@ -5,9 +5,9 @@
  * file's statics; the tx_session module stays a pure state machine and never
  * sees these handles. All entry/stop calls happen under the engine mutex.
  *
- * Backend-only translation file: compiled solely when MPP+RGA exist
- * (HAVE_TX_BACKEND). Without it the engine links backend-less and TX start
- * honestly reports configured+pending. */
+ * Backend-only translation file, always linked into the shipped binary
+ * (MPP+RGA are required at configure time). The NULL-backend
+ * configured+pending path in tx_session.c serves the x86 unit tests only. */
 
 #include "tx_backend.h"
 #include "tx_port_map.h"

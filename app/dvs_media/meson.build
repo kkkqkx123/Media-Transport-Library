@@ -35,8 +35,7 @@ if not has_mpp
   error('Rockchip MPP not found or does not link (RX side required)')
 endif
 
-librga_dep = dependency('librga', required: false)
-has_tx_backend = has_mpp and librga_dep.found()
+librga_dep = dependency('librga', required: true)
 
 libdrm_dep    = dependency('libdrm', required: true)
 libasound_dep = dependency('alsa', required: true)
@@ -102,40 +101,36 @@ live_ingest_inc = [include_directories(live_ingest_root),
 
 # ---- TX data plane (reuse live_ingest capture/encode/TX, in-tree, no copy)
 # Application orchestration (live_ingest_app) and the decoder stay out;
-# TX needs only the encode chain plus mtl_tx/tx_pipeline.
-dvs_tx = []
-engine_tx_backend_src = []
-engine_tx_backend_args = []
-if has_tx_backend
-  dvs_tx = static_library('dvs_tx',
-    files(
-      '../rk3588_common/src/sei_timestamp.c',
-      '../rk3588_common/src/sps_vui.c',
-      '../rk3588_common/src/tx_tai_ts.c',
-      '../rk3588_common/src/au_trace.c',
-      live_ingest_root + '/hal/dma_allocator.c',
-      live_ingest_root + '/hal/dma32_allocator.c',
-      live_ingest_root + '/io/v4l2_capturer.c',
-      live_ingest_root + '/codec/rga_converter.c',
-      live_ingest_root + '/codec/mpp_encoder.c',
-      live_ingest_root + '/pipeline/tx_pipeline.c',
-      live_ingest_root + '/pipeline/tx_encode.c',
-      live_ingest_root + '/pipeline/tx_supervise.c',
-      live_ingest_root + '/pipeline/tx_stats.c',
-      live_ingest_root + '/mtl_tx.c',
-    ),
-    c_args: common_c_args + ['-DHAVE_MTL=1'],
-    dependencies: [threads_dep, mtl_dep, libdrm_dep, librga_dep,
-                   rockchip_mpp_dep],
-    link_with: dvs_shared,
-    include_directories: [live_ingest_inc,
-                          include_directories(live_ingest_root + '/pipeline'),
-                          include_directories(live_ingest_root + '/hal'),
-                          include_directories(live_ingest_root + '/io')],
-  )
-  engine_tx_backend_src = files('engine/tx_backend_live_ingest.c')
-  engine_tx_backend_args = ['-DHAVE_TX_BACKEND=1']
-endif
+# TX needs only the encode chain plus mtl_tx/tx_pipeline. RK3588 boards
+# always carry MPP+RGA, so the backend links unconditionally: a missing
+# librga fails the build instead of shipping a node that can never send.
+dvs_tx = static_library('dvs_tx',
+  files(
+    '../rk3588_common/src/sei_timestamp.c',
+    '../rk3588_common/src/sps_vui.c',
+    '../rk3588_common/src/tx_tai_ts.c',
+    '../rk3588_common/src/au_trace.c',
+    live_ingest_root + '/hal/dma_allocator.c',
+    live_ingest_root + '/hal/dma32_allocator.c',
+    live_ingest_root + '/io/v4l2_capturer.c',
+    live_ingest_root + '/codec/rga_converter.c',
+    live_ingest_root + '/codec/mpp_encoder.c',
+    live_ingest_root + '/pipeline/tx_pipeline.c',
+    live_ingest_root + '/pipeline/tx_encode.c',
+    live_ingest_root + '/pipeline/tx_supervise.c',
+    live_ingest_root + '/pipeline/tx_stats.c',
+    live_ingest_root + '/mtl_tx.c',
+  ),
+  c_args: common_c_args + ['-DHAVE_MTL=1'],
+  dependencies: [threads_dep, mtl_dep, libdrm_dep, librga_dep,
+                 rockchip_mpp_dep],
+  link_with: dvs_shared,
+  include_directories: [live_ingest_inc,
+                        include_directories(live_ingest_root + '/pipeline'),
+                        include_directories(live_ingest_root + '/hal'),
+                        include_directories(live_ingest_root + '/io')],
+)
+engine_tx_backend_src = files('engine/tx_backend_live_ingest.c')
 
 # ---- dvs-media app ----
 dvs_media = executable('dvs_media',
@@ -157,11 +152,11 @@ dvs_media = executable('dvs_media',
     'ipc/state_machine.c',
     file_playout_root + '/file_playout_config.c',
   ) + engine_tx_backend_src,
-  c_args: common_c_args + ['-DHAVE_LIBDRM=1'] + engine_tx_backend_args,
+  c_args: common_c_args + ['-DHAVE_LIBDRM=1'],
   dependencies: [mtl_dep, threads_dep, libasound_dep, libjson_c_dep,
                  libavformat_dep, libavcodec_dep, libavutil_dep,
-                 rockchip_mpp_dep, libdrm_dep] + (has_tx_backend ? [librga_dep] : []),
-  link_with: [dvs_shared, dvs_rx, file_playout_probe] + (has_tx_backend ? [dvs_tx] : []),
+                 rockchip_mpp_dep, libdrm_dep, librga_dep],
+  link_with: [dvs_shared, dvs_rx, file_playout_probe, dvs_tx],
   include_directories: [include_directories('.'), file_playout_inc,
                         live_ingest_inc,
                         include_directories('../dvs_common/include')],

@@ -345,12 +345,12 @@ bool route_ops(PlatformContext& ctx, const HttpRequest& req,
         std::thread([opid_c, rev, apply_at, members, windows_json, volume_c,
                      token_c, wall_c, scene_c, hash_c, wall_epoch, fps,
                      frame_index, wall_w, wall_h, wall_base_json,
-                     wall_adjust_json, &ctx]() {
+                     wall_adjust_json, deadline, &ctx]() {
             fanout_layout_parallel(ctx, members, opid_c, rev, (int64_t)apply_at,
                                    windows_json, volume_c, token_c, wall_c,
                                    scene_c, hash_c, wall_epoch, fps,
                                    frame_index, wall_w, wall_h, wall_base_json,
-                                   wall_adjust_json, false);
+                                   wall_adjust_json, false, (int64_t)deadline);
         })
             .detach();
         if (b) json_object_put(b);

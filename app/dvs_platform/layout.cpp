@@ -355,8 +355,9 @@ std::string validate_whitelist_shape(json_object* doc) {
     if (json_object_object_get_ex(doc, "codec", &v) && v &&
         json_object_is_type(v, json_type_string)) {
         std::string c = docs_lower(json_object_get_string(v));
-        if (c != "h264" && c != "hevc" && c != "jpegxs" && c != "raw")
-            return "INVALID_ARGUMENT:whitelist codec must be h264|hevc|jpegxs|raw";
+        if (c != "h264" && c != "h265" && c != "hevc" && c != "jpegxs" &&
+            c != "raw")
+            return "INVALID_ARGUMENT:whitelist codec must be h264|h265|hevc|jpegxs|raw";
     }
     for (const char* k : {"width", "height"}) {
         json_object* vv = nullptr;
@@ -396,6 +397,14 @@ std::string validate_whitelist_shape(json_object* doc) {
                 return std::string("INVALID_ARGUMENT:whitelist ") + k +
                        " must be 1..600";
         }
+    }
+    json_object* pacv = nullptr;
+    if (json_object_object_get_ex(doc, "pacing", &pacv) && pacv) {
+        if (!json_object_is_type(pacv, json_type_string))
+            return "INVALID_ARGUMENT:whitelist pacing must be string";
+        std::string p = docs_lower(json_object_get_string(pacv));
+        if (p != "auto" && p != "tsc" && p != "tsc_narrow" && p != "rl")
+            return "INVALID_ARGUMENT:whitelist pacing must be auto|tsc|tsc_narrow|rl";
     }
     return "";
 }

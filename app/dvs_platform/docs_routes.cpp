@@ -179,6 +179,30 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
                 if (w) json_object_put(w);
             }
             if (verr.empty()) verr = validate_scene_shape(b, ww, hh);
+            if (verr.empty() && !wall_id.empty()) {
+                json_object* wdoc = ctx.store->get_doc("walls", wall_id);
+                if (wdoc && !wall_is_deleted(wdoc)) {
+                    int sw = 0, sh = 0;
+                    wall_px_of(wdoc, &sw, &sh);
+                    int min_side = wall_min_window_side(wdoc, sw, sh);
+                    json_object* wins = nullptr;
+                    if (json_object_object_get_ex(b, "windows", &wins) && wins &&
+                        json_object_is_type(wins, json_type_array)) {
+                        for (size_t i = 0; i < json_object_array_length(wins); i++) {
+                            json_object* w = json_object_array_get_idx(wins, (int)i);
+                            int win_w = dvs::json_rect_int(w, "w");
+                            int win_h = dvs::json_rect_int(w, "h");
+                            if (win_w < min_side || win_h < min_side) {
+                                verr = "INVALID_ARGUMENT:window below wall minimum size";
+                                break;
+                            }
+                        }
+                    }
+                    json_object_put(wdoc);
+                } else if (wdoc) {
+                    json_object_put(wdoc);
+                }
+            }
             if (verr.empty()) {
                 json_object* mv = nullptr;
                 bool fixed = json_object_object_get_ex(b, "layoutMode", &mv) && mv &&

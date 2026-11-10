@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -493,15 +494,17 @@ bool translate_platform_layout(json_object* body, json_object** prep_out,
     }
     /* Endpoint lookup: sig -> transport + media params. A signal without a
      * table entry leaves the agent no way to name its stream — reject the
-     * order. fps is mandatory per entry (req 06 §1.2: whitelist encoding
-     * param; the engine refuses streams without one); audioPort is optional
+     * order. fps is mandatory per entry; audioPort is optional
      * (0/absent = the signal carries no subscribable audio). */
     struct Endpoint {
         std::string addr;
         std::string src_ip;
+        std::string codec;
         int port = 0;
         int fps = 0;
         int audio_port = 0;
+        int sig_w = 0;
+        int sig_h = 0;
     };
     std::map<std::string, Endpoint> endpoints;
     json_object* eps = nullptr;
@@ -512,8 +515,8 @@ bool translate_platform_layout(json_object* body, json_object** prep_out,
             json_object* e = json_object_array_get_idx(eps, i);
             if (!e || !json_object_is_type(e, json_type_object)) continue;
             json_object* v = nullptr;
-            std::string sig, addr, src_ip;
-            int port = 0, fps = 0, aport = 0;
+            std::string sig, addr, src_ip, codec;
+            int port = 0, fps = 0, aport = 0, sig_w = 0, sig_h = 0;
             if (json_object_object_get_ex(e, "sig", &v) && v)
                 sig = json_object_get_string(v);
             if (json_object_object_get_ex(e, "address", &v) && v)
@@ -527,13 +530,23 @@ bool translate_platform_layout(json_object* body, json_object** prep_out,
                 fps = json_object_get_int(v);
             if (json_object_object_get_ex(e, "audioPort", &v) && v)
                 aport = json_object_get_int(v);
+            if (json_object_object_get_ex(e, "codec", &v) && v &&
+                json_object_is_type(v, json_type_string))
+                codec = json_object_get_string(v);
+            if (json_object_object_get_ex(e, "width", &v) && v)
+                sig_w = json_object_get_int(v);
+            if (json_object_object_get_ex(e, "height", &v) && v)
+                sig_h = json_object_get_int(v);
             if (!sig.empty() && !addr.empty() && port > 0) {
                 Endpoint ep;
                 ep.addr = addr;
                 ep.src_ip = src_ip;
+                ep.codec = codec;
                 ep.port = port;
                 ep.fps = fps;
                 ep.audio_port = aport;
+                ep.sig_w = sig_w;
+                ep.sig_h = sig_h;
                 endpoints[sig] = ep;
             }
         }
@@ -547,6 +560,24 @@ bool translate_platform_layout(json_object* body, json_object** prep_out,
         err_out = "INVALID_ARGUMENT:too many windows for engine lanes";
         return false;
     }
+    {
+        json_object* expv = nullptr;
+        if (json_object_object_get_ex(body, "expiresAtTaiNs", &expv) && expv &&
+            json_object_is_type(expv, json_type_int)) {
+            int64_t expires = json_object_get_int64(expv);
+            if (expires > 0) {
+                struct timespec now_ts{};
+                clock_gettime(CLOCK_REALTIME, &now_ts);
+                int64_t now_ns = (int64_t)now_ts.tv_sec * 1000000000LL +
+                                 (int64_t)now_ts.tv_nsec;
+                if (now_ns > expires) {
+                    err_out = "EXPIRED:operation expired before prepare";
+                    return false;
+                }
+            }
+        }
+    }
+    std::string first_codec;
     /* Stable z-ascending order: same layer order falls back to array order,
      * so channel assignment is deterministic. */
     std::vector<int> order((size_t)wn);
@@ -581,6 +612,26 @@ bool translate_platform_layout(json_object* body, json_object** prep_out,
             json_object_put(streams);
             err_out = "INVALID_ARGUMENT:endpoint '" + sig + "' missing fps";
             return false;
+        }
+        std::string codec_norm;
+        if (!it->second.codec.empty()) {
+            codec_norm = it->second.codec;
+            for (auto& ch : codec_norm) ch = (char)tolower((unsigned char)ch);
+            if (codec_norm != "h264" && codec_norm != "h265" &&
+                codec_norm != "hevc" && codec_norm != "jpegxs" &&
+                codec_norm != "raw") {
+                json_object_put(streams);
+                err_out = "INVALID_ARGUMENT:endpoint '" + sig + "' unsupported codec";
+                return false;
+            }
+            if (codec_norm == "hevc") codec_norm = "h265";
+            if (first_codec.empty()) {
+                first_codec = codec_norm;
+            } else if (first_codec != codec_norm) {
+                json_object_put(streams);
+                err_out = "INVALID_ARGUMENT:mixed codecs in one layout unsupported";
+                return false;
+            }
         }
         int dx = 0, dy = 0, dw = 0, dh = 0;
         json_object* dst = nullptr;
@@ -631,16 +682,38 @@ bool translate_platform_layout(json_object* body, json_object** prep_out,
         if (it->second.audio_port > 0)
             json_object_object_add(s, "audioUdpPort",
                                    json_object_new_int(it->second.audio_port));
-        json_object_object_add(s, "width", json_object_new_int(full_w));
-        json_object_object_add(s, "height", json_object_new_int(full_h));
+        int frame_w = full_w, frame_h = full_h;
+        int out_sx = sx, out_sy = sy, out_sw = sw, out_sh = sh;
+        if (it->second.sig_w > 0 && it->second.sig_h > 0 && full_w > 0 &&
+            full_h > 0) {
+            frame_w = it->second.sig_w;
+            frame_h = it->second.sig_h;
+            out_sx = (int)((int64_t)sx * frame_w / full_w);
+            out_sy = (int)((int64_t)sy * frame_h / full_h);
+            out_sw = (int)((int64_t)sw * frame_w / full_w);
+            out_sh = (int)((int64_t)sh * frame_h / full_h);
+            if (out_sx < 0) out_sx = 0;
+            if (out_sy < 0) out_sy = 0;
+            if (out_sw <= 0) out_sw = 1;
+            if (out_sh <= 0) out_sh = 1;
+            if (out_sx >= frame_w) out_sx = frame_w - 1;
+            if (out_sy >= frame_h) out_sy = frame_h - 1;
+            if (out_sx + out_sw > frame_w) out_sw = frame_w - out_sx;
+            if (out_sy + out_sh > frame_h) out_sh = frame_h - out_sy;
+        }
+        if (!codec_norm.empty())
+            json_object_object_add(s, "codec",
+                                   json_object_new_string(codec_norm.c_str()));
+        json_object_object_add(s, "width", json_object_new_int(frame_w));
+        json_object_object_add(s, "height", json_object_new_int(frame_h));
         json_object_object_add(s, "x", json_object_new_int(cx1));
         json_object_object_add(s, "y", json_object_new_int(cy1));
         json_object_object_add(s, "w", json_object_new_int(cx2 - cx1));
         json_object_object_add(s, "h", json_object_new_int(cy2 - cy1));
-        json_object_object_add(s, "srcX", json_object_new_int(sx));
-        json_object_object_add(s, "srcY", json_object_new_int(sy));
-        json_object_object_add(s, "srcW", json_object_new_int(sw));
-        json_object_object_add(s, "srcH", json_object_new_int(sh));
+        json_object_object_add(s, "srcX", json_object_new_int(out_sx));
+        json_object_object_add(s, "srcY", json_object_new_int(out_sy));
+        json_object_object_add(s, "srcW", json_object_new_int(out_sw));
+        json_object_object_add(s, "srcH", json_object_new_int(out_sh));
         json_object_array_add(streams, s);
     }
     json_object* prep = json_object_new_object();
@@ -653,6 +726,9 @@ bool translate_platform_layout(json_object* body, json_object** prep_out,
     json_object* av = nullptr;
     if (json_object_object_get_ex(body, "applyAtNs", &av) && av)
         json_object_object_add(prep, "applyAtNs", json_object_get(av));
+    json_object* expb = nullptr;
+    if (json_object_object_get_ex(body, "expiresAtTaiNs", &expb) && expb)
+        json_object_object_add(prep, "expiresAtTaiNs", json_object_get(expb));
     // Frame anchor travels untouched to the engine; a legacy payload without
     // one commits immediately at the current frame (frameIndex < 0).
     for (const char* k : {"epochTaiNs", "fps", "frameIndex"}) {
@@ -712,11 +788,10 @@ bool translate_platform_layout(json_object* body, json_object** prep_out,
      * so the commit applies an empty layout instead of keeping the picture. */
     json_object_object_add(prep, "streams", streams);
     /* The audio owner arrives as a platform window id; the engine only
-     * resolves lane<N>/sip:port/sip, so translate here where the
-     * window->lane assignment is known. An owner with no lane on this node
-     * (its window fell outside this canvas, or an unknown id) is omitted:
-     * this node mutes and the node actually showing the window carries the
-     * audio (node-local arbitration, req 03 §7.4). */
+     * resolves lane numbers and transport endpoints, so translate here where
+     * the window to lane assignment is known. An owner with no lane on this
+     * node is omitted: this node mutes while the node showing the window
+     * carries the audio. */
     json_object* aov = nullptr;
     if (json_object_object_get_ex(body, "audioOwner", &aov) && aov &&
         json_object_is_type(aov, json_type_string)) {

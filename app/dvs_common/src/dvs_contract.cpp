@@ -221,6 +221,12 @@ std::string validate_layout_prepare(json_object* data) {
     json_object* at = field(data, "applyAtNs");
     if (!at || !json_object_is_type(at, json_type_int))
         return "INVALID_ARGUMENT:layout.prepare applyAtNs must be int";
+    json_object* exp = field(data, "expiresAtTaiNs");
+    if (exp) {
+        if (!json_object_is_type(exp, json_type_int) ||
+            json_object_get_int64(exp) < 0)
+            return "INVALID_ARGUMENT:layout.prepare expiresAtTaiNs must be int >= 0";
+    }
     // Frame-anchored commit (optional, additive): when present the node maps
     // applyAtNs to the target frame instead of sleeping to a bare timestamp.
     json_object* ep = field(data, "epochTaiNs");
@@ -276,6 +282,40 @@ std::string validate_layout_prepare(json_object* data) {
                 if (!json_object_is_type(sip, json_type_string) ||
                     !valid_ip4_literal(json_object_get_string(sip)))
                     return "INVALID_ARGUMENT:layout.prepare endpoint sourceIp must be IPv4";
+            }
+            json_object* codec = field(e, "codec");
+            if (codec) {
+                if (!json_object_is_type(codec, json_type_string))
+                    return "INVALID_ARGUMENT:layout.prepare endpoint codec must be string";
+                std::string c = json_object_get_string(codec);
+                for (auto& ch : c) ch = (char)tolower((unsigned char)ch);
+                if (c != "h264" && c != "h265" && c != "hevc" &&
+                    c != "jpegxs" && c != "raw")
+                    return "INVALID_ARGUMENT:layout.prepare endpoint codec unsupported";
+            }
+            for (const char* k : {"width", "height"}) {
+                json_object* vv = field(e, k);
+                if (vv && (!json_object_is_type(vv, json_type_int) ||
+                             json_object_get_int(vv) <= 0))
+                    return std::string("INVALID_ARGUMENT:layout.prepare endpoint ") + k +
+                           " must be positive";
+            }
+            for (const char* k : {"bitrateKbps", "bitrate", "keyFrameInterval",
+                                   "gop"}) {
+                json_object* vv = field(e, k);
+                if (vv && (!json_object_is_type(vv, json_type_int) ||
+                             json_object_get_int(vv) <= 0))
+                    return std::string("INVALID_ARGUMENT:layout.prepare endpoint ") + k +
+                           " must be positive";
+            }
+            json_object* pacing = field(e, "pacing");
+            if (pacing) {
+                if (!json_object_is_type(pacing, json_type_string))
+                    return "INVALID_ARGUMENT:layout.prepare endpoint pacing must be string";
+                std::string p = json_object_get_string(pacing);
+                for (auto& ch : p) ch = (char)tolower((unsigned char)ch);
+                if (p != "auto" && p != "tsc" && p != "tsc_narrow" && p != "rl")
+                    return "INVALID_ARGUMENT:layout.prepare endpoint pacing unsupported";
             }
         }
     }

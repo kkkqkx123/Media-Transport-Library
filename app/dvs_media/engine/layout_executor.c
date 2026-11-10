@@ -6,6 +6,7 @@
 
 #include <pthread.h>
 #include <string.h>
+#include <time.h>
 
 /* layout_executor — two-phase prepare/commit with a shadow (pending) layout.
  *
@@ -21,6 +22,7 @@
 
 static file_playout_pip_stream g_pending[MP4_PIP_MAX_LANES];
 static uint64_t g_pending_apply_at_ns = 0;
+static uint64_t g_pending_expires_ns = 0;
 static int g_pending_count = 0;
 static dvs_frame_anchor_t g_pending_frame;
 static dvs_base_image_desc_t g_pending_base;
@@ -33,6 +35,15 @@ static int g_pending_valid = 0;
 static char g_pending_audio_owner[64];
 static int g_pending_audio_volume = 0;
 static pthread_mutex_t g_pending_mu = PTHREAD_MUTEX_INITIALIZER;
+
+/* Wall-clock expiry for the control-plane barrier. Monotonic media time
+ * cannot judge it, so realtime is used here while applyAt keeps its media
+ * clock. Expired work is refused at prepare and rechecked at commit. */
+static uint64_t realtime_now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
 
 /* Parse a "streams" JSON array into pip_stream structs. Keys are the exact
  * camelCase spellings the agent emits; anything else is rejected rather
@@ -100,6 +111,7 @@ int dvs_layout_prepare(const file_playout_pip_stream* streams, int count) {
     memcpy(g_pending, streams, (size_t)count * sizeof(*streams));
     g_pending_count = count;
     g_pending_apply_at_ns = 0;
+    g_pending_expires_ns = 0;
     memset(&g_pending_frame, 0, sizeof(g_pending_frame));
     g_pending_frame.frame_index = -1;
     memset(&g_pending_base, 0, sizeof(g_pending_base));
@@ -217,7 +229,13 @@ int dvs_layout_prepare_from_json(struct json_object* req) {
     struct json_object* atv = NULL;
     if (req && json_object_object_get_ex(req, "applyAtNs", &atv) && atv)
       apply_at = (uint64_t)json_object_get_int64(atv);
+    uint64_t expires = 0;
+    struct json_object* exv = NULL;
+    if (req && json_object_object_get_ex(req, "expiresAtTaiNs", &exv) && exv)
+      expires = (uint64_t)json_object_get_int64(exv);
+    if (expires > 0 && realtime_now_ns() > expires) return -1;
     g_pending_apply_at_ns = apply_at;
+    g_pending_expires_ns = expires;
     g_pending_frame = frame;
     g_pending_base = base;
     g_pending_adjust = adjust;
@@ -263,6 +281,8 @@ int dvs_layout_commit(dvs_engine* e) {
     n = g_pending_count;
     int valid = g_pending_valid;
     g_pending_valid = 0;
+    uint64_t expires = g_pending_expires_ns;
+    g_pending_expires_ns = 0;
     memcpy(buf, g_pending, (size_t)n * sizeof(*buf));
     memcpy(owner, g_pending_audio_owner, sizeof(owner));
     volume = g_pending_audio_volume;
@@ -273,10 +293,10 @@ int dvs_layout_commit(dvs_engine* e) {
     pthread_mutex_unlock(&g_pending_mu);
 
     if (!valid) {
-        /* no layout was staged (e.g. a refused windows-shape prepare staged
-         * nothing): keep the running picture */
+        /* no layout was staged: keep the running picture */
         return 0;
     }
+    if (expires > 0 && realtime_now_ns() > expires) return -1;
 
     /* push audio routing to the engine before (re)building the compositor */
     dvs_engine_set_audio(e, owner, volume);
@@ -291,6 +311,7 @@ int dvs_layout_commit(dvs_engine* e) {
         pthread_mutex_lock(&g_pending_mu);
         g_pending_count = 0;
         g_pending_apply_at_ns = 0;
+        g_pending_expires_ns = 0;
         memset(&g_pending_frame, 0, sizeof(g_pending_frame));
         g_pending_frame.frame_index = -1;
         memset(&g_pending_base, 0, sizeof(g_pending_base));
@@ -310,6 +331,7 @@ void dvs_layout_clear(dvs_engine* e) {
     pthread_mutex_lock(&g_pending_mu);
     g_pending_count = 0;
     g_pending_apply_at_ns = 0;
+    g_pending_expires_ns = 0;
     g_pending_valid = 0;
     g_pending_audio_owner[0] = '\0';
     g_pending_audio_volume = 0;
@@ -329,6 +351,7 @@ void dvs_layout_abort(void) {
     if (n > 0) memcpy(staged, g_pending, (size_t)n * sizeof(*staged));
     g_pending_count = 0;
     g_pending_apply_at_ns = 0;
+    g_pending_expires_ns = 0;
     g_pending_valid = 0;
     memset(&g_pending_frame, 0, sizeof(g_pending_frame));
     g_pending_frame.frame_index = -1;

@@ -261,6 +261,21 @@ static int hook_prepare(struct json_object* req, char* err, size_t errlen) {
     {
         struct json_object* t = NULL;
         if (req && json_object_object_get_ex(req, "streams", &t)) {
+            struct json_object* exv = NULL;
+            if (json_object_object_get_ex(req, "expiresAtTaiNs", &exv) && exv &&
+                json_object_is_type(exv, json_type_int)) {
+                int64_t expires = json_object_get_int64(exv);
+                if (expires > 0) {
+                    struct timespec now_ts;
+                    clock_gettime(CLOCK_REALTIME, &now_ts);
+                    int64_t now_ns = (int64_t)now_ts.tv_sec * 1000000000LL +
+                                     (int64_t)now_ts.tv_nsec;
+                    if (now_ns > expires) {
+                        snprintf(err, errlen, "expired");
+                        return -1;
+                    }
+                }
+            }
             file_playout_pip_stream vs[MP4_PIP_MAX_LANES];
             int vn = 0;
             if (dvs_layout_from_json(req, vs, &vn) != 0) {

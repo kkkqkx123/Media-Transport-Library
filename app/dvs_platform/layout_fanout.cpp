@@ -19,7 +19,8 @@ LayoutDelivery deliver_layout_prepare(
     const std::string& token, const std::string& wall_id,
     const std::string& scene_id, const std::string& layout_hash,
     int64_t epoch_ns, double fps, int64_t frame_index, int wall_w, int wall_h,
-    const std::string& base_json, const std::string& adjust_json) {
+    const std::string& base_json, const std::string& adjust_json,
+    int64_t expires_at_ns) {
     LayoutDelivery d;
     json_object* nd = ctx.store->get_doc("node", node_id);
     if (!nd) {
@@ -79,6 +80,24 @@ LayoutDelivery deliver_layout_prepare(
             if (aport > 0)
                 json_object_object_add(ep, "audioPort",
                                        json_object_new_int(aport));
+            std::string codec = dvs::json_get_str(wl, "codec");
+            if (!codec.empty())
+                json_object_object_add(ep, "codec",
+                                       json_object_new_string(codec.c_str()));
+            json_object* wv = nullptr;
+            if (json_object_object_get_ex(wl, "width", &wv) && wv &&
+                json_object_get_int(wv) > 0)
+                json_object_object_add(ep, "width", json_object_get(wv));
+            json_object* hv = nullptr;
+            if (json_object_object_get_ex(wl, "height", &hv) && hv &&
+                json_object_get_int(hv) > 0)
+                json_object_object_add(ep, "height", json_object_get(hv));
+            for (const char* k : {"bitrateKbps", "bitrate", "keyFrameInterval",
+                                   "gop", "pacing"}) {
+                json_object* bv = nullptr;
+                if (json_object_object_get_ex(wl, k, &bv) && bv)
+                    json_object_object_add(ep, k, json_object_get(bv));
+            }
             std::string mode = dvs::json_get_str(wl, "mode");
             json_object_object_add(
                 ep, "mode",
@@ -113,6 +132,9 @@ LayoutDelivery deliver_layout_prepare(
     json_object_object_add(payload, "revision", json_object_new_int(revision));
     json_object_object_add(payload, "applyAtNs",
                            json_object_new_int64(apply_at_ns));
+    if (expires_at_ns > 0)
+        json_object_object_add(payload, "expiresAtTaiNs",
+                               json_object_new_int64(expires_at_ns));
     if (epoch_ns > 0) {
         json_object_object_add(payload, "epochTaiNs",
                                json_object_new_int64(epoch_ns));
@@ -197,7 +219,8 @@ void fanout_layout_parallel(PlatformContext& ctx,
                             const std::string& hash, int64_t epoch_ns,
                             double fps, int64_t frame_index, int wall_w,
                             int wall_h, const std::string& base_json,
-                            const std::string& adjust_json, bool is_rollback) {
+                            const std::string& adjust_json, bool is_rollback,
+                            int64_t expires_at_ns) {
     if (members.empty()) return;
     std::vector<std::string> ids(members.begin(), members.end());
     int shards = fanout_parallelism();
@@ -208,14 +231,14 @@ void fanout_layout_parallel(PlatformContext& ctx,
         workers.emplace_back([s, shards, ids, opid, rev, apply_at, windows_json,
                               volume, token, wall_id, scene_id, hash, epoch_ns,
                               fps, frame_index, wall_w, wall_h, base_json,
-                              adjust_json, is_rollback, &ctx]() {
+                              adjust_json, is_rollback, expires_at_ns, &ctx]() {
             json_object* wins = json_tokener_parse(windows_json.c_str());
             for (size_t i = (size_t)s; i < ids.size(); i += (size_t)shards) {
                 const std::string& mid = ids[i];
                 LayoutDelivery d = deliver_layout_prepare(
                     ctx, mid, opid, rev, apply_at, wins, volume, token, wall_id,
                     scene_id, hash, epoch_ns, fps, frame_index, wall_w, wall_h,
-                    base_json, adjust_json);
+                    base_json, adjust_json, expires_at_ns);
                 if (is_rollback) {
                     if (d.skipped && d.skip_reason == "no geometry") continue;
                     if (d.via_ws) {
@@ -304,9 +327,12 @@ void execute_rollback(PlatformContext& ctx, const std::string& rollback_op_id,
     std::thread([opid_c, rev_c, windows_json, members, token_c, vol_c, wall_c,
                  scene_c, hash_c, epoch_c, fps_c, wall_w_c, wall_h_c,
                  &ctx]() {
+        int64_t rb_expires = (int64_t)(dvs::wall_ns_now() +
+                               (uint64_t)ct::barrier_timeout_ms() * 1000000ULL);
         fanout_layout_parallel(ctx, members, opid_c, rev_c, 0, windows_json,
                                vol_c, token_c, wall_c, scene_c, hash_c, epoch_c,
-                               fps_c, -1, wall_w_c, wall_h_c, "", "", true);
+                               fps_c, -1, wall_w_c, wall_h_c, "", "", true,
+                               rb_expires);
     })
         .detach();
 }

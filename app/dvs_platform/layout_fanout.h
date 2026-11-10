@@ -21,11 +21,11 @@ struct LayoutDelivery {
 LayoutDelivery deliver_layout_prepare(
     PlatformContext& ctx, const std::string& node_id, const std::string& opid,
     int revision, int64_t apply_at_ns, json_object* wins, int volume,
-    const std::string& token, const std::string& wall_id = "",
-    const std::string& scene_id = "", const std::string& layout_hash = "",
-    int64_t epoch_ns = 0, double fps = 60.0, int64_t frame_index = -1,
-    int wall_w = 0, int wall_h = 0, const std::string& base_json = "",
-    const std::string& adjust_json = "");
+    const std::string& token, const std::string& wall_id,
+    const std::string& scene_id, const std::string& layout_hash,
+    int64_t epoch_ns, double fps, int64_t frame_index,
+    int wall_w, int wall_h, const std::string& base_json,
+    const std::string& adjust_json, int64_t expires_at_ns);
 
 // Sharded fanout shared by prepare and rollback: each worker parses its own
 // snapshot copy and delivers a strided subset so large walls stay within the
@@ -40,7 +40,8 @@ void fanout_layout_parallel(PlatformContext& ctx,
                             const std::string& hash, int64_t epoch_ns,
                             double fps, int64_t frame_index, int wall_w,
                             int wall_h, const std::string& base_json,
-                            const std::string& adjust_json, bool is_rollback);
+                            const std::string& adjust_json, bool is_rollback,
+                            int64_t expires_at_ns);
 
 // Re-issue the settled snapshot for to_revision to every member with the
 // rollback op id and applyAtNs=0 (immediate apply). No snapshot means audit

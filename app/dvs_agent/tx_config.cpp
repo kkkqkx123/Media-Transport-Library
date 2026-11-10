@@ -100,12 +100,17 @@ bool tx_parse(json_object* val, TxParams& out, std::string& err) {
 }
 
 bool tx_validate(const TxParams& p, const TxCaps& caps, std::string& err) {
+    auto codec_match = [](const std::string& want, const std::string& have) {
+        if (want == have) return true;
+        return (want == "h265" && have == "hevc") ||
+               (want == "hevc" && have == "h265");
+    };
     if (p.hasEncode) {
         bool codec_ok = false;
         size_t start = 0;
         for (size_t i = 0; i <= caps.codecs.size(); i++) {
             if (i == caps.codecs.size() || caps.codecs[i] == ',') {
-                if (caps.codecs.substr(start, i - start) == p.enc.codec) {
+                if (codec_match(p.enc.codec, caps.codecs.substr(start, i - start))) {
                     codec_ok = true;
                     break;
                 }

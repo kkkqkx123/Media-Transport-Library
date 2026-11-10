@@ -45,7 +45,7 @@ const char* dvs_tx_state_name(dvs_tx_state_t s);
 
 typedef struct {
     char port[32];        /* capture port id, e.g. "HDMI1" */
-    char codec[16];       /* "h264" | "h265" */
+    char codec[16];       /* "h264" | "h265" ("hevc" accepted as an alias) */
     int  width;           /* 640..3840 */
     int  height;          /* 480..2160 */
     int  fps;            /* 24..60 */

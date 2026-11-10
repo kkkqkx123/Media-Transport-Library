@@ -58,8 +58,9 @@ int dvs_tx_validate(const dvs_tx_params_t* p, char* err, size_t errlen) {
         if (err && errlen > 0) snprintf(err, errlen, "bad capture port");
         return -1;
     }
-    if (strcmp(p->codec, "h264") != 0 && strcmp(p->codec, "h265") != 0) {
-        if (err && errlen > 0) snprintf(err, errlen, "bad codec (h264|h265)");
+    if (strcmp(p->codec, "h264") != 0 && strcmp(p->codec, "h265") != 0 &&
+        strcmp(p->codec, "hevc") != 0) {
+        if (err && errlen > 0) snprintf(err, errlen, "bad codec (h264|h265|hevc)");
         return -1;
     }
     if (p->width < DVS_TX_MIN_W || p->width > DVS_TX_MAX_W ||
@@ -110,6 +111,11 @@ int dvs_tx_validate_against_capability(const dvs_tx_params_t* p,
         for (char* tok = strtok(tmp, ","); tok; tok = strtok(NULL, ",")) {
             while (*tok == ' ') tok++;
             if (strcmp(tok, p->codec) == 0) {
+                ok = 1;
+                break;
+            }
+            if ((strcmp(tok, "h265") == 0 && strcmp(p->codec, "hevc") == 0) ||
+                (strcmp(tok, "hevc") == 0 && strcmp(p->codec, "h265") == 0)) {
                 ok = 1;
                 break;
             }

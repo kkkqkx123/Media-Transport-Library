@@ -21,6 +21,7 @@ struct file_source_params {
     void* st; /* mtl_handle, kept void to avoid MTL header cascade */
     struct tx_mtl_sink_ops* video_sink;
     struct mtl_tx_audio*    audio_tx;
+    int    audio_channels; /* ST30 session channels (1..2); 0 = default 2 */
     char   files[FILE_SOURCE_MAX_FILES][FILE_SOURCE_MAX_PATH];
     int    file_count;
     bool   loop;

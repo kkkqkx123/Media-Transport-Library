@@ -347,6 +347,10 @@ rx_pipeline* rx_pipeline_create(const rx_pipeline_params* params) {
     float decode_fps = params->fps > 0 ? params->fps : 24.0f;
     rp->frame_period_ns = (uint64_t)(1000000000.0 / (double)decode_fps);
 
+    playout_buffer_init(&rp->pb);
+    av_sync_init(&rp->sync, NULL, &rp->pb, params->playout_delay_ms,
+                 params->time_now, params->time_priv);
+
     struct codec_config codec_cfg = {
         .format      = CODEC_FMT_H264,
         .width       = params->width,
@@ -373,14 +377,15 @@ rx_pipeline* rx_pipeline_create(const rx_pipeline_params* params) {
     });
     if (!rp->renderer) { fprintf(stderr, "rx_pipe: renderer create failed\n"); goto fail; }
 
-    if (alsa_audio_open(params->alsa_device, &rp->alsa) != 0) {
-        fprintf(stderr, "rx_pipe: ALSA open failed — continuing without audio\n");
+    if (params->audio_udp_port != 0) {
+        if (alsa_audio_open(params->alsa_device, &rp->alsa) != 0) {
+            fprintf(stderr, "rx_pipe: ALSA open failed (audio requested)\n");
+            goto fail;
+        }
+        rp->sync.audio = rp->alsa;
+    } else {
         rp->alsa = NULL;
     }
-
-    playout_buffer_init(&rp->pb);
-    av_sync_init(&rp->sync, rp->alsa, &rp->pb, params->playout_delay_ms,
-                 params->time_now, params->time_priv);
 
     if (rp->alsa && params->mt) {
         mtl_rx_audio_params arp = {
@@ -395,11 +400,8 @@ rx_pipeline* rx_pipeline_create(const rx_pipeline_params* params) {
         };
         rp->audio_rx = mtl_rx_audio_create(&arp);
         if (!rp->audio_rx) {
-            fprintf(stderr, "rx_pipe: mtl_rx_audio create failed — no audio\n");
-            alsa_audio_close(rp->alsa);
-            rp->alsa = NULL;
-            av_sync_init(&rp->sync, NULL, &rp->pb, params->playout_delay_ms,
-                         params->time_now, params->time_priv);
+            fprintf(stderr, "rx_pipe: mtl_rx_audio create failed\n");
+            goto fail;
         }
     }
 

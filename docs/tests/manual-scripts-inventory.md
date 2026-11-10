@@ -43,7 +43,7 @@
 | 脚本 | 板端 | 对照设计 |
 |---|---|---|
 | `run_tx_rx_e2e.sh` | `src/playout-tests/` + `bin/` 可执行副本，单板回环默认 60s | `rk3588-tx-rx-e2e-verification-design.md` L0–L7；报告见 `rk3588-tx-rx-e2e-validation-report.md` |
-| `run_multinode_composite.sh` | 同上 | `rk3588-multinode-composite-verification-design.md` T0–T3；报告见 `rk3588-multinode-composite-validation-report.md` |
+| `run_multinode_composite.sh` | 同上；`OUT_DIR` 先定义后使用（此前引用未定义变量，`set -u` 下直接失败，已修复） | `rk3588-multinode-composite-verification-design.md` T0–T3；报告见 `rk3588-multinode-composite-validation-report.md`；音频正式结论见 §5 |
 | `manual_check_visual.sh` | 同上 | 目检流程（与 `display_compare.sh` 互补） |
 | `run_dualboard_interop.sh`、`run_dualoutput_sameframe.sh` | 同上，未来 F1–F3，本阶段只备不用 | 见两 design 文档的未来任务节 |
 | `verify_phase.sh`、`plan_a_verify.sh`、`run_single_board_plan_a.sh` | 同上 | 单路 Plan A 阶段性脚本，`verify_phase.sh` 用 `FILE_PLAYOUT_DUMP_RX` 取流后二次验证 |
@@ -52,3 +52,16 @@
 
 `test_display_layout.c` 等 meson 单元测试与 `meson.build` 不同步上板；
 `tests/` 板旧目录（仅 2 个 py 的手抄）已删除，由 `src/playout-tests/` 替代。
+
+## 5. 音频正式验证结论（2026-11-10 板上实测，`ssh board`）
+
+前置：`live_ingest` + `file_playout_rx` 已按 `docs/dev/board-mtl-sync.md` §3 重推至 `bin/`；`run_multinode_composite.sh` 同步至 `src/playout-tests/` 并拷入 `bin/`；`md5sum` 双端一致。声卡就绪（播 `hdmi0/hdmi1/dp/es8388`，采 `hdmiin/es8388`），片源 `/usr/local/test.mp4` 为 `1080p24 + AAC 48k 立体声 FLTP`。
+
+| 用例 | 结果 | 证据 |
+|---|---|---|
+| T1 文件源单发单收 30s（含音频断言） | 通过 | 视频 `730 frames/drops=0`、`dec/mtl_rx 480/480` 零丢零坏；音频 TX `audio exit 30023 frames`、RX `mtl_rx_audio 26927 frames, 0 drops`；TX 日志 `audio resample 48k/2ch/fltp到48k/2ch/s16`，RX `audio=on` + `audio anchor` |
+| 重采样分支 44100Hz 单声道自造片源 15s | 通过（音频项全过） | TX `audio resample 44100Hz/1ch/fltp到48000Hz/2ch/s16`，`audio exit 15045 frames`；RX `12010 frames, 0 drops`；唯一 FAIL 为稳态窗口数（15s 仅 2 窗口，属时长不足，非音频故障） |
+| 反例 TX 直播坏声卡 | 按预期失败 | `--audio-source alsa --audio-device nonexistent` 报 `ALSA capture unavailable` 后 `exit=1`，不再静默 `video-only` |
+| 反例 RX `audio_udp=0` 纯视频 | 通过 | `audio=off`，无 `alsa: ready`/`mtl_rx_audio` 建连行，视频照常 |
+| T0 HDMI 基线 30s | 通过（重跑确认） | 初次失败为超时杀脚本残留进程争用端口所致（`build ret -283`=应用无帧可发、`trs -142`=发送环无包，均为结果而非原因）；清理残留后重跑 `T0 30` 全过：收流 `1616 pkt/1615 dec`、发送 `1795 cap/1793 enc`、零丢零坏 |
+| T3 独立运行 | 脚本前置缺失 | 依赖 T2 生成的 `multinode_2lane.json`，单独跑 T3 即 `FileNotFoundError`（历史脚本排序问题，与音频改动无关） |

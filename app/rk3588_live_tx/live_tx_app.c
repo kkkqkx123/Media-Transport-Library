@@ -262,47 +262,63 @@ static int tx_stack_create(struct tx_stack* ts, struct live_ingest_cfg* cfg,
   ts->tp = tx_pipeline_create(&txp);
   if (!ts->tp) return -errno;
 
-  /* audio (created after the pipeline so the no-signal ENODATA retry loop
-   * in main never has to clean up audio pieces) */
+  /* audio: requested ALSA must come up fully, otherwise fail loudly.
+   * Unrequested (AUDIO_SOURCE_NONE) stays video-only without touching ALSA. */
   if (cfg->audio_source == AUDIO_SOURCE_ALSA) {
+    if (cfg->audio_channels < 1 || cfg->audio_channels > 2) {
+      fprintf(stderr, "live_ingest: bad audio channels %d (1..2)\n",
+              cfg->audio_channels);
+      return -EINVAL;
+    }
     ts->atx = audio_tx_create(ts->st, cfg);
     if (!ts->atx) {
-      fprintf(stderr, "live_ingest: audio TX unavailable, video-only\n");
-    } else {
-      size_t fb = mtl_tx_audio_frame_bytes(ts->atx);
-      int period_bytes =
-          (cfg->audio_period_frames > 0 ? cfg->audio_period_frames : 1024) *
-          cfg->audio_channels * 2;
-      ts->acc_cap = fb + (size_t)period_bytes;
-      ts->acc = malloc(ts->acc_cap);
-      if (!ts->acc) return -errno;
-
-      struct alsa_capturer_params acp = {
-          .device = cfg->audio_device ? cfg->audio_device : "default",
-          .sample_rate = cfg->audio_sample_rate,
-          .channels = cfg->audio_channels,
-          .sample_bit = 16,
-          .period_frames = cfg->audio_period_frames,
-          .block_count = 8,
-      };
-      ts->acap = alsa_capturer_create(&acp, tx_audio_pcm, ts);
-      if (!ts->acap) {
-        fprintf(stderr,
-                "live_ingest: ALSA capture unavailable (%s), "
-                "video-only\n",
-                acp.device);
-        mtl_tx_audio_stop(ts->atx);
-        mtl_tx_audio_free(ts->atx);
-        ts->atx = NULL;
-        free(ts->acc);
-        ts->acc = NULL;
-      } else {
-        alsa_capturer_set_error_cb(ts->acap, tx_audio_error, ts);
-        printf("TX-AUDIO: alsa %s rate=%d ch=%d udp=%u\n", acp.device,
-               alsa_capturer_sample_rate(ts->acap), alsa_capturer_channels(ts->acap),
-               cfg->audio_udp_port);
-      }
+      fprintf(stderr, "live_ingest: audio TX create failed\n");
+      return -EIO;
     }
+    size_t fb = mtl_tx_audio_frame_bytes(ts->atx);
+    int period_bytes =
+        (cfg->audio_period_frames > 0 ? cfg->audio_period_frames : 1024) *
+        cfg->audio_channels * 2;
+    ts->acc_cap = fb + (size_t)period_bytes;
+    ts->acc = malloc(ts->acc_cap);
+    if (!ts->acc) return -errno;
+
+    struct alsa_capturer_params acp = {
+        .device = cfg->audio_device ? cfg->audio_device : "default",
+        .sample_rate = cfg->audio_sample_rate,
+        .channels = cfg->audio_channels,
+        .sample_bit = 16,
+        .period_frames = cfg->audio_period_frames,
+        .block_count = 8,
+    };
+    ts->acap = alsa_capturer_create(&acp, tx_audio_pcm, ts);
+    if (!ts->acap) {
+      fprintf(stderr, "live_ingest: ALSA capture unavailable (%s)\n",
+              acp.device);
+      mtl_tx_audio_free(ts->atx);
+      ts->atx = NULL;
+      free(ts->acc);
+      ts->acc = NULL;
+      return -ENODEV;
+    }
+    if (alsa_capturer_sample_rate(ts->acap) != 48000 ||
+        alsa_capturer_channels(ts->acap) != cfg->audio_channels) {
+      fprintf(stderr,
+              "live_ingest: ALSA negotiated rate=%d ch=%d != requested 48000/%d\n",
+              alsa_capturer_sample_rate(ts->acap),
+              alsa_capturer_channels(ts->acap), cfg->audio_channels);
+      alsa_capturer_free(ts->acap);
+      ts->acap = NULL;
+      mtl_tx_audio_free(ts->atx);
+      ts->atx = NULL;
+      free(ts->acc);
+      ts->acc = NULL;
+      return -ENOTSUP;
+    }
+    alsa_capturer_set_error_cb(ts->acap, tx_audio_error, ts);
+    printf("TX-AUDIO: alsa %s rate=%d ch=%d udp=%u\n", acp.device,
+           alsa_capturer_sample_rate(ts->acap), alsa_capturer_channels(ts->acap),
+           cfg->audio_udp_port);
   }
 
   printf("TX: port=%s lip=%s dip=%s udp=%u (direct-write)\n", cfg->tx_port, cfg->tx_lip,
@@ -312,14 +328,8 @@ static int tx_stack_create(struct tx_stack* ts, struct live_ingest_cfg* cfg,
 
 static int tx_stack_start(struct tx_stack* ts) {
   if (mtl_tx_start(ts->mtx) != 0) return -1;
-  if (ts->atx && mtl_tx_audio_start(ts->atx) != 0) {
-    mtl_tx_audio_free(ts->atx);
-    ts->atx = NULL;
-  }
-  if (ts->acap && ts->atx && alsa_capturer_start(ts->acap) != 0) {
-    mtl_tx_audio_stop(ts->atx);
-    fprintf(stderr, "live_ingest: ALSA start failed, video-only\n");
-  }
+  if (ts->atx && mtl_tx_audio_start(ts->atx) != 0) return -1;
+  if (ts->acap && ts->atx && alsa_capturer_start(ts->acap) != 0) return -1;
   if (tx_pipeline_start(ts->tp) != 0) {
     mtl_tx_stop(ts->mtx);
     return -1;
@@ -427,13 +437,17 @@ static int file_stack_create(struct file_stack* fss, struct live_ingest_cfg* cfg
 
   fss->atx = audio_tx_create(fss->st, cfg);
   if (!fss->atx) {
-    fprintf(stderr, "file_source: audio TX unavailable, video-only\n");
+    fprintf(stderr, "file_source: audio TX create failed\n");
+    mtl_tx_free(fss->vtx);
+    fss->vtx = NULL;
+    return -EIO;
   }
 
   struct file_source_params fsp = {0};
   fsp.st = fss->st;
   fsp.video_sink = &fss->vsink;
   fsp.audio_tx = fss->atx;
+  fsp.audio_channels = cfg->audio_channels;
   for (int i = 0; i < cfg->mp4_count && i < FILE_SOURCE_MAX_FILES; i++)
     snprintf(fsp.files[i], sizeof(fsp.files[i]), "%s", cfg->mp4_files[i]);
   fsp.file_count = cfg->mp4_count;

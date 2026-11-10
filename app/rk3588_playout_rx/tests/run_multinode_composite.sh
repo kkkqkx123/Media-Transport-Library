@@ -22,12 +22,12 @@ FILE_MP4="${FILE_MP4:-/usr/local/test.mp4}"
 BIN_DIR="${BIN_DIR:-$HOME/code/mtl/bin}"
 RX_BIN="$BIN_DIR/file_playout_rx"
 TX_BIN="$BIN_DIR/live_ingest"
+OUT_DIR="${OUT_DIR:-/tmp/multinode_composite}"
 CFG_2LANE="$OUT_DIR/multinode_2lane.json"
 UDP_HDMI="${UDP_HDMI:-15000}"
 UDP_FILE="${UDP_FILE:-15010}"
 AUDIO_FILE="${AUDIO_FILE:-15012}"
 export UDP_HDMI UDP_FILE
-OUT_DIR="${OUT_DIR:-/tmp/multinode_composite}"
 mkdir -p "$OUT_DIR"
 
 fail() { echo "FAIL: $*"; return 1; }
@@ -182,6 +182,11 @@ t1_file_single() {
   read -r w1 h1 fps1 <<<"$(probe_file)"
   [ -n "$fps1" ] || { w1=1920; h1=1080; fps1=24; }
   note "片源 $w1 x $h1 @ fps=$fps1"
+  if ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of csv=p=0 "$FILE_MP4" 2>/dev/null | grep -q .; then
+    has_audio=1; note "片源含音频轨，启用音频端到端断言";
+  else
+    has_audio=0; note "片源无音频轨，音频断言跳过（视频照常）";
+  fi
   gen_tx_file "$tx_json" "$sec" "$UDP_FILE" "$AUDIO_FILE"
   kill_apps
   rm -f "$rx_log" "$tx_log"
@@ -194,11 +199,12 @@ t1_file_single() {
   "$TX_BIN" --config "$tx_json" \
     >"$tx_log" 2>&1
   wait "$rx_pid" || true
-  FPS1="$fps1" SEC1="$sec" python3 - "$rx_log" "$tx_log" <<'PY'
+  FPS1="$fps1" SEC1="$sec" HAS_AUDIO="$has_audio" python3 - "$rx_log" "$tx_log" <<'PY'
 import os, re, sys
 rx, tx = open(sys.argv[1], errors="replace").read(), open(sys.argv[2], errors="replace").read()
 fps = float(os.environ.get("FPS1", "24"))
 sec = float(os.environ.get("SEC1", "30"))
+has_audio = os.environ.get("HAS_AUDIO", "0") == "1"
 ok = True
 def check(n, c, d=""):
     global ok
@@ -219,10 +225,21 @@ if len(wins) >= 3:
     check("稳态零丢包", all(int(w[3]) == 0 and int(w[4]) == 0 for w in steady))
     check("稳态零坏帧", all(int(w[5]) == 0 and int(w[6]) == 0 for w in steady))
 else: check(f"稳态窗口数>=3（去头尾），实际 {len(wins)}", False)
-if "ALSA open failed" in rx or "continuing without audio" in rx:
-    print("INFO: T1 音频分支降级为无音频（ALSA 不可用），视频结论不受影响")
+if has_audio:
+    m2 = re.search(r"audio exit \((\d+) frames\)", tx)
+    check("音频源供帧>0", m2 is not None and int(m2.group(1)) > 0,
+            m2.group(0) if m2 else "无 audio exit 行")
+    check("音频无重采样失败", "audio resample" not in tx or "audio feeder started" in tx)
+    check("TX 音频已建连", "audio feeder started" in tx)
+    m3 = re.search(r"mtl_rx_audio: (\d+) frames, (\d+) drops", rx)
+    check("RX 音频收到帧>0", m3 is not None and int(m3.group(1)) > 0,
+            m3.group(0) if m3 else "无 mtl_rx_audio 行")
+    if m3:
+        check("RX 音频零丢弃", int(m3.group(2)) == 0, f"drops={m3.group(2)}")
+    check("声卡可用", "ALSA open failed" not in rx, "声卡打开失败则为 FAIL（已请求音频）")
 else:
-    print("INFO: T1 音频分支已建连（见 ST30/ALSA 行）")
+    check("无音频片源明确无声", "audio=off" in tx, "file_source audio=off")
+    print("SKIP: T1 音频断言（片源无音频轨）")
 sys.exit(0 if ok else 1)
 PY
 }

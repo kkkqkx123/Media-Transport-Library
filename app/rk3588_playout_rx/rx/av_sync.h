@@ -7,18 +7,12 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/** Sync decision for the next video frame. */
-enum av_sync_action {
-    AV_SYNC_RENDER = 0,
-    AV_SYNC_DROP,
-    AV_SYNC_REPEAT,
-};
-
+/** Fixed-delay playout sync (no audio-master drop/repeat).
+ * Video timing uses playout_target_ns + delay; the audio TAI anchor below
+ * is observability only. */
 typedef struct av_sync {
     alsa_audio*     audio;
     playout_buffer* pb;
-    int64_t         threshold_max_ns;
-    int64_t         threshold_min_ns;
     uint64_t        playout_delay_ns;
 
     /* TAI anchor from first played audio frame (matches TX PTP timeline) */
@@ -47,12 +41,6 @@ void av_sync_note_audio_frame(av_sync* sync, uint64_t tai_ns);
  * target = now - playout_delay (now from time_now or monotonic).
  */
 uint64_t av_sync_playout_target_ns(const av_sync* sync);
-
-/** Decide sync action for a decoded frame with the given video TAI PTS. */
-enum av_sync_action av_sync_decide_for_pts(av_sync* sync, uint64_t video_tai_ns);
-
-/** Legacy: decide using playout buffer head PTS. */
-enum av_sync_action av_sync_decide(av_sync* sync);
 
 void av_sync_print_stats(const av_sync* sync);
 

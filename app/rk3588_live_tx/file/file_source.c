@@ -16,7 +16,10 @@
 #include <errno.h>
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavutil/channel_layout.h>
+#include <libavutil/opt.h>
 #include <libavutil/samplefmt.h>
+#include <libswresample/swresample.h>
 #include <mtl_api.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -47,6 +50,11 @@ struct file_source {
 
     AVCodecContext* aac_ctx;
     AVFrame* aac_frame;
+    struct SwrContext* swr;
+    int swr_src_rate;
+    int swr_src_ch;
+    enum AVSampleFormat swr_src_fmt;
+    int swr_dst_ch; /* ST30 session channels (1..2) */
     bool has_audio;
 
     pthread_t video_tid;
@@ -260,6 +268,23 @@ static void* video_thread(void* arg) {
     return NULL;
 }
 
+static void aac_close(struct file_source* fs) {
+    if (fs->swr) {
+        swr_free(&fs->swr);
+        fs->swr = NULL;
+    }
+    fs->swr_src_rate = 0;
+    fs->swr_src_ch = 0;
+    if (fs->aac_frame) {
+        av_frame_free(&fs->aac_frame);
+        fs->aac_frame = NULL;
+    }
+    if (fs->aac_ctx) {
+        avcodec_free_context(&fs->aac_ctx);
+        fs->aac_ctx = NULL;
+    }
+}
+
 static int aac_open(struct file_source* fs) {
     if (fs->audio.audio_idx < 0 || !fs->audio.fmt) return -ENOSYS;
     AVStream* st = fs->audio.fmt->streams[fs->audio.audio_idx];
@@ -281,6 +306,14 @@ static int aac_open(struct file_source* fs) {
         avcodec_free_context(&fs->aac_ctx);
         return -ENOMEM;
     }
+    /* Resampler is initialized lazily on the first decoded frame (source
+     * rate/channels/format known only then); direct copy when already
+     * 48kHz S16 with matching channels. */
+    fs->swr = NULL;
+    fs->swr_src_rate = 0;
+    fs->swr_src_ch = 0;
+    fs->swr_src_fmt = AV_SAMPLE_FMT_NONE;
+    fs->swr_dst_ch = fs->cfg.audio_channels ? fs->cfg.audio_channels : 2;
     fs->has_audio = true;
     return 0;
 }
@@ -292,22 +325,62 @@ static int aac_decode_packet(struct file_source* fs, AVPacket* pkt,
     ret = avcodec_receive_frame(fs->aac_ctx, fs->aac_frame);
     if (ret < 0) return ret;
     int samples = fs->aac_frame->nb_samples;
-    int ch = fs->aac_ctx->channels;
-    size_t bytes = (size_t)samples * (size_t)ch * 2;
-    uint8_t* buf = malloc(bytes);
-    if (!buf) return -ENOMEM;
-    if (av_sample_fmt_is_planar(fs->aac_ctx->sample_fmt)) {
-        int16_t* dst = (int16_t*)buf;
-        for (int c = 0; c < ch; c++) {
-            int16_t* src = (int16_t*)fs->aac_frame->data[c];
-            for (int i = 0; i < samples; i++)
-                dst[i * ch + c] = src[i];
+    int src_rate = fs->aac_frame->sample_rate;
+    int src_ch = fs->aac_frame->channels;
+    enum AVSampleFormat src_fmt = fs->aac_frame->format;
+    int dst_ch = fs->swr_dst_ch ? fs->swr_dst_ch : 2;
+    if (src_rate == 48000 && src_ch == dst_ch &&
+        (src_fmt == AV_SAMPLE_FMT_S16 || src_fmt == AV_SAMPLE_FMT_S16P)) {
+        int ch = src_ch;
+        size_t bytes = (size_t)samples * (size_t)ch * 2;
+        uint8_t* buf = malloc(bytes ? bytes : 1);
+        if (!buf) return -ENOMEM;
+        if (src_fmt == AV_SAMPLE_FMT_S16P) {
+            int16_t* dst = (int16_t*)buf;
+            for (int c = 0; c < ch; c++) {
+                int16_t* src = (int16_t*)fs->aac_frame->data[c];
+                for (int i = 0; i < samples; i++)
+                    dst[i * ch + c] = src[i];
+            }
+        } else {
+            memcpy(buf, fs->aac_frame->data[0], bytes);
         }
-    } else {
-        memcpy(buf, fs->aac_frame->data[0], bytes);
+        *out = buf;
+        *out_len = bytes;
+        return 0;
+    }
+    if (!fs->swr || fs->swr_src_rate != src_rate || fs->swr_src_ch != src_ch ||
+        fs->swr_src_fmt != src_fmt) {
+        swr_free(&fs->swr);
+        fs->swr = swr_alloc_set_opts(NULL,
+            av_get_default_channel_layout(dst_ch), AV_SAMPLE_FMT_S16, 48000,
+            av_get_default_channel_layout(src_ch), src_fmt, src_rate,
+            0, NULL);
+        if (!fs->swr) return -ENOMEM;
+        if (swr_init(fs->swr) < 0) {
+            swr_free(&fs->swr);
+            return -EIO;
+        }
+        fs->swr_src_rate = src_rate;
+        fs->swr_src_ch = src_ch;
+        fs->swr_src_fmt = src_fmt;
+        printf("file_source: audio resample %dHz/%dch/%s -> 48000Hz/%dch/s16\n",
+               src_rate, src_ch, av_get_sample_fmt_name(src_fmt), dst_ch);
+    }
+    int dst_nb = av_rescale_rnd(swr_get_delay(fs->swr, src_rate) + samples,
+                                48000, src_rate, AV_ROUND_UP);
+    size_t bytes = (size_t)dst_nb * (size_t)dst_ch * 2;
+    uint8_t* buf = malloc(bytes ? bytes : 1);
+    if (!buf) return -ENOMEM;
+    uint8_t* out_arr[1] = { buf };
+    int got = swr_convert(fs->swr, out_arr, dst_nb,
+                          (const uint8_t**)fs->aac_frame->data, samples);
+    if (got < 0) {
+        free(buf);
+        return -EIO;
     }
     *out = buf;
-    *out_len = bytes;
+    *out_len = (size_t)got * (size_t)dst_ch * 2;
     return 0;
 }
 
@@ -367,8 +440,7 @@ static void* audio_thread(void* arg) {
             mtl_tx_audio_abort_fb(fs->cfg.audio_tx, idx);
             if (playlist_advance(fs, &fs->pl_audio_pos, &fs->audio, "audio") < 0)
                 break;
-            avcodec_free_context(&fs->aac_ctx);
-            av_frame_free(&fs->aac_frame);
+            aac_close(fs);
             fs->has_audio = false;
             if (aac_open(fs) < 0) break;
             continue;
@@ -392,6 +464,8 @@ static void* audio_thread(void* arg) {
 
 struct file_source* file_source_create(const struct file_source_params* p) {
     if (!p || !p->video_sink || p->file_count <= 0) return NULL;
+    if (p->audio_tx && p->audio_channels != 0 &&
+        (p->audio_channels < 1 || p->audio_channels > 2)) return NULL;
     struct file_source* fs = calloc(1, sizeof(*fs));
     if (!fs) return NULL;
     fs->cfg = *p;
@@ -448,8 +522,7 @@ void file_source_free(struct file_source* fs) {
     if (!fs) return;
     file_source_stop(fs);
     if (fs->ext) extradata_handler_free(fs->ext);
-    if (fs->aac_frame) av_frame_free(&fs->aac_frame);
-    if (fs->aac_ctx) avcodec_free_context(&fs->aac_ctx);
+    aac_close(fs);
     slot_close(&fs->video);
     slot_close(&fs->audio);
     pthread_mutex_destroy(&fs->pl_lock);

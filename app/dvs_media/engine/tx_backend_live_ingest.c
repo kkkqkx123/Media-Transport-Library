@@ -89,6 +89,19 @@ static void* audio_tx_thread(void* arg) {
         atomic_store(&g_atx_running, false);
         return NULL;
     }
+    {
+        unsigned int rate = 0;
+        int dir = 0;
+        unsigned int ch = 0;
+        if (snd_pcm_hw_params_get_rate(hw, &rate, &dir) < 0 || rate != DVS_TX_AUDIO_RATE ||
+            snd_pcm_hw_params_get_channels(hw, &ch) < 0 || ch != DVS_TX_AUDIO_CH) {
+            fprintf(stderr, "dvs_tx: audio negotiated %uHz/%uch != %dHz/%dch (%s)\n",
+                    rate, ch, DVS_TX_AUDIO_RATE, DVS_TX_AUDIO_CH, dev);
+            snd_pcm_close(pcm);
+            atomic_store(&g_atx_running, false);
+            return NULL;
+        }
+    }
     atomic_store(&g_atx_ready, true);
     while (atomic_load(&g_atx_running)) {
         struct st30_frame* f = st30p_tx_get_frame(g_atx);

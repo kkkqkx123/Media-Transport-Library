@@ -19,6 +19,7 @@ libjson_c_dep = dependency('json-c', required: true)
 libavformat_dep = dependency('libavformat', required: true)
 libavcodec_dep = dependency('libavcodec', required: true)
 libavutil_dep = dependency('libavutil', required: true)
+libswresample_dep = dependency('libswresample', required: true)
 
 # real-time audio capture (io/alsa_capturer); optional so sysroots without
 # libasound can still build video-only
@@ -116,7 +117,8 @@ live_ingest_file = static_library('live_ingest_file',
   'file/file_source.c',
   link_with: [live_ingest_hal, live_ingest_pipe],
   dependencies: [libpthread_dep, mtl_dep,
-                 libavformat_dep, libavcodec_dep, libavutil_dep],
+                 libavformat_dep, libavcodec_dep, libavutil_dep,
+                 libswresample_dep],
   include_directories: live_ingest_inc,
 )
 
@@ -136,6 +138,7 @@ executable('live_ingest', files(
               live_ingest_pipe, live_ingest_file],
   dependencies: [libdrm_dep, librga_dep, librockchip_mpp_dep, libpthread_dep,
                  mtl_dep, libjson_c_dep,
-                 libavformat_dep, libavcodec_dep, libavutil_dep],
+                 libavformat_dep, libavcodec_dep, libavutil_dep,
+                 libswresample_dep],
   include_directories: live_ingest_inc,
 )

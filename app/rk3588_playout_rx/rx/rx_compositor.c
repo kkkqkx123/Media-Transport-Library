@@ -560,25 +560,31 @@ rx_compositor* rx_compositor_create(const rx_compositor_params* params) {
 
     if (comp->lane_count == 0) {
         /* Backdrop-only: no lanes, no audio subscription. The sync clock
-         * still initializes (mutex + thresholds) with no frame source. */
+         * still initializes with no frame source. */
         av_sync_init(&comp->sync, NULL, NULL, params->playout_delay_ms,
                      params->time_now, params->time_priv);
         printf("rx_comp: backdrop-only (0 lanes)\n");
         return comp;
     }
 
-    if (alsa_audio_open(params->alsa_device, &comp->alsa) != 0) {
-        fprintf(stderr, "rx_comp: ALSA open failed — continuing without audio\n");
-        comp->alsa = NULL;
-    }
-
-    av_sync_init(&comp->sync, comp->alsa,
-                 &comp->lanes[comp->main_lane_idx].pb, params->playout_delay_ms,
-                 params->time_now, params->time_priv);
-
     uint16_t audio_port = main_s->audio_udp_port;
     if (!audio_port)
         audio_port = params->default_audio_udp_port;
+
+    av_sync_init(&comp->sync, NULL,
+                 &comp->lanes[comp->main_lane_idx].pb, params->playout_delay_ms,
+                 params->time_now, params->time_priv);
+
+    if (audio_port != 0) {
+        if (alsa_audio_open(params->alsa_device, &comp->alsa) != 0) {
+            fprintf(stderr, "rx_comp: ALSA open failed (audio requested)\n");
+            rx_compositor_free(comp);
+            return NULL;
+        }
+        comp->sync.audio = comp->alsa;
+    } else {
+        comp->alsa = NULL;
+    }
 
     if (comp->alsa && params->mt && audio_port) {
         mtl_rx_audio_params arp = {
@@ -593,11 +599,9 @@ rx_compositor* rx_compositor_create(const rx_compositor_params* params) {
         };
         comp->audio_rx = mtl_rx_audio_create(&arp);
         if (!comp->audio_rx) {
-            alsa_audio_close(comp->alsa);
-            comp->alsa = NULL;
-            av_sync_init(&comp->sync, NULL, &comp->lanes[comp->main_lane_idx].pb,
-                         params->playout_delay_ms, params->time_now,
-                         params->time_priv);
+            fprintf(stderr, "rx_comp: mtl_rx_audio create failed\n");
+            rx_compositor_free(comp);
+            return NULL;
         }
     }
 

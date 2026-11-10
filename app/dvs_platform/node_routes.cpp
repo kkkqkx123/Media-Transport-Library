@@ -17,7 +17,11 @@ namespace ct = dvs::contract;
 bool route_nodes(PlatformContext& ctx, const HttpRequest& req,
                  HttpResponse& res) {
     if (req.method == "POST" && req.path == "/api/v1/nodes/register") {
-        if (!dvs::require_bearer(req, res, ctx.api_token)) return true;
+        if (!platform_mutation_allowed(ctx, req)) {
+            dvs::send_json(res, dvs::envelope_fail("UNAUTHORIZED", 401,
+                                                   "missing or bad token"));
+            return true;
+        }
         json_object* b = json_tokener_parse(req.body.c_str());
         std::string verr =
             b ? ct::validate_hello(b) : "INVALID_ARGUMENT:empty body";
@@ -39,10 +43,15 @@ bool route_nodes(PlatformContext& ctx, const HttpRequest& req,
             return true;
         }
         if (!b) b = json_object_new_object();
-        bool has_base = !dvs::json_get_str(b, "agentBase").empty();
-        json_object* geo0 = nullptr;
-        bool has_geo =
-            b && json_object_object_get_ex(b, "geometry", &geo0) && geo0;
+        if (!node_doc_ready(b)) {
+            ctx.store->audit("{\"rejected-register\":\"" +
+                             dvs::json_escape(id) + "\"}");
+            json_object_put(b);
+            dvs::send_json(res, dvs::envelope_fail(
+                                     "INVALID_ARGUMENT", 400,
+                                     "node not ready: need agentBase + usable geometry"));
+            return true;
+        }
         json_object_object_add(b, "online", json_object_new_boolean(1));
         json_object_object_add(b, "lastHeartbeat",
                                json_object_new_string(dvs::iso_now().c_str()));
@@ -53,16 +62,17 @@ bool route_nodes(PlatformContext& ctx, const HttpRequest& req,
         ctx.channels.set_transport(id, "short");
         ctx.store->audit("{\"register\":\"" + dvs::json_escape(id) + "\"}");
         promote_pending_bindings(ctx, id);
-        if (!has_base || !has_geo)
-            ctx.store->audit("{\"incomplete-register\":\"" + dvs::json_escape(id) +
-                             "\"}");
         json_object* d = ctx.store->get_doc("node", id);
         json_object_put(b);
         dvs::send_json(res, dvs::envelope_ok(d ? d : json_object_new_object(), ""));
         return true;
     }
     if (req.method == "POST" && req.path == "/api/v1/nodes/heartbeat") {
-        if (!dvs::require_bearer(req, res, ctx.api_token)) return true;
+        if (!platform_mutation_allowed(ctx, req)) {
+            dvs::send_json(res, dvs::envelope_fail("UNAUTHORIZED", 401,
+                                                   "missing or bad token"));
+            return true;
+        }
         json_object* b = json_tokener_parse(req.body.c_str());
         std::string verr =
             b ? ct::validate_heartbeat(b) : "INVALID_ARGUMENT:empty body";
@@ -119,8 +129,7 @@ bool route_nodes(PlatformContext& ctx, const HttpRequest& req,
         ctx.channels.set_transport(id, "short");
         json_object_put(b);
         promote_pending_bindings(ctx, id);
-        json_object* d = json_object_new_object();
-        json_object_object_add(d, "revision", json_object_new_int(1));
+        json_object* d = heartbeat_ack_for_node(ctx, id);
         dvs::send_json(res, dvs::envelope_ok(d, ""));
         json_object_put(cur);
         return true;

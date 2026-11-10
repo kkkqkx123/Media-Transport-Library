@@ -29,9 +29,9 @@ void restore_ops(PlatformContext& ctx) {
 void start_barrier_sweeper(PlatformContext& ctx) {
     std::thread([&ctx]() {
         time_t last_gc = 0;
-        const uint64_t kOpTtlNs = 24ULL * 3600 * 1000000000ULL;
         for (;;) {
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+            std::this_thread::sleep_for(
+                std::chrono::seconds(sweeper_tick_sec()));
             std::vector<std::string> expired;
             {
                 std::lock_guard<std::mutex> lk(ctx.ops_mu);
@@ -74,11 +74,11 @@ void start_barrier_sweeper(PlatformContext& ctx) {
                     execute_rollback(ctx, rb, to_rev, rb_members);
             }
             time_t now_s = time(nullptr);
-            if (last_gc == 0 || now_s - last_gc >= 3600) {
+            if (last_gc == 0 || now_s - last_gc >= gc_interval_sec()) {
                 last_gc = now_s;
                 {
                     std::lock_guard<std::mutex> lk(ctx.ops_mu);
-                    ctx.ops.gc(dvs::wall_ns_now(), kOpTtlNs);
+                    ctx.ops.gc(dvs::wall_ns_now(), op_ttl_ns());
                 }
                 ctx.store->audit_trim();
                 for (auto& wid : ctx.store->list_ids("walls")) {
@@ -90,7 +90,8 @@ void start_barrier_sweeper(PlatformContext& ctx) {
                         if (json_object_object_get_ex(w, "deletedAtEpoch", &v) &&
                             v) {
                             int64_t at = json_object_get_int64(v);
-                            if (at > 0 && now_s - (time_t)at > 7 * 24 * 3600)
+                            if (at > 0 &&
+                                now_s - (time_t)at > wall_retention_sec())
                                 gone = true;
                         }
                     }

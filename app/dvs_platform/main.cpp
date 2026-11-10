@@ -43,10 +43,12 @@ int main(int argc, char** argv) {
             if (env && *env) ctx.web_root = env;
     }
     if (ctx.web_root.empty()) ctx.web_root = "./web/src";
-    if (ctx.api_token.empty())
+    if (ctx.api_token.empty()) {
         fprintf(stderr,
-                "dvs-platform: WARNING DVS_API_TOKEN unset, mutating APIs "
-                "accept unauthenticated calls\n");
+                "dvs-platform: FATAL DVS_API_TOKEN unset, refusing to start. "
+                "Set a bearer token for agent-to-platform calls.\n");
+        return 1;
+    }
 
     HttpServer server(port, [&ctx](const HttpRequest& req, HttpResponse& res) {
         handle_platform_request(ctx, req, res);

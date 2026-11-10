@@ -138,3 +138,28 @@ bool barrier_lanes_frame_consistent(json_object* lanes, int64_t* seq_out);
 int fanout_parallelism();
 // Largest accepted wall membership (env override, at least one).
 int max_wall_members();
+// Barrier/retention tunables (env override, platform-only, never cross-end).
+// Defaults preserve the historical behavior; operators tune via environment.
+uint64_t op_ttl_ns();        // DVS_OP_TTL_HOURS, default 24
+int sweeper_tick_sec();      // DVS_SWEEPER_TICK_SEC, default 1
+int gc_interval_sec();       // DVS_GC_INTERVAL_SEC, default 3600
+int64_t wall_retention_sec();  // DVS_WALL_RETENTION_DAYS, default 7
+int tombstone_ttl_sec();     // DVS_TOMBSTONE_TTL_DAYS, default 30
+int audit_keep_rows();       // DVS_AUDIT_KEEP_ROWS, default 5000
+int default_volume();        // DVS_DEFAULT_VOLUME, default 80
+double default_fps();         // DVS_DEFAULT_FPS, default 60.0
+uint64_t apply_guard_floor_ns();  // DVS_APPLY_GUARD_FLOOR_MS, default 50
+// Random doc id: kind + "-" + 16 hex chars from wall clock + CSPRNG mix.
+// No wall-clock-second concatenation, no predictability across restarts.
+std::string platform_new_doc_id(const std::string& kind);
+// Canonical cache keys for wall base images (single source, no ad-hoc join).
+std::string base_image_cache_key(const std::string& wall_id,
+                                 const std::string& revision);
+std::string base_image_node_cache_key(const std::string& wall_id,
+                                      const std::string& revision,
+                                      const std::string& node_id);
+// Structured fanout shortfall for one member: {node, reason} with reason in
+// {unknown-node, no-geometry, no-channel}. Caller owns nothing; pure read.
+std::string node_shortfall_reason(json_object* node, bool has_channel);
+json_object* node_shortfall_json(const std::string& node,
+                                 const std::string& reason);

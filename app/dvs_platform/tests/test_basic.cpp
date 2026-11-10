@@ -2060,10 +2060,12 @@ static void test_upgrade_entry_guards() {
     PlatformContext ctx;
     ctx.store = &store;
     ctx.ops.set_store(&store);
+    ctx.api_token = "test-token";
     HttpRequest req;
     HttpResponse res;
     req.method = "POST";
     req.path = "/api/v1/nodes/upgrade";
+    req.headers["Authorization"] = "Bearer test-token";
     req.body = "{}";
     assert(route_upgrade(ctx, req, res));
     json_object* o = json_tokener_parse(res.body.c_str());

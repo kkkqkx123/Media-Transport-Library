@@ -1,5 +1,7 @@
 #include "ops.h"
 
+#include "dvs_contract.h"
+#include "layout.h"
 #include "platform_store.h"
 
 json_object* operation_to_json(const Operation& op) {
@@ -75,7 +77,7 @@ bool operation_from_json(json_object* o, Operation* out) {
     out->wall_id = jstr(o, "wallId");
     out->scene_id = jstr(o, "sceneId");
     out->layout_hash = jstr(o, "layoutHash");
-    out->volume = 80;
+    out->volume = default_volume();
     {
         json_object* vv = nullptr;
         if (json_object_object_get_ex(o, "volume", &vv) && vv &&
@@ -83,7 +85,7 @@ bool operation_from_json(json_object* o, Operation* out) {
             out->volume = json_object_get_int(vv);
     }
     out->epoch_ns = (uint64_t)jint64(o, "epochNs");
-    out->fps = 60.0;
+    out->fps = default_fps();
     {
         json_object* fv = nullptr;
         if (json_object_object_get_ex(o, "fps", &fv) && fv) {
@@ -92,7 +94,7 @@ bool operation_from_json(json_object* o, Operation* out) {
             else if (json_object_is_type(fv, json_type_int))
                 out->fps = (double)json_object_get_int(fv);
         }
-        if (!(out->fps > 0.0)) out->fps = 60.0;
+        if (!(out->fps > 0.0)) out->fps = default_fps();
     }
     out->frame_index = -1;
     {
@@ -171,9 +173,9 @@ Operation& OpCoordinator::begin_with_deadline(const std::string& op_id, int revi
     op.wall_id.clear();
     op.scene_id.clear();
     op.layout_hash.clear();
-    op.volume = 80;
+    op.volume = default_volume();
     op.epoch_ns = 0;
-    op.fps = 60.0;
+    op.fps = default_fps();
     op.frame_index = -1;
     persist(op);
     return op;

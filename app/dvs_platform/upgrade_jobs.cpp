@@ -16,18 +16,17 @@ namespace ct = dvs::contract;
 bool route_upgrade(PlatformContext& ctx, const HttpRequest& req,
                    HttpResponse& res) {
     if (req.method == "POST" && req.path == "/api/v1/nodes/upgrade") {
-        if (!dvs::require_bearer(req, res, ctx.api_token)) return true;
+        if (!platform_mutation_allowed(ctx, req)) {
+            dvs::send_json(res, dvs::envelope_fail("UNAUTHORIZED", 401,
+                                                   "missing or bad token"));
+            return true;
+        }
         json_object* b = json_tokener_parse(req.body.c_str());
         json_object* arr = nullptr;
         if (b) json_object_object_get_ex(b, "targetNodeIds", &arr);
         std::string fn = dvs::json_get_str(b, "filename");
-        if (fn.empty()) fn = dvs::json_get_str(b, "file");
-        if (fn.empty()) fn = dvs::json_get_str(b, "name");
         std::string sha = dvs::json_get_str(b, "sha256");
-        if (sha.empty()) sha = dvs::json_get_str(b, "sha");
         std::string ver = dvs::json_get_str(b, "fwVersion");
-        if (ver.empty()) ver = dvs::json_get_str(b, "fw_version");
-        if (ver.empty()) ver = dvs::json_get_str(b, "version");
         std::vector<std::string> nodes;
         if (arr && json_object_is_type(arr, json_type_array)) {
             for (size_t i = 0; i < json_object_array_length(arr); i++) {

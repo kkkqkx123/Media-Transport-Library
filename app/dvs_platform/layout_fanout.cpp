@@ -25,16 +25,19 @@ LayoutDelivery deliver_layout_prepare(
     json_object* nd = ctx.store->get_doc("node", node_id);
     if (!nd) {
         d.skipped = true;
-        d.skip_reason = "no node doc";
+        d.skip_reason = "unknown-node";
         return d;
     }
     std::string agent_base = dvs::json_get_str(nd, "agentBase");
     json_object* geo = nullptr;
     json_object_object_get_ex(nd, "geometry", &geo);
     bool geo_ok = geo && dvs::json_rect_int(geo, "w") > 0 && dvs::json_rect_int(geo, "h") > 0;
-    if (!geo_ok) {
+    bool has_channel =
+        (ctx.channels.fd_of(node_id) >= 0) || !agent_base.empty();
+    std::string shortfall = node_shortfall_reason(nd, has_channel);
+    if (!shortfall.empty()) {
         d.skipped = true;
-        d.skip_reason = "no geometry";
+        d.skip_reason = shortfall;
         json_object_put(nd);
         return d;
     }
@@ -65,13 +68,13 @@ LayoutDelivery deliver_layout_prepare(
             int port = 0;
             if (json_object_object_get_ex(wl, "port", &pv))
                 port = json_object_get_int(pv);
-            if (port <= 0) port = 50010;
+            if (port <= 0) port = ct::kDefaultMediaPort;
             json_object_object_add(ep, "port", json_object_new_int(port));
             json_object* fv = nullptr;
             int fps = 0;
             if (json_object_object_get_ex(wl, "fps", &fv) && fv)
                 fps = json_object_get_int(fv);
-            if (fps <= 0) fps = 60;
+            if (fps <= 0) fps = (int)ct::kDefaultFps;
             json_object_object_add(ep, "fps", json_object_new_int(fps));
             json_object* apv = nullptr;
             int aport = 0;
@@ -240,7 +243,7 @@ void fanout_layout_parallel(PlatformContext& ctx,
                     scene_id, hash, epoch_ns, fps, frame_index, wall_w, wall_h,
                     base_json, adjust_json, expires_at_ns);
                 if (is_rollback) {
-                    if (d.skipped && d.skip_reason == "no geometry") continue;
+                    if (d.skipped && d.skip_reason == "no-geometry") continue;
                     if (d.via_ws) {
                         ctx.store->audit("{\"rollback\":\"" + dvs::json_escape(opid) +
                                          "\",\"node\":\"" + dvs::json_escape(mid) +

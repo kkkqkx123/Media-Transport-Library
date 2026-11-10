@@ -5,6 +5,16 @@
 #include "platform_context.h"
 #include "platform_store.h"
 
+bool node_doc_ready(json_object* doc) {
+    if (!doc || !json_object_is_type(doc, json_type_object)) return false;
+    if (dvs::json_get_str(doc, "agentBase").empty()) return false;
+    json_object* geo = nullptr;
+    if (!json_object_object_get_ex(doc, "geometry", &geo) || !geo)
+        return false;
+    return dvs::json_rect_int(geo, "w") > 0 &&
+           dvs::json_rect_int(geo, "h") > 0;
+}
+
 std::set<std::string> derive_wall_members(PlatformContext& ctx,
                                           const std::string& wall_id,
                                           std::set<std::string>* pending_out) {
@@ -22,14 +32,75 @@ std::set<std::string> derive_wall_members(PlatformContext& ctx,
             json_object_put(b);
             continue;
         }
+        json_object_put(b);
         if (st == "pending_offline" || st == "pending") {
             if (pending_out) pending_out->insert(node);
-        } else {
-            out.insert(node);
+            continue;
         }
-        json_object_put(b);
+        json_object* nd = ctx.store->get_doc("node", node);
+        bool ready = node_doc_ready(nd);
+        if (nd) json_object_put(nd);
+        if (!ready) {
+            if (pending_out) pending_out->insert(node);
+            continue;
+        }
+        out.insert(node);
     }
     return out;
+}
+
+json_object* heartbeat_ack_for_node(PlatformContext& ctx,
+                                    const std::string& node_id) {
+    std::string wall_id;
+    for (auto& bid : ctx.store->list_ids("bindings")) {
+        json_object* b = ctx.store->get_doc("bindings", bid);
+        if (!b) continue;
+        bool hit = (binding_node_of(b) == node_id);
+        std::string w = hit ? binding_wall_of(b) : "";
+        json_object_put(b);
+        if (hit && !w.empty()) {
+            wall_id = w;
+            break;
+        }
+    }
+    int applied = 0;
+    std::string scene;
+    if (!wall_id.empty()) {
+        json_object* w = ctx.store->get_doc("walls", wall_id);
+        if (w) {
+            json_object* av = nullptr;
+            if (json_object_object_get_ex(w, "appliedRevision", &av) && av)
+                applied = json_object_get_int(av);
+            scene = dvs::json_get_str(w, "currentSceneId");
+            json_object_put(w);
+        }
+        if (applied <= 0) {
+            std::lock_guard<std::mutex> lk(ctx.ops_mu);
+            applied = ctx.ops.wall_committed_revision(wall_id);
+        }
+    }
+    int pending = 0;
+    {
+        std::vector<std::string> op_ids = ctx.store->list_ids("op");
+        std::lock_guard<std::mutex> lk(ctx.ops_mu);
+        for (const auto& id : op_ids) {
+            const Operation* op = ctx.ops.find(id);
+            if (!op || op->state != "preparing") continue;
+            if (op->members.count(node_id) && op->revision > pending)
+                pending = op->revision;
+        }
+    }
+    json_object* d = json_object_new_object();
+    json_object_object_add(d, "revision", json_object_new_int(applied));
+    json_object_object_add(d, "appliedRevision", json_object_new_int(applied));
+    json_object_object_add(d, "pendingRevision", json_object_new_int(pending));
+    if (!wall_id.empty())
+        json_object_object_add(d, "wallId",
+                               json_object_new_string(wall_id.c_str()));
+    if (!scene.empty())
+        json_object_object_add(d, "currentSceneId",
+                               json_object_new_string(scene.c_str()));
+    return d;
 }
 
 void mark_wall_committed(PlatformContext& ctx, const std::string& wall_id,

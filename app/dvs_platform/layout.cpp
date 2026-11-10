@@ -4,9 +4,13 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <random>
 
+#include "dvs_contract.h"
 #include "dvs_http_json.h"
 #include "sha256.h"
+
+namespace ct = dvs::contract;
 
 bool layout_cell_grid(int wall_w, int wall_h, int cols, int rows,
                       int* cell_w, int* cell_h) {
@@ -19,7 +23,8 @@ bool layout_cell_grid(int wall_w, int wall_h, int cols, int rows,
 uint64_t layout_apply_at_ns(uint64_t now_ns, double fps) {
     uint64_t per_frame_ns = (fps > 0.0) ? (uint64_t)(1000000000.0 / fps) : 20000000ULL;
     uint64_t guard = 2 * per_frame_ns;
-    if (guard < 50000000ULL) guard = 50000000ULL;
+    uint64_t floor = apply_guard_floor_ns();
+    if (guard < floor) guard = floor;
     return now_ns + guard;
 }
 
@@ -118,7 +123,7 @@ json_object* fragment_for_node(json_object* windows, const Rect& node) {
     return out;
 }
 
-int max_windows_per_node() { return 4; }
+int max_windows_per_node() { return ct::kMaxWindowsPerNode; }
 
 std::string validate_per_node_budget(
     json_object* windows,
@@ -163,11 +168,13 @@ std::string validate_wall_shape(json_object* doc) {
     json_object* v = nullptr;
     if (json_object_object_get_ex(doc, "rows", &v) && v) {
         int r = json_object_get_int(v);
-        if (r < 1 || r > 6) return "INVALID_ARGUMENT:wall rows must be 1..6";
+        if (r < 1 || r > ct::kWallRowsMax)
+            return "INVALID_ARGUMENT:wall rows must be 1..6";
     }
     if (json_object_object_get_ex(doc, "cols", &v) && v) {
         int c = json_object_get_int(v);
-        if (c < 1 || c > 15) return "INVALID_ARGUMENT:wall cols must be 1..15";
+        if (c < 1 || c > ct::kWallColsMax)
+            return "INVALID_ARGUMENT:wall cols must be 1..15";
     }
     if (json_object_object_get_ex(doc, "mode", &v) && v &&
         json_object_is_type(v, json_type_string)) {
@@ -178,14 +185,10 @@ std::string validate_wall_shape(json_object* doc) {
     if (json_object_object_get_ex(doc, "type", &v) && v &&
         json_object_is_type(v, json_type_string)) {
         std::string t = jstr(doc, "type");
-        if (!t.empty() && t != "standard" && t != "nonstandard" &&
-            t != "STD" && t != "STD+") {
-            // Tolerant: frontend prototype uses display labels; only reject
-            // obviously malformed values by length, never by dialect.
-            if (t.size() > 32) return "INVALID_ARGUMENT:wall type too long";
-        }
+        if (!t.empty() && t != "standard" && t != "nonstandard")
+            return "INVALID_ARGUMENT:wall type must be standard|nonstandard";
     }
-    // LED per-row/column pixels share the 64..7680 floor.
+    // Per-row/column pixels share the contract floor/ceiling.
     int rows = jint(doc, "rows", 0), cols = jint(doc, "cols", 0);
     json_object* rp = nullptr;
     if (json_object_object_get_ex(doc, "rowPixels", &rp) && rp) {
@@ -195,7 +198,7 @@ std::string validate_wall_shape(json_object* doc) {
             return "INVALID_ARGUMENT:wall rowPixels length must match rows";
         for (size_t i = 0; i < json_object_array_length(rp); i++) {
             int px = json_object_get_int(json_object_array_get_idx(rp, i));
-            if (px < 64 || px > 7680)
+            if (px < ct::kWallPixelsMin || px > ct::kWallPixelsMax)
                 return "INVALID_ARGUMENT:wall rowPixels must be 64..7680";
         }
     }
@@ -207,7 +210,7 @@ std::string validate_wall_shape(json_object* doc) {
             return "INVALID_ARGUMENT:wall colPixels length must match cols";
         for (size_t i = 0; i < json_object_array_length(cp); i++) {
             int px = json_object_get_int(json_object_array_get_idx(cp, i));
-            if (px < 64 || px > 7680)
+            if (px < ct::kWallPixelsMin || px > ct::kWallPixelsMax)
                 return "INVALID_ARGUMENT:wall colPixels must be 64..7680";
         }
     }
@@ -257,7 +260,7 @@ std::string validate_scene_shape(json_object* doc, int wall_w, int wall_h) {
         if (sig.empty()) return "INVALID_ARGUMENT:scene window missing signal";
         int x = dvs::json_rect_int(w, "x"), y = dvs::json_rect_int(w, "y");
         int ww = dvs::json_rect_int(w, "w"), hh = dvs::json_rect_int(w, "h");
-        if (ww < 64 || hh < 64)
+        if (ww < ct::kMinWindowSide || hh < ct::kMinWindowSide)
             return "INVALID_ARGUMENT:window below minimum size";
         if (wall_w > 0 && wall_h > 0 &&
             (x < 0 || y < 0 || x + ww > wall_w || y + hh > wall_h))
@@ -440,15 +443,18 @@ std::string validate_base_image(json_object* doc) {
         !json_object_is_type(v, json_type_int) || json_object_get_int(v) < 0)
         return "INVALID_ARGUMENT:baseImage revision must be int >= 0";
     std::string url = jstr(doc, "url");
-    if (url.empty() || url.size() > 1024)
+    if (url.empty() || url.size() > (size_t)ct::kBaseImageUrlMax)
         return "INVALID_ARGUMENT:baseImage url required";
     for (const char* k : {"width", "height"}) {
         json_object* vv = nullptr;
         if (json_object_object_get_ex(doc, k, &vv) && vv) {
+            int lim = (std::string(k) == "width") ? ct::kBaseImageWMax
+                                                   : ct::kBaseImageHMax;
             if (!json_object_is_type(vv, json_type_int) ||
-                json_object_get_int(vv) <= 0)
+                json_object_get_int(vv) < ct::kBaseImagePixelsMin ||
+                json_object_get_int(vv) > lim)
                 return std::string("INVALID_ARGUMENT:baseImage ") + k +
-                       " must be positive";
+                       " must be 64.." + std::to_string(lim);
         }
     }
     json_object* sub = nullptr;
@@ -556,9 +562,9 @@ int wall_min_window_side(json_object* wall, int wall_w, int wall_h) {
         int m = std::min(kv.second.w, kv.second.h);
         if (m > 0 && (side == 0 || m < side)) side = m;
     }
-    if (side <= 0) return 64;
+    if (side <= 0) return ct::kMinWindowSide;
     int floor = side / 4;
-    return floor < 64 ? 64 : floor;
+    return floor < ct::kMinWindowSide ? ct::kMinWindowSide : floor;
 }
 
 void wall_cells(json_object* wall, int wall_w, int wall_h,
@@ -604,7 +610,7 @@ void wall_cells(json_object* wall, int wall_w, int wall_h,
 
 bool multicast_pool_next(const std::set<std::pair<std::string, int>>& used,
                          int want_port, std::string* addr_out, int* port_out) {
-    int port = (want_port > 0) ? want_port : 50010;
+    int port = (want_port > 0) ? want_port : ct::kDefaultMediaPort;
     if (port < 1 || port > 65535) return false;
     // Platform pool: 239.100.0.1/24 at the selected port. Addresses are
     // scanned in ascending order so allocation is deterministic.
@@ -742,9 +748,9 @@ bool base_subrect(int wall_w, int wall_h, const Rect& node, Rect* out) {
 
 int ptp_max_offset_us() {
     const char* v = std::getenv("DVS_PTP_MAX_OFFSET_US");
-    if (!v || !*v) return 2000;
+    if (!v || !*v) return ct::kPtpMaxOffsetUsDefault;
     int n = atoi(v);
-    return n > 0 ? n : 2000;
+    return n > 0 ? n : ct::kPtpMaxOffsetUsDefault;
 }
 
 bool node_clock_ok(json_object* node, std::string* reason) {
@@ -824,18 +830,104 @@ bool barrier_lanes_frame_consistent(json_object* lanes, int64_t* seq_out) {
 
 int fanout_parallelism() {
     const char* v = std::getenv("DVS_FANOUT_PARALLEL");
-    if (!v || !*v) return 8;
+    if (!v || !*v) return ct::kFanoutParallelDefault;
     int n = atoi(v);
     if (n < 1) return 1;
-    if (n > 16) return 16;
+    if (n > ct::kFanoutParallelMax) return ct::kFanoutParallelMax;
     return n;
 }
 
 int max_wall_members() {
     const char* v = std::getenv("DVS_MAX_WALL_MEMBERS");
-    if (!v || !*v) return 128;
+    if (!v || !*v) return ct::kMaxWallMembersDefault;
     int n = atoi(v);
-    return n > 0 ? n : 128;
+    return n > 0 ? n : ct::kMaxWallMembersDefault;
+}
+
+static int env_int(const char* k, int dflt, int lo, int hi) {
+    const char* v = std::getenv(k);
+    if (!v || !*v) return dflt;
+    int n = atoi(v);
+    if (n < lo) return lo;
+    if (n > hi) return hi;
+    return n;
+}
+
+uint64_t op_ttl_ns() {
+    int h = env_int("DVS_OP_TTL_HOURS", 24, 1, 24 * 30);
+    return (uint64_t)h * 3600ULL * 1000000000ULL;
+}
+
+int sweeper_tick_sec() { return env_int("DVS_SWEEPER_TICK_SEC", 1, 1, 60); }
+
+int gc_interval_sec() { return env_int("DVS_GC_INTERVAL_SEC", 3600, 60, 24 * 3600); }
+
+int64_t wall_retention_sec() {
+    int d = env_int("DVS_WALL_RETENTION_DAYS", 7, 1, 90);
+    return (int64_t)d * 24 * 3600;
+}
+
+int tombstone_ttl_sec() {
+    int d = env_int("DVS_TOMBSTONE_TTL_DAYS", 30, 1, 365);
+    return d * 24 * 3600;
+}
+
+int audit_keep_rows() { return env_int("DVS_AUDIT_KEEP_ROWS", 5000, 100, 100000); }
+
+int default_volume() { return env_int("DVS_DEFAULT_VOLUME", ct::kDefaultVolume, 0, 100); }
+
+double default_fps() {
+    const char* v = std::getenv("DVS_DEFAULT_FPS");
+    if (!v || !*v) return ct::kDefaultFps;
+    double f = atof(v);
+    if (!(f > 0.0) || f > 240.0) return ct::kDefaultFps;
+    return f;
+}
+
+uint64_t apply_guard_floor_ns() {
+    int ms = env_int("DVS_APPLY_GUARD_FLOOR_MS", 50, 10, 1000);
+    return (uint64_t)ms * 1000000ULL;
+}
+
+std::string platform_new_doc_id(const std::string& kind) {
+    static thread_local std::mt19937_64 rng{std::random_device{}()};
+    uint64_t hi = (uint64_t)dvs::wall_ns_now();
+    uint64_t lo = rng();
+    char b[64];
+    snprintf(b, sizeof(b), "%s-%08llx%08llx", kind.c_str(),
+             (unsigned long long)(hi & 0xffffffffULL),
+             (unsigned long long)(lo & 0xffffffffULL));
+    return b;
+}
+
+std::string base_image_cache_key(const std::string& wall_id,
+                                 const std::string& revision) {
+    return wall_id + ":" + revision;
+}
+
+std::string base_image_node_cache_key(const std::string& wall_id,
+                                      const std::string& revision,
+                                      const std::string& node_id) {
+    return wall_id + ":" + revision + ":" + node_id;
+}
+
+std::string node_shortfall_reason(json_object* node, bool has_channel) {
+    if (!node) return "unknown-node";
+    json_object* geo = nullptr;
+    if (!json_object_object_get_ex(node, "geometry", &geo) || !geo ||
+        dvs::json_rect_int(geo, "w") <= 0 ||
+        dvs::json_rect_int(geo, "h") <= 0)
+        return "no-geometry";
+    if (!has_channel) return "no-channel";
+    return "";
+}
+
+json_object* node_shortfall_json(const std::string& node,
+                                 const std::string& reason) {
+    json_object* o = json_object_new_object();
+    json_object_object_add(o, "node", json_object_new_string(node.c_str()));
+    json_object_object_add(o, "reason", json_object_new_string(reason.c_str()));
+    return o;
 }
 
 void wall_px_of(json_object* wall, int* w, int* h) {
@@ -868,7 +960,7 @@ double wall_fps_of(json_object* wall) {
         double f = json_object_get_double(v);
         if (f > 0.0) return f;
     }
-    return 60.0;
+    return default_fps();
 }
 
 namespace {

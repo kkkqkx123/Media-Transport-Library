@@ -16,7 +16,7 @@
 void handle_platform_request(PlatformContext& ctx, const HttpRequest& req,
                              HttpResponse& res) {
     if (req.path.rfind("/api/", 0) == 0 && req.method != "GET" &&
-        !dvs::http_bearer_ok(req, ctx.api_token)) {
+        !platform_mutation_allowed(ctx, req)) {
         dvs::send_json(res,
                   dvs::envelope_fail("UNAUTHORIZED", 401, "missing or bad token"));
         return;
@@ -31,7 +31,7 @@ void handle_platform_request(PlatformContext& ctx, const HttpRequest& req,
     }
     const char* kinds[] = {"groups", "walls", "scenes", "bindings",
                            "whitelist", "playback-tasks"};
-    DocsCtx docs_ctx{ctx.store, &ctx.ops, &ctx.ops_mu};
+    DocsCtx docs_ctx{ctx.store, &ctx.ops, &ctx.ops_mu, &ctx.alloc_mu};
     for (auto k : kinds)
         if (route_docs(docs_ctx, k, req, res)) return;
     if (req.method == "GET" &&

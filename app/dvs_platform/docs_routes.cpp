@@ -3,6 +3,7 @@
 // barrier, gateway and upgrade paths stay in main.cpp.
 #include "docs_routes.h"
 
+#include "dvs_contract.h"
 #include "dvs_http_json.h"
 #include "layout.h"
 
@@ -42,26 +43,28 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
         return true;
     }
     if (req.method == "POST" || req.method == "PUT") {
+        // Serialize admission + id generation + store so concurrent creates
+        // cannot collide on names, addresses or random ids.
+        std::unique_lock<std::mutex> alloc_lk;
+        if (ctx.alloc_mu) alloc_lk = std::unique_lock<std::mutex>(*ctx.alloc_mu);
         std::string ikey = dvs::idempotency_key(req);
         std::string cache_key;
         if (!ikey.empty()) {
-            cache_key = req.method + " " + req.path + "#" + ikey;
             std::lock_guard<std::mutex> lk(g_idem_mu);
-            auto it = g_idem_cache.find(cache_key);
+            auto it = g_idem_cache.find(req.method + " " + req.path + "#" + ikey);
             if (it != g_idem_cache.end()) {
                 res.body = it->second;
                 res.content_type = "application/json; charset=utf-8";
                 return true;
             }
+            cache_key = req.method + " " + req.path + "#" + ikey;
         }
         json_object* b = json_tokener_parse(req.body.c_str());
         if (!b) b = json_object_new_object();
         if (id.empty()) {
             id = dvs::json_get_str(b, "id");
             if (id.empty()) {
-                char nb[32];
-                snprintf(nb, sizeof(nb), "%s-%ld", kind.c_str(), (long)dvs::wall_sec_now());
-                id = nb;
+                id = platform_new_doc_id(kind);
                 json_object_object_add(b, "id", json_object_new_string(id.c_str()));
             }
         }
@@ -110,9 +113,8 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
             }
             if (old) json_object_put(old);
             if (verr.empty()) {
-                // Wall name unique within its group.
+                // Wall name unique within its group (canonical groupId only).
                 std::string g = dvs::json_get_str(b, "groupId");
-                if (g.empty()) g = dvs::json_get_str(b, "group");
                 std::string want = docs_lower(docs_trim(dvs::json_get_str(b, "name")));
                 for (auto& wid : ctx.store->list_ids("walls")) {
                     if (wid == id) continue;
@@ -120,7 +122,6 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
                     if (!w) continue;
                     if (wall_is_deleted(w)) { json_object_put(w); continue; }
                     std::string wg = dvs::json_get_str(w, "groupId");
-                    if (wg.empty()) wg = dvs::json_get_str(w, "group");
                     bool dup = (!g.empty() && wg == g &&
                                 docs_lower(docs_trim(dvs::json_get_str(w, "name"))) == want);
                     json_object_put(w);
@@ -309,7 +310,7 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
                 int port = 0;
                 whitelist_addr_port(b, &addr, &port);
                 if (port <= 0) {
-                    port = 50010;
+                    port = dvs::contract::kDefaultMediaPort;
                     json_object_object_del(b, "port");
                     json_object_object_add(b, "port", json_object_new_int(port));
                 }
@@ -320,7 +321,7 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
                     std::string oa;
                     int op = 0;
                     whitelist_addr_port(o, &oa, &op);
-                    if (op <= 0) op = 50010;
+                    if (op <= 0) op = dvs::contract::kDefaultMediaPort;
                     bool dup = (!addr.empty() && oa == addr && op == port);
                     json_object_put(o);
                     if (dup) { verr = "CONFLICT:multicast address+port already used"; break; }
@@ -336,46 +337,9 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
                 }
             }
         } else if (kind == "playback-tasks") {
-            // Alias normalization at the boundary (frontend/test dialects):
-            // wall/scene/node and targetNodeIds[] fold to the canonical
-            // wallId/sceneId/targetNodeId before the strict validator runs.
-            // A multi-node targetNodeIds is rejected loudly: one playback
-            // task drives exactly one output box.
-            {
-                json_object* av = nullptr;
-                if (!dvs::json_get_str(b, "wallId").size() &&
-                    json_object_object_get_ex(b, "wall", &av) && av &&
-                    json_object_is_type(av, json_type_string)) {
-                    json_object_object_add(b, "wallId", json_object_get(av));
-                    json_object_object_del(b, "wall");
-                }
-                if (!dvs::json_get_str(b, "sceneId").size() &&
-                    json_object_object_get_ex(b, "scene", &av) && av &&
-                    json_object_is_type(av, json_type_string)) {
-                    json_object_object_add(b, "sceneId", json_object_get(av));
-                    json_object_object_del(b, "scene");
-                }
-                if (!dvs::json_get_str(b, "targetNodeId").size()) {
-                    if (json_object_object_get_ex(b, "node", &av) && av &&
-                        json_object_is_type(av, json_type_string)) {
-                        json_object_object_add(b, "targetNodeId",
-                                               json_object_get(av));
-                        json_object_object_del(b, "node");
-                    } else if (json_object_object_get_ex(b, "targetNodeIds", &av) &&
-                               av && json_object_is_type(av, json_type_array)) {
-                        size_t tn = json_object_array_length(av);
-                        if (tn == 1) {
-                            json_object* e0 = json_object_array_get_idx(av, 0);
-                            if (e0 && json_object_is_type(e0, json_type_string))
-                                json_object_object_add(b, "targetNodeId",
-                                                       json_object_get(e0));
-                            json_object_object_del(b, "targetNodeIds");
-                        } else if (tn > 1) {
-                            verr = "INVALID_ARGUMENT:playback task takes one targetNodeId";
-                        }
-                    }
-                }
-            }
+            // Strict contract: canonical wallId/sceneId/targetNodeId only.
+            // Frontend dialects (wall/scene/node/targetNodeIds) are rejected
+            // by the shape validator instead of being silently normalized.
             if (verr.empty()) verr = validate_playback_shape(b);
             std::string want_st = playback_status_of(b);
             if (want_st.empty()) want_st = "pending_check";
@@ -432,7 +396,7 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
                 json_object_object_add(sc, "wallId", json_object_new_string(id.c_str()));
                 json_object_object_add(sc, "name", json_object_new_string("default"));
                 json_object_object_add(sc, "snapshotVersion", json_object_new_int(1));
-                json_object_object_add(sc, "volume", json_object_new_int(80));
+                json_object_object_add(sc, "volume", json_object_new_int(default_volume()));
                 json_object_object_add(sc, "layoutMode", json_object_new_string("free"));
                 json_object_object_add(sc, "windows", json_object_new_array());
                 ctx.store->put_doc("scenes", sid, sc);
@@ -469,7 +433,6 @@ bool route_docs(DocsCtx& ctx, const std::string& kind, const HttpRequest& req,
                 bool hit = false;
                 if (!wall_is_deleted(w)) {
                     std::string g = dvs::json_get_str(w, "groupId");
-                    if (g.empty()) g = dvs::json_get_str(w, "group");
                     hit = (g == id);
                 }
                 json_object_put(w);

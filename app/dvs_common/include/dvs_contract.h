@@ -44,6 +44,27 @@ bool bearer_ok(const std::string& provided, const std::string& expected);
 std::string extract_bearer(const std::map<std::string, std::string>& headers);
 std::string strip_bearer(const std::string& v);
 
+// 跨端预算与默认（平台/代理/引擎同口径，唯一来源）。
+// 平台侧布局、代理侧校验、引擎侧能力均引用此处，禁止各自复述字面量。
+inline constexpr int kDefaultMediaPort = 50010;
+inline constexpr double kDefaultFps = 60.0;
+inline constexpr int kDefaultVolume = 80;
+inline constexpr int kMaxWindowsPerNode = 4;
+inline constexpr int kMinWindowSide = 64;
+inline constexpr int kFanoutParallelDefault = 8;
+inline constexpr int kFanoutParallelMax = 16;
+inline constexpr int kMaxWallMembersDefault = 128;
+inline constexpr int kPtpMaxOffsetUsDefault = 2000;
+inline constexpr int kWallRowsMax = 6;
+inline constexpr int kWallColsMax = 15;
+inline constexpr int kWallPixelsMin = 64;
+inline constexpr int kWallPixelsMax = 7680;
+inline constexpr int kBaseImageRevLenMax = 64;
+inline constexpr int kBaseImagePixelsMin = 64;
+inline constexpr int kBaseImageWMax = 7680;
+inline constexpr int kBaseImageHMax = 4320;
+inline constexpr int kBaseImageUrlMax = 1024;
+
 // 媒体面规范错误码（与 docs/req/06 第 4 节对齐）。通道 data 中出现
 // reason/message 字段时优先使用这些码，调用方只做透传与审计。
 namespace media_err {

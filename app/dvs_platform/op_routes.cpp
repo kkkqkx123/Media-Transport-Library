@@ -17,16 +17,14 @@
 
 namespace ct = dvs::contract;
 
-namespace {
-// Admission floor for degenerate rects; the per-node window budget is
-// enforced per member canvas at prepare, never on the wall-global count.
-const int kMinWindowSize = 64;
-}  // namespace
-
 bool route_ops(PlatformContext& ctx, const HttpRequest& req,
                HttpResponse& res) {
     if (req.method == "POST" && req.path == "/api/v1/ops/prepare") {
-        if (!dvs::require_bearer(req, res, ctx.api_token)) return true;
+        if (!platform_mutation_allowed(ctx, req)) {
+            dvs::send_json(res, dvs::envelope_fail("UNAUTHORIZED", 401,
+                                                   "missing or bad token"));
+            return true;
+        }
         json_object* b = json_tokener_parse(req.body.c_str());
         std::string opid = dvs::json_get_str(b, "operationId");
         int rev = 1;
@@ -34,9 +32,7 @@ bool route_ops(PlatformContext& ctx, const HttpRequest& req,
         if (b && json_object_object_get_ex(b, "revision", &v))
             rev = json_object_get_int(v);
         std::string wall_id = dvs::json_get_str(b, "wallId");
-        if (wall_id.empty()) wall_id = dvs::json_get_str(b, "wall");
         std::string scene_id = dvs::json_get_str(b, "sceneId");
-        if (scene_id.empty()) scene_id = dvs::json_get_str(b, "scene");
         std::set<std::string> members;
         json_object* arr = nullptr;
         if (b && json_object_object_get_ex(b, "members", &arr) &&
@@ -52,10 +48,10 @@ bool route_ops(PlatformContext& ctx, const HttpRequest& req,
             return true;
         }
         int wall_w = 0, wall_h = 0;
-        double fps = 60.0;
+        double fps = default_fps();
         int wall_applied = 0;
         int64_t wall_epoch = 0;
-        int wall_min_side = kMinWindowSize;
+        int wall_min_side = ct::kMinWindowSide;
         std::string wall_base_json;
         std::string wall_adjust_json;
         std::set<std::string> pending;
@@ -123,7 +119,6 @@ bool route_ops(PlatformContext& ctx, const HttpRequest& req,
                 std::string sw;
                 if (sc) {
                     sw = dvs::json_get_str(sc, "wallId");
-                    if (sw.empty()) sw = dvs::json_get_str(sc, "wall");
                     json_object_put(sc);
                 }
                 if (!sc || sw != wall_id) {
@@ -256,7 +251,7 @@ bool route_ops(PlatformContext& ctx, const HttpRequest& req,
                 }
             }
         }
-        int volume = 80;
+        int volume = default_volume();
         if (b && json_object_object_get_ex(b, "volume", &v) && v)
             volume = json_object_get_int(v);
         if (!validate_volume(volume).empty()) {
@@ -329,16 +324,14 @@ bool route_ops(PlatformContext& ctx, const HttpRequest& req,
         for (const auto& mid : members) {
             json_object* nd = ctx.store->get_doc("node", mid);
             std::string ab = nd ? dvs::json_get_str(nd, "agentBase") : "";
-            json_object* geo = nullptr;
-            if (nd) json_object_object_get_ex(nd, "geometry", &geo);
-            bool geo_ok =
-                geo && dvs::json_rect_int(geo, "w") > 0 && dvs::json_rect_int(geo, "h") > 0;
             bool has_chan = (ctx.channels.fd_of(mid) >= 0) || !ab.empty();
-            if (!nd || !geo_ok || !has_chan) {
+            std::string reason = node_shortfall_reason(nd, has_chan);
+            if (!reason.empty()) {
                 json_object_array_add(missing,
-                                      json_object_new_string(mid.c_str()));
+                                      node_shortfall_json(mid, reason));
                 ctx.store->audit("{\"fanout-skip\":\"" + dvs::json_escape(mid) +
-                                 "\",\"reason\":\"no channel/geometry\"}");
+                                 "\",\"reason\":\"" +
+                                 dvs::json_escape(reason) + "\"}");
             }
             if (nd) json_object_put(nd);
         }
@@ -377,7 +370,11 @@ bool route_ops(PlatformContext& ctx, const HttpRequest& req,
         return true;
     }
     if (req.method == "POST" && req.path == "/api/v1/ops/commit") {
-        if (!dvs::require_bearer(req, res, ctx.api_token)) return true;
+        if (!platform_mutation_allowed(ctx, req)) {
+            dvs::send_json(res, dvs::envelope_fail("UNAUTHORIZED", 401,
+                                                   "missing or bad token"));
+            return true;
+        }
         json_object* b = json_tokener_parse(req.body.c_str());
         std::string verr =
             b ? ct::validate_barrier_ack(b) : "INVALID_ARGUMENT:empty body";
@@ -392,8 +389,9 @@ bool route_ops(PlatformContext& ctx, const HttpRequest& req,
         json_object* lanes = nullptr;
         if (b) json_object_object_get_ex(b, "lanes", &lanes);
         std::set<std::string> still_missing;
-        std::string state =
-            handle_barrier_ack(ctx, opid, node, st, lanes, still_missing, b);
+        std::string block_reason;
+        std::string state = handle_barrier_ack(ctx, opid, node, st, lanes,
+                                              still_missing, b, &block_reason);
         uint64_t apply_ns = 0;
         int64_t frame_index = -1;
         bool known = false;
@@ -428,6 +426,11 @@ bool route_ops(PlatformContext& ctx, const HttpRequest& req,
                                    json_object_new_string(rb.c_str()));
             json_object_object_add(d, "toRevision",
                                    json_object_new_int(to_rev));
+            json_object_object_add(
+                d, "reason",
+                json_object_new_string(block_reason.empty()
+                                           ? "barrier-blocked"
+                                           : block_reason.c_str()));
             dvs::send_json(res, dvs::envelope_ok(d, "rolled back"));
             return true;
         }
@@ -447,7 +450,11 @@ bool route_ops(PlatformContext& ctx, const HttpRequest& req,
         return true;
     }
     if (req.method == "POST" && req.path == "/api/v1/ops/config-ack") {
-        if (!dvs::require_bearer(req, res, ctx.api_token)) return true;
+        if (!platform_mutation_allowed(ctx, req)) {
+            dvs::send_json(res, dvs::envelope_fail("UNAUTHORIZED", 401,
+                                                   "missing or bad token"));
+            return true;
+        }
         json_object* b = json_tokener_parse(req.body.c_str());
         std::string verr =
             b ? ct::validate_config_ack(b) : "INVALID_ARGUMENT:empty body";
@@ -465,7 +472,11 @@ bool route_ops(PlatformContext& ctx, const HttpRequest& req,
         return true;
     }
     if (req.method == "POST" && req.path == "/api/v1/ops/upgrade-progress") {
-        if (!dvs::require_bearer(req, res, ctx.api_token)) return true;
+        if (!platform_mutation_allowed(ctx, req)) {
+            dvs::send_json(res, dvs::envelope_fail("UNAUTHORIZED", 401,
+                                                   "missing or bad token"));
+            return true;
+        }
         json_object* b = json_tokener_parse(req.body.c_str());
         std::string verr = b ? ct::validate_upgrade_progress(b)
                              : "INVALID_ARGUMENT:empty body";

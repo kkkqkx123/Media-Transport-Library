@@ -12,7 +12,7 @@ struct LayoutDelivery {
     bool via_ws = false;
     int http_status = 0;  // meaningful when sent && !via_ws
     bool skipped = false;
-    std::string skip_reason;  // "no node doc" / "no geometry" / "no channel"
+    std::string skip_reason;  // "unknown-node" / "no-geometry" / "no-channel"
 };
 
 // Deliver one per-node layout.prepare payload: WS first, short HTTP to the

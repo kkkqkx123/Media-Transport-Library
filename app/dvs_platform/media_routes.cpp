@@ -2,8 +2,10 @@
 
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <set>
 
+#include "dvs_contract.h"
 #include "dvs_http_json.h"
 #include "layout.h"
 #include "platform_context.h"
@@ -118,7 +120,7 @@ bool route_media(PlatformContext& ctx, const HttpRequest& req,
                                json_object_new_string(bver.c_str()));
         json_object_object_add(d, "revision",
                                json_object_new_string(bver.c_str()));
-        std::string cache_key = wid + ":" + bver + ":" + node_id;
+        std::string cache_key = base_image_node_cache_key(wid, bver, node_id);
         json_object_object_add(d, "cacheKey",
                                json_object_new_string(cache_key.c_str()));
         json_object_object_add(d, "wallW", json_object_new_int(ww));
@@ -193,9 +195,16 @@ bool route_media(PlatformContext& ctx, const HttpRequest& req,
         }
     }
     if (req.method == "POST" && req.path == "/api/v1/whitelist/allocate") {
+        std::lock_guard<std::mutex> alk(ctx.alloc_mu);
         json_object* b = json_tokener_parse(req.body.c_str());
         if (!b) b = json_object_new_object();
         std::string sig = dvs::json_get_str(b, "sig");
+        if (sig.empty()) {
+            json_object_put(b);
+            dvs::send_json(res, dvs::envelope_fail("INVALID_ARGUMENT", 400,
+                                         "whitelist missing sig"));
+            return true;
+        }
         int want_port = 0;
         json_object* pv = nullptr;
         if (json_object_object_get_ex(b, "port", &pv) && pv)
@@ -225,14 +234,14 @@ bool route_media(PlatformContext& ctx, const HttpRequest& req,
             std::string a;
             int p = 0;
             whitelist_addr_port(o, &a, &p);
-            if (p <= 0) p = 50010;
+            if (p <= 0) p = dvs::contract::kDefaultMediaPort;
             if (!a.empty()) used.insert({a, p});
             json_object_put(o);
         }
         std::string addr;
         int port = 0;
         if (!want_addr.empty()) {
-            if (want_port <= 0) want_port = 50010;
+            if (want_port <= 0) want_port = dvs::contract::kDefaultMediaPort;
             if (want_port < 1 || want_port > 65535) {
                 json_object_put(b);
                 dvs::send_json(res, dvs::envelope_fail("INVALID_ARGUMENT", 400,
@@ -257,12 +266,6 @@ bool route_media(PlatformContext& ctx, const HttpRequest& req,
             }
         }
         std::string id = sig;
-        if (id.empty()) {
-            char nb[48];
-            snprintf(nb, sizeof(nb), "wl-%ld", (long)dvs::wall_sec_now());
-            id = nb;
-            sig = id;
-        }
         json_object* doc = json_object_new_object();
         json_object_object_add(doc, "id", json_object_new_string(id.c_str()));
         json_object_object_add(doc, "sig",
@@ -312,7 +315,6 @@ bool route_media(PlatformContext& ctx, const HttpRequest& req,
         json_object* b = json_tokener_parse(req.body.c_str());
         if (!b) b = json_object_new_object();
         std::string rev = dvs::json_get_str(b, "revision");
-        if (rev.empty()) rev = dvs::json_get_str(b, "baseImageRevision");
         int bw = 0, bh = 0;
         json_object* v = nullptr;
         if (json_object_object_get_ex(b, "width", &v) && v)
@@ -320,9 +322,15 @@ bool route_media(PlatformContext& ctx, const HttpRequest& req,
         if (json_object_object_get_ex(b, "height", &v) && v)
             bh = json_object_get_int(v);
         std::string url = dvs::json_get_str(b, "url");
-        bool bad = rev.empty() || rev.size() > 64 ||
-                   (bw != 0 && (bw < 64 || bw > 7680)) ||
-                   (bh != 0 && (bh < 64 || bh > 4320)) || url.size() > 512;
+        bool bad = rev.empty() ||
+                   rev.size() > (size_t)dvs::contract::kBaseImageRevLenMax ||
+                   (bw != 0 &&
+                    (bw < dvs::contract::kBaseImagePixelsMin ||
+                     bw > dvs::contract::kBaseImageWMax)) ||
+                   (bh != 0 &&
+                    (bh < dvs::contract::kBaseImagePixelsMin ||
+                     bh > dvs::contract::kBaseImageHMax)) ||
+                   url.size() > (size_t)dvs::contract::kBaseImageUrlMax;
         if (bad) {
             json_object_put(b);
             dvs::send_json(res,
@@ -385,8 +393,9 @@ bool route_media(PlatformContext& ctx, const HttpRequest& req,
         std::string rev = dvs::json_get_str(d, "revision");
         json_object_object_add(d, "wallId",
                                json_object_new_string(wid.c_str()));
-        json_object_object_add(d, "cacheKey",
-                               json_object_new_string((wid + ":" + rev).c_str()));
+        json_object_object_add(
+            d, "cacheKey",
+            json_object_new_string(base_image_cache_key(wid, rev).c_str()));
         dvs::send_json(res, dvs::envelope_ok(d, "base-image-version"));
         return true;
     }

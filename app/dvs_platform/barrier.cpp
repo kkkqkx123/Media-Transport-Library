@@ -12,13 +12,27 @@ std::string handle_barrier_ack(PlatformContext& ctx, const std::string& opid,
                               const std::string& node, std::string st,
                               json_object* lanes,
                               std::set<std::string>& missing_out,
-                              json_object* ack) {
+                              json_object* ack,
+                              std::string* block_reason_out) {
+    auto note_block = [&](const std::string& r) {
+        if (block_reason_out && block_reason_out->empty())
+            *block_reason_out = r;
+    };
     if (st.empty()) st = "ready";
-    if (st != "ready") st = "blocked";
-    if (!barrier_lanes_ready(lanes)) st = "blocked";
+    if (st != "ready") {
+        st = "blocked";
+        note_block("ack-not-ready");
+    }
+    if (!barrier_lanes_ready(lanes)) {
+        st = "blocked";
+        note_block("lanes-not-ready");
+    }
     {
         int64_t seq = 0;
-        if (!barrier_lanes_frame_consistent(lanes, &seq)) st = "blocked";
+        if (!barrier_lanes_frame_consistent(lanes, &seq)) {
+            st = "blocked";
+            note_block("frame-inconsistent");
+        }
     }
     {
         json_object* nd =
@@ -28,6 +42,7 @@ std::string handle_barrier_ack(PlatformContext& ctx, const std::string& opid,
         if (nd) json_object_put(nd);
         if (!ok) {
             st = "blocked";
+            note_block("clock-unsynced");
             if (ctx.store)
                 ctx.store->audit("{\"commit-clock-blocked\":\"" +
                                  dvs::json_escape(node) + "\",\"reason\":\"" +
@@ -52,6 +67,7 @@ std::string handle_barrier_ack(PlatformContext& ctx, const std::string& opid,
             int64_t got = json_object_get_int64(fv);
             if (got != want_frame) {
                 st = "blocked";
+                note_block("frame-mismatch");
                 if (ctx.store)
                     ctx.store->audit("{\"commit-frame-mismatch\":\"" +
                                      dvs::json_escape(node) + "\",\"want\":" +
@@ -66,6 +82,7 @@ std::string handle_barrier_ack(PlatformContext& ctx, const std::string& opid,
                                : (json_object_get_int(late) != 0);
             if (is_late) {
                 st = "blocked";
+                note_block("frame-late");
                 if (ctx.store)
                     ctx.store->audit("{\"commit-frame-late\":\"" +
                                      dvs::json_escape(node) + "\"}");

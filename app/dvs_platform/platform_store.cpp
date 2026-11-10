@@ -1,11 +1,25 @@
 #include "platform_store.h"
 
+#include <cstdlib>
 #include <sys/stat.h>
 #include <cstdio>
 
 namespace {
-const int64_t kTombstoneTtlSec = 30LL * 24 * 3600;
-const int kAuditKeepRows = 5000;
+int env_int_local(const char* k, int dflt, int lo, int hi) {
+    const char* v = std::getenv(k);
+    if (!v || !*v) return dflt;
+    int n = atoi(v);
+    if (n < lo) return lo;
+    if (n > hi) return hi;
+    return n;
+}
+int64_t tombstone_ttl_sec_local() {
+    int d = env_int_local("DVS_TOMBSTONE_TTL_DAYS", 30, 1, 365);
+    return (int64_t)d * 24 * 3600;
+}
+int audit_keep_rows_local() {
+    return env_int_local("DVS_AUDIT_KEEP_ROWS", 5000, 100, 100000);
+}
 void ensure_parent_dir(const std::string& path) {
     if (path.empty() || path == ":memory:") return;
     size_t slash = path.find_last_of('/');
@@ -118,7 +132,7 @@ void PlatformStore::audit(const std::string& event_json) {
     char* err = nullptr;
     std::string trim =
         "DELETE FROM audit_log WHERE seq <= (SELECT MAX(seq)-" +
-        std::to_string(kAuditKeepRows) + " FROM audit_log)";
+        std::to_string(audit_keep_rows_local()) + " FROM audit_log)";
     sqlite3_exec(db_, trim.c_str(), nullptr, nullptr, &err);
     if (err) sqlite3_free(err);
 }
@@ -129,7 +143,7 @@ void PlatformStore::audit_trim() {
     char* err = nullptr;
     std::string trim =
         "DELETE FROM audit_log WHERE seq <= (SELECT MAX(seq)-" +
-        std::to_string(kAuditKeepRows) + " FROM audit_log)";
+        std::to_string(audit_keep_rows_local()) + " FROM audit_log)";
     sqlite3_exec(db_, trim.c_str(), nullptr, nullptr, &err);
     if (err) sqlite3_free(err);
 }
@@ -158,7 +172,7 @@ void PlatformStore::tombstone_add(const std::string& id, int64_t now_sec) {
     sqlite3_prepare_v2(db_, "INSERT OR REPLACE INTO tombstones(id,expires_at)"
                             " VALUES(?,?)", -1, &st, nullptr);
     sqlite3_bind_text(st, 1, id.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st, 2, now_sec + kTombstoneTtlSec);
+    sqlite3_bind_int64(st, 2, now_sec + tombstone_ttl_sec_local());
     sqlite3_step(st);
     sqlite3_finalize(st);
 }

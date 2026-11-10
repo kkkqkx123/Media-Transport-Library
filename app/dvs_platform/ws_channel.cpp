@@ -67,8 +67,11 @@ void ws_channel_loop(PlatformContext& ctx, int fd, HttpRequest hs_req) {
         hello_tok = json_object_get_string(tokv);
     std::string provided = !hello_tok.empty() ? hello_tok : hs_bearer;
     std::string verr = ct::validate_hello(data);
-    bool auth = ct::bearer_ok(provided, ctx.api_token);
+    bool auth =
+        !ctx.api_token.empty() && ct::bearer_ok(provided, ctx.api_token);
     std::string node_id = dvs::json_get_str(data, "id");
+    if (verr.empty() && !node_doc_ready(data))
+        verr = "INVALID_ARGUMENT:node not ready: need agentBase + usable geometry";
     if (!verr.empty() || !auth || node_id.empty() ||
         ctx.store->tombstone_check(node_id, dvs::wall_sec_now())) {
         json_object* d = json_object_new_object();
@@ -129,9 +132,7 @@ void ws_channel_loop(PlatformContext& ctx, int fd, HttpRequest hs_req) {
                 send_wrapped(ws_idem_key(mid, tp, dd), ct::kError, d);
             } else {
                 apply_heartbeat_doc(ctx, hid, dd);
-                json_object* ack = json_object_new_object();
-                json_object_object_add(ack, "revision",
-                                       json_object_new_int(1));
+                json_object* ack = heartbeat_ack_for_node(ctx, hid);
                 send_wrapped(ws_idem_key(mid, tp, dd), ct::kAck, ack);
             }
         } else if (tp == ct::kBarrierAck) {
@@ -148,12 +149,13 @@ void ws_channel_loop(PlatformContext& ctx, int fd, HttpRequest hs_req) {
                 json_object* lanes = nullptr;
                 json_object_object_get_ex(dd, "lanes", &lanes);
                 std::set<std::string> miss;
+                std::string block_reason;
                 std::string state = handle_barrier_ack(
                     ctx, opid, node, st,
                     (lanes && json_object_is_type(lanes, json_type_array))
                         ? lanes
                         : nullptr,
-                    miss, dd);
+                    miss, dd, &block_reason);
                 const Operation* op = nullptr;
                 {
                     std::lock_guard<std::mutex> lk(ctx.ops_mu);
@@ -179,6 +181,10 @@ void ws_channel_loop(PlatformContext& ctx, int fd, HttpRequest hs_req) {
                                            json_object_new_string(rb.c_str()));
                     json_object_object_add(ack, "toRevision",
                                            json_object_new_int(to_rev));
+                    if (!block_reason.empty())
+                        json_object_object_add(
+                            ack, "reason",
+                            json_object_new_string(block_reason.c_str()));
                 } else {
                     json_object_object_add(ack, "state",
                                            json_object_new_string(state.c_str()));

@@ -18,6 +18,7 @@ struct DocsCtx {
     PlatformStore* store = nullptr;
     OpCoordinator* ops = nullptr;
     std::mutex* ops_mu = nullptr;
+    std::mutex* alloc_mu = nullptr;
 };
 
 // Returns true when the path belongs to a known kind (handled or rejected

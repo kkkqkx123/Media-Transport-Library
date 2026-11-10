@@ -5,15 +5,20 @@
 class NodeStore;
 class MediaIpcClient;
 
-/* Node maintenance operations: reboot (with pendingRole applied),
- * factory reset (preserves network + registration), and firmware upgrade
- * (SHA-256 verified, A/B staging, old version kept on failure). */
+/* Node maintenance: reboot (pendingRole applied), factory reset (preserves
+ * network + registration), firmware upgrade (SHA-256 verified, staged by
+ * content hash, version from the request package metadata, explicit
+ * confirm required to switch). No shell, no environment gating: dangerous
+ * operations run via direct exec and require {confirm:true}. */
 class Maintenance {
 public:
     Maintenance(NodeStore* store, MediaIpcClient* media);
-    json_object* reboot();
+    json_object* reboot(bool confirm);
     json_object* factory_reset();
-    json_object* upgrade(const std::string& filename, const std::string& sha256_expected);
+    json_object* upgrade(const std::string& filename,
+                         const std::string& sha256_expected,
+                         const std::string& version,
+                         bool confirm);
 
 private:
     NodeStore* store_;

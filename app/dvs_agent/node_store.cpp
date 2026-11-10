@@ -86,48 +86,39 @@ void NodeStore::load() {
     std::string n = get_kv(db_, "node");
     if (n.empty()) {
         // seed
+    // Skeleton seed: identity fields stay empty (unknown) until the
+    // operator provisions them; capability fields stay absent until the
+    // engine reports them. Absent means unreported, never a fake value.
+    // Register refuses to proceed while key identity/capability is missing.
         json_object* seed = json_object_new_object();
         json_object_object_add(seed, "id", json_object_new_string("local-node"));
         json_object_object_add(seed, "name", json_object_new_string("DVS Node"));
         json_object_object_add(seed, "type", json_object_new_string("output"));
         json_object_object_add(seed, "role", json_object_new_string("output"));
-        json_object_object_add(seed, "model", json_object_new_string("DVS-NODE-R1"));
-        json_object_object_add(seed, "board", json_object_new_string("RK-3588"));
-        json_object_object_add(seed, "sn", json_object_new_string("RK3588-LOCAL"));
-        json_object_object_add(seed, "mac", json_object_new_string("00:00:00:00:00:00"));
-        json_object_object_add(seed, "ip", json_object_new_string("127.0.0.1"));
-        json_object_object_add(seed, "fw", json_object_new_string("V1.0.0"));
+        json_object_object_add(seed, "model", json_object_new_string(""));
+        json_object_object_add(seed, "board", json_object_new_string(""));
+        json_object_object_add(seed, "sn", json_object_new_string(""));
+        json_object_object_add(seed, "mac", json_object_new_string(""));
+        json_object_object_add(seed, "ip", json_object_new_string(""));
+        json_object_object_add(seed, "fw", json_object_new_string("unknown"));
         json_object_object_add(seed, "online", json_object_new_boolean(0));
         json_object_object_add(seed, "lastHeartbeat", json_object_new_null());
         json_object_object_add(seed, "registerMode", json_object_new_string("auto"));
         json_object_object_add(seed, "registerState", json_object_new_string("unregistered"));
         json_object_object_add(seed, "network", json_object_new_object());
         json_object* outp = json_object_new_object();
-        /* Ports come only from engine capability reports. Absent means
-         * unreported, empty means the engine reported zero ports. Seeding
-         * local ports here would look like a real report to the frontend. */
-        json_object_object_add(outp, "maxDecodeSessions", json_object_new_int(4));
-        json_object_object_add(outp, "maxLayers", json_object_new_int(4));
-        /* TX static ceiling (SoC limits, not probed). The engine reports the
-         * same shape live; agent merge prefers the engine value per-field. */
-        json_object* txp = json_object_new_object();
-        json_object* codecs = json_object_new_array();
-        json_object_array_add(codecs, json_object_new_string("h264"));
-        json_object_array_add(codecs, json_object_new_string("h265"));
-        json_object_object_add(txp, "codecs", codecs);
-        json_object_object_add(txp, "maxWidth", json_object_new_int(3840));
-        json_object_object_add(txp, "maxHeight", json_object_new_int(2160));
-        json_object_object_add(txp, "maxFps", json_object_new_int(60));
-        json_object_object_add(txp, "maxBitrateKbps", json_object_new_int(20000));
-        json_object_object_add(outp, "tx", txp);
+        /* Capabilities come only from engine reports. Absent means unreported,
+         * empty means the engine reported zero ports. No decode / layer / TX
+         * ceilings are seeded; the engine capability is the only source.
+         * ptp/mtl stay unknown until reported. */
+        json_object_object_add(outp, "probeState", json_object_new_string("unreported"));
         json_object* cap_ptp = json_object_new_object();
         json_object_object_add(cap_ptp, "state", json_object_new_string("unknown"));
         json_object_object_add(cap_ptp, "offsetUs", json_object_new_int(0));
         json_object_object_add(outp, "ptp", cap_ptp);
         json_object* cap_mtl = json_object_new_object();
         json_object_object_add(cap_mtl, "version", json_object_new_string("unknown"));
-        json_object_object_add(cap_mtl, "backend", json_object_new_string("dpdk"));
-        json_object_object_add(outp, "mtl", cap_mtl);
+        json_object_object_add(cap_mtl, "backend", json_object_new_string("unknown"));
         json_object_object_add(seed, "capabilities", outp);
         json_object_object_add(seed, "output", json_object_new_null());
         json_object_object_add(seed, "input", json_object_new_object());
@@ -154,8 +145,26 @@ void NodeStore::load() {
         n = get_kv(db_, "node");
     }
     node_ = json_tokener_parse(n.c_str());
-    /* Backfill sip mode for databases seeded before the probe label. */
+    /* Migrate legacy seeds: fake hardware values become unknown/empty so
+     * the platform never sees them as real reports; probe-only SIP states
+     * recorded as connected become reachable. */
     bool node_dirty = false;
+    auto clear_if = [&](const char* key, const char* fake) {
+        json_object* v = nullptr;
+        if (node_ && json_object_object_get_ex(node_, key, &v) && v &&
+            json_object_is_type(v, json_type_string) &&
+            std::string(json_object_get_string(v)) == fake) {
+            json_object_object_del(node_, key);
+            json_object_object_add(node_, key, json_object_new_string(key == std::string("fw") ? "unknown" : ""));
+            node_dirty = true;
+        }
+    };
+    clear_if("sn", "RK3588-LOCAL");
+    clear_if("mac", "00:00:00:00:00:00");
+    clear_if("ip", "127.0.0.1");
+    clear_if("fw", "V1.0.0");
+    clear_if("model", "DVS-NODE-R1");
+    clear_if("board", "RK-3588");
     {
         json_object* sip = nullptr;
         if (node_ && json_object_object_get_ex(node_, "sip", &sip) && sip &&
@@ -165,6 +174,32 @@ void NodeStore::load() {
                 json_object_object_add(sip, "mode",
                                        json_object_new_string("connectivity-probe"));
                 node_dirty = true;
+            }
+            json_object* sv = nullptr;
+            if (json_object_object_get_ex(sip, "state", &sv) && sv &&
+                json_object_is_type(sv, json_type_string) &&
+                std::string(json_object_get_string(sv)) == "connected") {
+                json_object_object_add(sip, "state", json_object_new_string("reachable"));
+                node_dirty = true;
+            }
+        }
+        json_object* caps = nullptr;
+        if (node_ && json_object_object_get_ex(node_, "capabilities", &caps) && caps &&
+            json_object_is_type(caps, json_type_object)) {
+            json_object* mtl = nullptr;
+            if (json_object_object_get_ex(caps, "mtl", &mtl) && mtl &&
+                json_object_is_type(mtl, json_type_object)) {
+                json_object* bv = nullptr;
+                if (json_object_object_get_ex(mtl, "backend", &bv) && bv &&
+                    json_object_is_type(bv, json_type_string) &&
+                    std::string(json_object_get_string(bv)) == "dpdk") {
+                    json_object* ps = nullptr;
+                    bool probed = json_object_object_get_ex(caps, "probeState", &ps) && ps;
+                    if (!probed) {
+                        json_object_object_add(mtl, "backend", json_object_new_string("unknown"));
+                        node_dirty = true;
+                    }
+                }
             }
         }
     }

@@ -37,8 +37,13 @@ bool net_mask_to_prefix(const std::string& mask, int& prefix, std::string& err);
 /* Interface name allowlist: [A-Za-z0-9._-]{1,16}. */
 bool net_valid_iface(const std::string& iface);
 
-/* Execution gate: env DVS_ALLOW_NETWORK_APPLY=1 AND confirm AND opid. */
+/* Execution gate: explicit {confirm:true} plus a non-empty operationId.
+ * No environment gating: the request body is the operator intent. */
 bool net_execution_requested(bool confirm, const std::string& opid);
+
+/* Test-only fault injection. True only in debug builds with
+ * DVS_FORCE_NETWORK_FAIL=1; release builds never inject. */
+bool net_inject_fail_requested();
 
 /* Render the .network file (pure, unit-tested). */
 std::string net_render_networkd(const NetExecParams& p);

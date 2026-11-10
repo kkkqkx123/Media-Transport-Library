@@ -7,11 +7,15 @@
 struct AgentContext;
 
 /* Browser sessions + per-source login rate limiting + the shared auth gate.
- * Owns: LoginLimiter, SessionStore, session cookie parsing, bearer check,
- * DVS_REQUIRE_AUTH opt-in, and the three auth routes (login/password/logout).
- * Nothing else in the agent mutates session state. */
+ * Owns: LoginLimiter, SessionStore, session cookie parsing, bearer check.
+ * Auth is closed by default. DVS_ALLOW_INSECURE=1 explicitly disables the
+ * gate for single-node debugging; production never sets it. Nothing else
+ * in the agent mutates session state. */
 std::string agent_session_from_cookie(
     const std::map<std::string, std::string>& headers);
+
+/* True when the insecure debug bypass is explicitly enabled. */
+bool agent_auth_insecure();
 
 /* Platform bearer check is dvs::http_bearer_ok(req, ctx.api_token) directly;
  * no local wrapper. */

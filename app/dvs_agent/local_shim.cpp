@@ -1,7 +1,9 @@
 #include "local_shim.h"
 
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <string>
 
 #include "dvs_contract.h"
 #include "dvs_http_json.h"
@@ -53,8 +55,16 @@ void shim_heartbeat(NodeStore* store, json_object* body) {
 
 }  // namespace
 
+static bool shim_mutating_disabled() {
+  const char* v = std::getenv("DVS_DISABLE_LOCAL_SHIM");
+  return v && std::string(v) == "1";
+}
+
 bool route_local_nodes(NodeStore* store, const HttpRequest& req,
                        HttpResponse& res) {
+    // Production disables the mutating shim; read-only GET stays as diagnostics.
+    bool read_only = (req.method == "GET");
+    if (!read_only && shim_mutating_disabled()) return false;
     if (req.method == "GET" && req.path == "/api/v1/nodes") {
         json_object* arr = json_object_new_array();
         json_object_array_add(arr, json_object_get(store->node()));
@@ -75,6 +85,9 @@ bool route_local_nodes(NodeStore* store, const HttpRequest& req,
         return true;
     }
     if (req.method == "POST" && req.path == "/api/v1/nodes/upgrade") {
+        // Debug shim cannot fan out upgrades: report the request as received
+        // without claiming applied, so callers cannot mistake it for the
+        // platform gateway.
         json_object* body = json_tokener_parse(req.body.c_str());
         json_object* ids = nullptr;
         if (body) json_object_object_get_ex(body, "targetNodeIds", &ids);
@@ -88,7 +101,9 @@ bool route_local_nodes(NodeStore* store, const HttpRequest& req,
                     json_object_array_get_idx(ids, i)));
         }
         json_object_object_add(d, "nodeIds", arr);
-        json_object_object_add(d, "status", json_object_new_string("applied"));
+        json_object_object_add(d, "status", json_object_new_string("shim-received"));
+        json_object_object_add(d, "note",
+                               json_object_new_string("local shim, not platform fanout"));
         if (body) json_object_put(body);
         shim_send(res, shim_ok(d));
         return true;
@@ -142,12 +157,13 @@ bool route_local_nodes(NodeStore* store, const HttpRequest& req,
             return true;
         }
         if (req.method == "POST" && action == "retire") {
+            // Local retire only marks lifecycle; binding is cleared to null
+            // so no fake placeholder leaks to the platform.
             json_object* patch = json_object_new_object();
             json_object_object_add(patch, "lifecycle",
                                    json_object_new_string("retired"));
             json_object_object_add(patch, "online", json_object_new_boolean(0));
-            json_object_object_add(patch, "bind",
-                                   json_object_new_string("—"));
+            json_object_object_add(patch, "bind", json_object_new_null());
             store->update_node(patch);
             json_object_put(patch);
             shim_send(res, shim_ok(json_object_get(store->node())));

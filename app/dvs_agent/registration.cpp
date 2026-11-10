@@ -17,6 +17,7 @@
 #include <random>
 #include <string>
 #include "dvs_http_json.h"
+#include "agent_resources.h"
 
 static std::string str_of(json_object* o, const char* key, const char* def = "") {
     json_object* v = nullptr;
@@ -186,17 +187,11 @@ bool Registration::ws_loop_once() {
         ws_.close();
         if (!ws_.connect_ws(ws_channel_url(), token, 5000)) return false;
     }
-    // 首包 hello：问候携带与短连接注册体相同的档案信息。
+    // 首包 hello：问候携带与短连接注册体相同的档案信息。id 已由
+    // build_register 诚实填充（缺失为空），此处不再用占位覆盖。
     json_object* reg = build_register();
     json_object* node = store_->node();
-    json_object* nidv = nullptr;
-    std::string nid = "local-node";
-    if (node) {
-        json_object* iv = nullptr;
-        if (json_object_object_get_ex(node, "id", &iv) && iv) nid = json_object_get_string(iv);
-    }
-    (void)nidv;
-    json_object_object_add(reg, "id", json_object_new_string(nid.c_str()));
+    (void)node;
     if (!token.empty())
         json_object_object_add(reg, "token", json_object_new_string(token.c_str()));
     json_object* hello = ct::wrap(ct::next_msg_id("a"), ct::kHello, reg, ct::next_request_id("a"));
@@ -393,7 +388,63 @@ static std::string control_token() {
     return v ? std::string(v) : std::string();
 }
 
+bool Registration::check_identity_ready(std::string& err_out) const {
+    json_object* node = store_->node();
+    auto need = [&](const char* key) -> bool {
+        json_object* v = nullptr;
+        if (!node || !json_object_object_get_ex(node, key, &v) || !v ||
+            !json_object_is_type(v, json_type_string))
+            return false;
+        std::string sv = json_object_get_string(v);
+        if (sv.empty() || sv == "unknown") return false;
+        if (std::string(key) == "mac" && sv == "00:00:00:00:00:00") return false;
+        if (std::string(key) == "ip" &&
+            (sv == "127.0.0.1" || sv == "::1"))
+            return false;
+        // local-node is the pre-provision placeholder, not an identity.
+        if (std::string(key) == "id" && sv == "local-node") return false;
+        return true;
+    };
+    for (const char* k : {"id", "sn", "mac", "model", "fw"}) {
+        if (!need(k)) {
+            err_out = std::string("missing identity: ") + k;
+            return false;
+        }
+    }
+    json_object* caps = nullptr;
+    if (!node || !json_object_object_get_ex(node, "capabilities", &caps) ||
+        !caps || !json_object_is_type(caps, json_type_object)) {
+        err_out = "missing capabilities (engine unreported)";
+        return false;
+    }
+    json_object* ps = nullptr;
+    if (json_object_object_get_ex(caps, "probeState", &ps) && ps &&
+        json_object_is_type(ps, json_type_string) &&
+        std::string(json_object_get_string(ps)) == "unreported") {
+        err_out = "capabilities unreported (engine never probed)";
+        return false;
+    }
+    // At least one port table or decode ceiling must be present; otherwise
+    // the platform cannot do admission or layout splitting.
+    json_object* ip = nullptr;
+    json_object* op = nullptr;
+    bool has_ports = (json_object_object_get_ex(caps, "inputPorts", &ip) && ip) ||
+                     (json_object_object_get_ex(caps, "outputPorts", &op) && op);
+    json_object* md = nullptr;
+    bool has_decode = json_object_object_get_ex(caps, "maxDecodeSessions", &md) && md;
+    if (!has_ports && !has_decode) {
+        err_out = "capabilities empty (no ports/decoders reported)";
+        return false;
+    }
+    return true;
+}
+
 bool Registration::register_once() {
+    std::string ready_err;
+    if (!check_identity_ready(ready_err)) {
+        fprintf(stderr, "dvs-agent: register refused (%s)\n", ready_err.c_str());
+        return false;
+    }
     std::string token = control_token();
     HttpClient cli;
     json_object* payload = build_register();
@@ -477,13 +528,14 @@ bool Registration::heartbeat_once() {
 json_object* Registration::build_register() {
     json_object* node = store_->node();
     json_object* o = json_object_new_object();
-    /* Identity is the operator-assigned node id; sn stays as hardware info
-     * merged into the platform node doc, never as an identity fallback. */
-    json_object_object_add(o, "id", json_object_new_string(str_of(node, "id", "local-node").c_str()));
-    json_object_object_add(o, "sn", json_object_new_string(str_of(node, "sn", "RK3588-LOCAL").c_str()));
-    json_object_object_add(o, "mac", json_object_new_string(str_of(node, "mac").c_str()));
-    json_object_object_add(o, "model", json_object_new_string(str_of(node, "model", "DVS-NODE-R1").c_str()));
-    json_object_object_add(o, "firmware", json_object_new_string(str_of(node, "fw", "V1.0.0").c_str()));
+    /* Honest identity: empty means unknown, never a fake placeholder. The
+     * readiness gate above guarantees these are provisioned; the fallbacks
+     * below only keep the envelope well-formed for diagnostics. */
+    json_object_object_add(o, "id", json_object_new_string(str_of(node, "id", "").c_str()));
+    json_object_object_add(o, "sn", json_object_new_string(str_of(node, "sn", "").c_str()));
+    json_object_object_add(o, "mac", json_object_new_string(str_of(node, "mac", "").c_str()));
+    json_object_object_add(o, "model", json_object_new_string(str_of(node, "model", "").c_str()));
+    json_object_object_add(o, "firmware", json_object_new_string(str_of(node, "fw", "unknown").c_str()));
     json_object_object_add(o, "role", json_object_new_string(str_of(node, "role", "output").c_str()));
     /* Pending role lets the platform clean bindings/whitelist before reboot. */
     json_object* prv = nullptr;
@@ -522,9 +574,8 @@ json_object* Registration::build_register() {
     json_object* net = nullptr;
     json_object_object_get_ex(node, "network", &net);
     json_object* net_out = net ? json_object_get(net) : json_object_new_object();
-    if (net == nullptr) {
-        json_object_object_add(net_out, "ip", json_object_new_string(str_of(node, "ip", "127.0.0.1").c_str()));
-    }
+    // No loopback injection: without a real network doc the platform sees an
+    // empty object and treats the address as unknown.
     json_object_object_add(o, "network", net_out);
 
     json_object* ptp = json_object_new_object();
@@ -537,7 +588,7 @@ json_object* Registration::build_register() {
 json_object* Registration::build_heartbeat() {
     json_object* node = store_->node();
     json_object* o = json_object_new_object();
-    std::string nid = str_of(node, "id", "local-node");
+    std::string nid = str_of(node, "id", "");
     json_object_object_add(o, "id", json_object_new_string(nid.c_str()));
     json_object_object_add(o, "uptimeSec", json_object_new_int((int)(time(nullptr) - start_time_)));
     json_object_object_add(o, "role", json_object_new_string(str_of(node, "role", "output").c_str()));
@@ -553,7 +604,7 @@ json_object* Registration::build_heartbeat() {
         json_object_object_add(o, "roleCleanup", json_object_new_string(json_object_get_string(rcb)));
     else
         json_object_object_add(o, "roleCleanup", json_object_new_null());
-    json_object_object_add(o, "firmware", json_object_new_string(str_of(node, "fw", "V1.0.0").c_str()));
+    json_object_object_add(o, "firmware", json_object_new_string(str_of(node, "fw", "unknown").c_str()));
 
     /* appliedRevision: max applied across the six scopes */
     int applied = 0;
@@ -688,7 +739,8 @@ json_object* Registration::build_heartbeat() {
         json_object_object_add(o, "sip", so);
     }
 
-    /* resources (best effort): MemTotal parsed by key, not by position. */
+    /* Resources: CPU via double-sample delta shared with /capacity; omitted
+     * when unreadable so the platform never sees a fake zero load. */
     json_object* res = json_object_new_object();
     long mem_kb = 0;
     {
@@ -704,11 +756,29 @@ json_object* Registration::build_heartbeat() {
             }
         }
     }
-    json_object_object_add(res, "cpu", json_object_new_int(0));
+    double cpu_pct = dvs_cpu_percent_blocking(120);
+    if (cpu_pct >= 0)
+        json_object_object_add(res, "cpu", json_object_new_double(cpu_pct));
+    // Absent cpu means unknown; the platform treats a missing key as unknown.
     json_object_object_add(res, "memMb", json_object_new_int((int)(mem_kb / 1024)));
     long temp = read_long_file("/sys/class/thermal/thermal_zone0/temp", 0);
     json_object_object_add(res, "tempC", json_object_new_int((int)(temp / 1000)));
     json_object_object_add(o, "resources", res);
+    /* Capability port signature: lets the platform notice hotplug changes
+     * from the heartbeat without an extra capability poll. */
+    {
+        json_object* caps = nullptr;
+        if (node && json_object_object_get_ex(node, "capabilities", &caps) && caps) {
+            json_object* ip = nullptr;
+            json_object* op = nullptr;
+            json_object_object_get_ex(caps, "inputPorts", &ip);
+            json_object_object_get_ex(caps, "outputPorts", &op);
+            const char* a = ip ? json_object_to_json_string(ip) : "[]";
+            const char* b = op ? json_object_to_json_string(op) : "[]";
+            std::string sig = std::string(a ? a : "[]") + "|" + std::string(b ? b : "[]");
+            json_object_object_add(o, "capsSig", json_object_new_string(sig.c_str()));
+        }
+    }
 
     /* Playback projection for the platform truth: reuse the snapshot folded
      * into the local node doc above so platform pages can render it. */

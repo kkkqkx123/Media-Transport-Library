@@ -1,6 +1,7 @@
 #include "media_ipc.h"
 #include "dvs_node_bundle.h"
 #include "http_client.h"
+#include "sha256.h"
 
 #include <errno.h>
 #include <poll.h>
@@ -12,6 +13,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -551,12 +553,10 @@ bool translate_platform_layout(json_object* body, json_object** prep_out,
             }
         }
     }
-    /* Transport lane budget. Mirrors MP4_PIP_MAX_LANES (rk3588_common
-     * display_layout.h, not a dependency of the agent so restated here).
-     * The tighter per-node admission budget (4) is enforced by the platform
-     * before fanout; this is only the backstop. */
-    static const int kMaxEngineLanes = 8;
-    if (wn > kMaxEngineLanes) {
+    /* Transport lane budget: single source in dvs_node_bundle.h. The tighter
+     * per-node admission budget lives on the platform and is enforced before
+     * fanout; this is only the backstop. */
+    if (wn > DVS_MAX_ENGINE_LANES) {
         err_out = "INVALID_ARGUMENT:too many windows for engine lanes";
         return false;
     }
@@ -754,29 +754,77 @@ bool translate_platform_layout(json_object* body, json_object** prep_out,
         if (json_object_object_get_ex(staged, "revision", &rv) && rv)
             rev = json_object_get_int(rv);
         if (!url.empty() && rev >= 0) {
-            char path[256];
-            snprintf(path, sizeof(path), "/tmp/dvs_base_%d.img", rev);
+            // Cache dir is configurable (DVS_BASE_IMAGE_DIR); the filename
+            // hashes the URL so concurrent revisions cannot collide. An
+            // optional sha256 field is verified; failures are carried as
+            // fetchError so the barrier sees them, not just the log.
+            const char* dir_env = std::getenv("DVS_BASE_IMAGE_DIR");
+            std::string dir =
+                (dir_env && *dir_env) ? std::string(dir_env) : "/var/lib/dvs_agent/base_images";
+            uint8_t uh[32];
+            dvs::sha256((const uint8_t*)url.data(), url.size(), uh);
+            std::string uhex = dvs::to_hex(uh, 32).substr(0, 16);
+            char path[512];
+            snprintf(path, sizeof(path), "%s/base_r%d_%s.img", dir.c_str(),
+                     rev, uhex.c_str());
             struct stat st;
             bool cached = (stat(path, &st) == 0 && st.st_size > 0);
+            std::string fetch_err;
             if (!cached) {
                 HttpClient cli;
                 std::string bytes;
-                if (cli.get(url, bytes, 10000) == 200 && !bytes.empty() &&
-                    bytes.size() <= 8 * 1024 * 1024) {
-                    FILE* f = fopen(path, "wb");
-                    if (f) {
-                        fwrite(bytes.data(), 1, bytes.size(), f);
-                        fclose(f);
-                        cached = true;
+                static const size_t kMaxBaseBytes = 8 * 1024 * 1024;
+                int sc = cli.get(url, bytes, 10000);
+                if (sc == 200 && !bytes.empty() && bytes.size() <= kMaxBaseBytes) {
+                    json_object* hv = nullptr;
+                    std::string want;
+                    if (json_object_object_get_ex(staged, "sha256", &hv) && hv &&
+                        json_object_is_type(hv, json_type_string))
+                        want = json_object_get_string(hv);
+                    bool hash_ok = true;
+                    if (!want.empty()) {
+                        uint8_t dh[32];
+                        dvs::sha256((const uint8_t*)bytes.data(), bytes.size(), dh);
+                        std::string got = dvs::to_hex(dh, 32);
+                        std::string a = got, b = want;
+                        for (auto& c : a) c = (char)tolower((unsigned char)c);
+                        for (auto& c : b) c = (char)tolower((unsigned char)c);
+                        hash_ok = (a == b);
+                        if (!hash_ok) fetch_err = "sha256 mismatch";
                     }
+                    if (hash_ok) {
+                        std::string dcur;
+                        for (size_t i = 0; i < dir.size(); i++) {
+                            dcur.push_back(dir[i]);
+                            if (dir[i] == '/' && dcur.size() > 1)
+                                mkdir(dcur.c_str(), 0755);
+                        }
+                        if (!dcur.empty()) mkdir(dcur.c_str(), 0755);
+                        FILE* f = fopen(path, "wb");
+                        if (f) {
+                            fwrite(bytes.data(), 1, bytes.size(), f);
+                            fclose(f);
+                            cached = (stat(path, &st) == 0 && st.st_size > 0);
+                            if (!cached) fetch_err = "cache write failed";
+                        } else {
+                            fetch_err = "cache open failed";
+                        }
+                    }
+                } else {
+                    fetch_err = (sc != 200) ? "fetch http failed" : "fetch too large";
                 }
-                if (!cached)
-                    fprintf(stderr, "dvs_agent: base image fetch failed (%s)\n",
-                            url.c_str());
+                if (!cached) {
+                    if (fetch_err.empty()) fetch_err = "fetch failed";
+                    fprintf(stderr, "dvs_agent: base image fetch failed (%s): %s\n",
+                            url.c_str(), fetch_err.c_str());
+                }
             }
             if (cached)
                 json_object_object_add(staged, "path",
                                        json_object_new_string(path));
+            else
+                json_object_object_add(staged, "fetchError",
+                                       json_object_new_string(fetch_err.c_str()));
         }
         json_object_object_add(prep, "baseImage", staged);
     }

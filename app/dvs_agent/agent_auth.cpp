@@ -36,8 +36,8 @@ struct LoginLimiter {
   }
 };
 
-/* Issued browser sessions with expiry. Random hex tokens replace the fixed
- * prototype value; logout invalidates. All access under the internal mutex. */
+/* Issued browser sessions with expiry. Random hex tokens; logout invalidates.
+ * All access under the internal mutex. */
 struct SessionStore {
   std::mutex mu;
   std::map<std::string, time_t> exp_;
@@ -99,19 +99,22 @@ std::string agent_session_from_cookie(
   return v;
 }
 
+bool agent_auth_insecure() {
+  const char* v = std::getenv("DVS_ALLOW_INSECURE");
+  return v && std::string(v) == "1";
+}
+
 bool agent_authorized(AgentContext& ctx, const HttpRequest& req) {
-  // Strict auth is opt-in via DVS_REQUIRE_AUTH=1 (default off) so the
-  // node-admin prototype keeps working without a login wall. When enabled,
-  // every /api request except login must carry a valid session cookie.
-  // Browser sessions use the cookie. Internal platform calls use a bearer
-  // token so barrier delivery cannot be forged on a shared LAN.
-  static bool require_auth = (std::getenv("DVS_REQUIRE_AUTH") != nullptr);
-  if (!require_auth) return true;
+  // Closed by default. DVS_ALLOW_INSECURE=1 explicitly restores the old
+  // debug bypass for single-node debugging; production never sets it.
+  // Browser sessions use the cookie. Platform calls use a bearer token that
+  // must be configured (empty token never passes); the two channels are
+  // independent and double-empty never authorizes.
+  if (agent_auth_insecure()) return true;
   if (req.path.rfind("/api/", 0) != 0) return true;
-  if (req.path == "/api/v1/node/login") return true;
-  bool authed =
-      g_sessions.valid(agent_session_from_cookie(req.headers));
-  if (authed) return true;
+  if (req.method == "POST" && req.path == "/api/v1/node/login") return true;
+  if (g_sessions.valid(agent_session_from_cookie(req.headers))) return true;
+  if (ctx.api_token.empty()) return false;
   return dvs::http_bearer_ok(req, ctx.api_token);
 }
 
@@ -151,6 +154,14 @@ bool agent_handle_auth(AgentContext& ctx, const HttpRequest& req,
     return true;
   }
   if (req.method == "POST" && req.path == "/api/v1/node/password") {
+    // Password change is a mutating API: it requires a valid session or
+    // platform bearer in addition to the old password. Login stays the only
+    // open route.
+    if (!agent_authorized(ctx, req)) {
+      dvs::send_json(res, dvs::envelope_fail("UNAUTHORIZED", 401,
+                                              "未登录或缺少令牌", "a"));
+      return true;
+    }
     json_object* body = json_tokener_parse(req.body.c_str());
     std::string user = dvs::json_get_str(body, "username");
     if (user.empty()) user = "admin";  // default account
@@ -173,6 +184,11 @@ bool agent_handle_auth(AgentContext& ctx, const HttpRequest& req,
     return true;
   }
   if (req.method == "POST" && req.path == "/api/v1/node/logout") {
+    if (!agent_authorized(ctx, req)) {
+      dvs::send_json(res, dvs::envelope_fail("UNAUTHORIZED", 401,
+                                              "未登录或缺少令牌", "a"));
+      return true;
+    }
     g_sessions.invalidate(agent_session_from_cookie(req.headers));
     res.headers["Set-Cookie"] = "session=; Path=/; Max-Age=0";
     dvs::send_json(res,

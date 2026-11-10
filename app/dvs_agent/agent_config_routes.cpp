@@ -17,6 +17,7 @@
 #include "agent_context.h"
 #include "agent_media.h"
 #include "dvs_contract.h"
+#include "dvs_node_bundle.h"
 #include "network_apply.h"
 #include "node_store.h"
 #include "registration.h"
@@ -222,9 +223,8 @@ bool tcp_reachable(const std::string& host, int port, int timeout_ms) {
 }
 
 bool intent_log_network(const std::string& intent, std::string& err) {
-  if (std::getenv("DVS_FORCE_NETWORK_FAIL") &&
-      std::string(std::getenv("DVS_FORCE_NETWORK_FAIL")) == "1") {
-    err = "injected failure (DVS_FORCE_NETWORK_FAIL=1)";
+  if (net_inject_fail_requested()) {
+    err = "injected failure (test hook)";
     return false;
   }
   fprintf(stderr, "dvs-agent: network intent stored (system untouched): %s\n",
@@ -236,7 +236,7 @@ bool intent_log_network(const std::string& intent, std::string& err) {
 // every other key is reported as ignored and never stored.
 bool handle_config_sync(AgentContext& ctx, const HttpRequest& req,
                         HttpResponse& res) {
-  if (!dvs::http_bearer_ok(req, ctx.api_token)) {
+  if (ctx.api_token.empty() || !dvs::http_bearer_ok(req, ctx.api_token)) {
     dvs::send_json(res, dvs::envelope_fail("UNAUTHORIZED", 401,
                                             "missing or bad token", "a"));
     return true;
@@ -480,68 +480,88 @@ bool agent_handle_config(AgentContext& ctx, const HttpRequest& req,
           ctx.store->update_node(node_patch);
           json_object_put(node_patch);
           node_patch = json_object_new_object();
+          // Saved vs engine-accepted are distinct: port-only is a local save
+          // (applied); a requested TX stays pending until the async engine
+          // confirmation arrives, same as output.
           bool tx_requested = txp.hasEncode || txp.hasTarget;
           if (!tx_requested) {
             ctx.store->mark_applied(scope, 0);
-            scope_ok_msg = "已保存·采集口已存储（未下发引擎）";
+            scope_ok_msg = "采集口已保存（未请求发送）";
           } else if (!txp.hasEncode || !txp.hasTarget) {
             fail_code = "INVALID_ARGUMENT";
             fail_reason = "发送需同时给出编码与目标参数";
           } else {
             int tx_want_rev =
                 agent_config_desired_revision(ctx, scope, node_id);
-            json_object* rv = json_object_new_object();
-            json_object_object_add(rv, "scope",
-                                   json_object_new_string("role"));
-            json_object* rval = json_object_new_object();
-            json_object_object_add(rval, "role",
-                                   json_object_new_string(cur_role.c_str()));
-            json_object_object_add(rv, "value", rval);
-            std::string rr = agent_media_cmd(ctx, "configure", rv);
-            (void)rr;
-            json_object_put(rv);
-            json_object* payload = tx_start_payload(txp);
-            std::string tr = agent_media_cmd(ctx, "tx_start", payload);
-            json_object_put(payload);
-            json_object* to = json_tokener_parse(tr.c_str());
-            bool ok2 = false;
-            std::string code, msg, state;
-            if (to) {
-              json_object* okv = nullptr;
-              if (json_object_object_get_ex(to, "ok", &okv) && okv)
-                ok2 = json_object_get_boolean(okv) != 0;
-              json_object* cv = nullptr;
-              if (json_object_object_get_ex(to, "code", &cv) && cv)
-                code = json_object_get_string(cv);
-              json_object* mv2 = nullptr;
-              if (json_object_object_get_ex(to, "msg", &mv2) && mv2)
-                msg = json_object_get_string(mv2);
-              json_object* dd = nullptr;
-              if (json_object_object_get_ex(to, "data", &dd) && dd)
-                state = dvs::json_get_str(dd, "state");
-              json_object_put(to);
-            } else {
-              code = "TX_START_UNPARSABLE";
-              msg = "media engine response unparsable";
-            }
-            if (agent_config_desired_revision(ctx, scope, node_id) !=
-                tx_want_rev) {
-              fprintf(stderr,
-                      "dvs-agent: tx_start (%s) stale rev %d vs %d, skip\n",
-                      scope.c_str(), tx_want_rev,
-                      agent_config_desired_revision(ctx, scope, node_id));
-            } else if (!ok2) {
-              fail_code = code.empty() ? "TX_START_FAILED" : code;
-              fail_reason = msg.empty() ? "media engine refused tx start" : msg;
-              ctx.store->mark_failed(scope, fail_code.c_str(),
-                                    fail_reason.c_str());
-            } else if (state == "running") {
-              ctx.store->mark_applied(scope, 0);
-              scope_ok_msg = "输入采集发送已启动";
-            } else {
-              ctx.store->mark_applied(scope, 0);
-              scope_ok_msg = "参数已下发，数据面待单板联调（TX_BACKEND_PENDING）";
-            }
+            TxParams tx_copy = txp;
+            std::string role_copy = cur_role;
+            AgentContext* ctxp = &ctx;
+            std::string sc = scope;
+            std::string nid = node_id;
+            std::thread([ctxp, tx_copy, role_copy, sc, nid, tx_want_rev]() {
+              AgentContext& ctx = *ctxp;
+              json_object* rv = json_object_new_object();
+              json_object_object_add(rv, "scope",
+                                     json_object_new_string("role"));
+              json_object* rval = json_object_new_object();
+              json_object_object_add(rval, "role",
+                                     json_object_new_string(role_copy.c_str()));
+              json_object_object_add(rv, "value", rval);
+              std::string rr = agent_media_cmd(ctx, "configure", rv);
+              (void)rr;
+              json_object_put(rv);
+              json_object* payload = tx_start_payload(tx_copy);
+              std::string tr = agent_media_cmd(ctx, "tx_start", payload);
+              json_object_put(payload);
+              json_object* to = json_tokener_parse(tr.c_str());
+              bool ok2 = false;
+              std::string code, msg, state;
+              if (to) {
+                json_object* okv = nullptr;
+                if (json_object_object_get_ex(to, "ok", &okv) && okv)
+                  ok2 = json_object_get_boolean(okv) != 0;
+                json_object* cv = nullptr;
+                if (json_object_object_get_ex(to, "code", &cv) && cv)
+                  code = json_object_get_string(cv);
+                json_object* mv2 = nullptr;
+                if (json_object_object_get_ex(to, "msg", &mv2) && mv2)
+                  msg = json_object_get_string(mv2);
+                json_object* dd = nullptr;
+                if (json_object_object_get_ex(to, "data", &dd) && dd)
+                  state = dvs::json_get_str(dd, "state");
+                json_object_put(to);
+              } else {
+                code = "TX_START_UNPARSABLE";
+                msg = "media engine response unparsable";
+              }
+              if (agent_config_desired_revision(ctx, sc, nid) != tx_want_rev) {
+                fprintf(stderr,
+                        "dvs-agent: tx_start (%s) stale rev %d vs %d, skip\n",
+                        sc.c_str(), tx_want_rev,
+                        agent_config_desired_revision(ctx, sc, nid));
+                return;
+              }
+              if (!ok2) {
+                ctx.store->mark_failed(sc.c_str(),
+                                       code.empty() ? "TX_START_FAILED" : code.c_str(),
+                                       msg.empty() ? "media engine refused tx start"
+                                                   : msg.c_str());
+                agent_audit(sc, "tx_start", "failed",
+                            (code.empty() ? "TX_START_FAILED" : code) + ": " +
+                                (msg.empty() ? "media engine refused tx start"
+                                             : msg));
+              } else if (state == "running") {
+                ctx.store->mark_applied(sc.c_str(), 0);
+                agent_audit(sc, "tx_start", "applied", "tx running");
+              } else {
+                // Engine accepted but not running yet: stay pending, do not
+                // report applied. The next query_state/heartbeat carries the
+                // running verdict.
+                agent_audit(sc, "tx_start", "pending",
+                            "engine accepted, waiting running");
+              }
+            }).detach();
+            scope_ok_msg = "配置已提交，等待引擎确认";
           }
         }
       }
@@ -568,13 +588,19 @@ bool agent_handle_config(AgentContext& ctx, const HttpRequest& req,
           (val && json_object_object_get_ex(val, "connector", &cv) && cv)
               ? json_object_get_string(cv)
               : "";
-      int lim_w = 7680, lim_h = 4320, lim_z = 60;
+      // Output admission uses the engine capability as the only runtime
+      // source; hardware redlines from the bundle header are absolute
+      // ceilings for fields the engine leaves blank. A missing capability
+      // report rejects the change instead of falling back to fixed values.
+      int lim_w = DVS_OUT_MAX_W, lim_h = DVS_OUT_MAX_H, lim_z = DVS_OUT_MAX_HZ;
       bool conn_known = false;
+      bool caps_reported = false;
       json_object* caps = nullptr;
       json_object_object_get_ex(ctx.store->node(), "capabilities", &caps);
       json_object* arr = nullptr;
       if (caps && json_object_object_get_ex(caps, "outputPorts", &arr) && arr &&
           json_object_is_type(arr, json_type_array)) {
+        caps_reported = true;
         if (json_object_array_length(arr) == 0) {
           fail_code = "INVALID_ARGUMENT";
           fail_reason = "无可用输出口（节点上报零端口）";
@@ -600,10 +626,14 @@ bool agent_handle_config(AgentContext& ctx, const HttpRequest& req,
             fail_reason = "输出口不存在";
           }
         }
+      } else {
+        fail_code = "INVALID_ARGUMENT";
+        fail_reason = "无能力上报，拒绝输出变更（等待引擎探测）";
       }
+      (void)caps_reported;
       if (fail_code.empty()) {
-        if (w < 640 || w > lim_w || h < 480 || h > lim_h || z < 24 ||
-            z > lim_z) {
+        if (w < DVS_OUT_MIN_W || w > lim_w || h < DVS_OUT_MIN_H || h > lim_h ||
+            z < DVS_OUT_MIN_HZ || z > lim_z) {
           fail_code = "INVALID_ARGUMENT";
           fail_reason = "输出参数超出本机能力范围";
         } else if (mode != "force" && mode != "hotplug") {
@@ -769,9 +799,16 @@ bool agent_handle_config(AgentContext& ctx, const HttpRequest& req,
           ctx.store->update_node(node_patch);
           json_object_put(node_patch);
           node_patch = json_object_new_object();
-          ctx.store->mark_applied(scope, 0);
-          scope_ok_msg = executed ? "系统网络已切换并通过连通检查"
-                                  : "意图已保存，系统网络未切换（需隔离环境确认执行）";
+          // Two terminal states: system switched (applied) vs intent stored
+          // only (pending_apply). Never report applied when the system was
+          // untouched; the caller must send {confirm:true}+operationId to
+          // switch.
+          if (executed) {
+            ctx.store->mark_applied(scope, 0);
+            scope_ok_msg = "系统网络已切换并通过连通检查";
+          } else {
+            scope_ok_msg = "意图已保存，系统网络未切换（待执行）";
+          }
         }
       }
     } else if (scope == "registration") {
@@ -844,10 +881,19 @@ bool agent_handle_config(AgentContext& ctx, const HttpRequest& req,
             (val && json_object_object_get_ex(val, "user", &uv) && uv)
                 ? json_object_get_string(uv)
                 : "";
-        // Password is accepted but never persisted or uplinked: the current
-        // mode is a TCP connectivity probe, not a SIP REGISTER exchange.
-        if (srv.empty() || port < 1 || port > 65535 || dev.empty() ||
-            usr.empty()) {
+        // Probe-only mode: no SIP REGISTER is performed, the password is
+        // never persisted or uplinked. Supplying a password is rejected so
+        // callers cannot mistake the probe for a registration.
+        json_object* pwv = nullptr;
+        bool has_password = val &&
+                            json_object_object_get_ex(val, "password", &pwv) &&
+                            pwv && json_object_is_type(pwv, json_type_string) &&
+                            std::string(json_object_get_string(pwv)).size() > 0;
+        if (has_password) {
+          fail_code = "INVALID_ARGUMENT";
+          fail_reason = "探测模式不支持密码（未实现 SIP 注册）";
+        } else if (srv.empty() || port < 1 || port > 65535 || dev.empty() ||
+                   usr.empty()) {
           fail_code = "INVALID_ARGUMENT";
           fail_reason = "SIP 参数不完整";
         } else {
@@ -889,12 +935,15 @@ bool agent_handle_config(AgentContext& ctx, const HttpRequest& req,
             fail_code = "SIP_UNREACHABLE";
             fail_reason = "SIP 服务不可达";
           } else {
+            // Reachable means TCP connectivity only, not SIP REGISTERED.
             json_object* sip = json_object_new_object();
             json_object_object_add(sip, "enabled", json_object_new_boolean(1));
             json_object_object_add(sip, "state",
-                                   json_object_new_string("connected"));
+                                   json_object_new_string("reachable"));
             json_object_object_add(sip, "mode",
                                    json_object_new_string("connectivity-probe"));
+            json_object_object_add(sip, "note",
+                                   json_object_new_string("probe-only, not REGISTERED"));
             json_object_object_add(sip, "server",
                                    json_object_new_string(srv.c_str()));
             json_object_object_add(sip, "port", json_object_new_int(port));
@@ -991,7 +1040,8 @@ bool agent_handle_config(AgentContext& ctx, const HttpRequest& req,
     json_object_put(node_patch);
     json_object* cfg = ctx.store->get_config(scope, node_id);
     if (body) json_object_put(body);
-    const char* ok_msg = (scope == "output" && forward_media)
+    const char* ok_msg = ((scope == "output" && forward_media) ||
+                              (scope == "input" && scope_ok_msg == "配置已提交，等待引擎确认"))
                              ? "配置已保存，等待媒体生效"
                              : "配置已提交";
     const char* ok_text = scope_ok_msg.empty() ? ok_msg : scope_ok_msg.c_str();

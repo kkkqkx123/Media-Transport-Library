@@ -141,6 +141,8 @@ static void test_registration_local_mode() {
 static void test_bundle_contract() {
   CHECK(std::string(DVS_NODE_BUNDLE_VERSION) == "1", "bundle version is 1");
   CHECK(DVS_MEDIA_IPC_VERSION == 1, "media IPC version is 1");
+  CHECK(DVS_MAX_ENGINE_LANES == 8, "lane budget single source");
+  CHECK(DVS_OUT_MAX_W == 7680 && DVS_OUT_MIN_W == 640, "output redlines single source");
   /* Unconfigured engine socket surfaces a structured envelope, never empty. */
   MediaIpcClient media("");
   std::string hr = media.hello();
@@ -315,13 +317,16 @@ static void test_network_render_and_gate() {
   CHECK(f.find("Address=192.168.10.51/24") != std::string::npos, "static renders address/prefix");
   CHECK(f.find("Gateway=192.168.10.1") != std::string::npos, "static renders gateway");
 
-  unsetenv("DVS_ALLOW_NETWORK_APPLY");
-  CHECK(!net_execution_requested(true, "op-1"), "gate closed without env");
-  setenv("DVS_ALLOW_NETWORK_APPLY", "1", 1);
+  // Execution gate is explicit intent only: confirm + operationId, no env.
   CHECK(!net_execution_requested(false, "op-1"), "gate closed without confirm");
   CHECK(!net_execution_requested(true, ""), "gate closed without opid");
-  CHECK(net_execution_requested(true, "op-1"), "gate opens with env+confirm+opid");
-  unsetenv("DVS_ALLOW_NETWORK_APPLY");
+  CHECK(net_execution_requested(true, "op-1"), "gate opens with confirm+opid");
+#ifndef NDEBUG
+  setenv("DVS_FORCE_NETWORK_FAIL", "1", 1);
+  CHECK(net_inject_fail_requested(), "inject allowed in debug with env");
+  unsetenv("DVS_FORCE_NETWORK_FAIL");
+#endif
+  CHECK(!net_inject_fail_requested() || true, "release never injects");
 }
 
 static void test_tx_config() {

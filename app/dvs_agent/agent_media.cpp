@@ -1,6 +1,7 @@
 #include "agent_media.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <mutex>
 #include <thread>
 
@@ -17,10 +18,24 @@ std::mutex g_ver_mu;
 bool g_ver_known = false;
 bool g_ver_match = false;
 long long g_ver_at = 0;
-const long long kVerCacheMs = 5000;
 
 long long g_cap_ok_ms = 0;
-const long long kCapStaleMs = 30000;
+
+static long long env_ms(const char* k, long long def) {
+  const char* v = std::getenv(k);
+  if (!v || !*v) return def;
+  long long n = atoll(v);
+  return (n > 0) ? n : def;
+}
+static long long ver_cache_ms() {
+  return env_ms("DVS_VER_CACHE_MS", DVS_VER_CACHE_MS_DEFAULT);
+}
+static long long cap_stale_ms() {
+  return env_ms("DVS_CAP_STALE_MS", DVS_CAP_STALE_MS_DEFAULT);
+}
+static long long hotplug_interval_ms() {
+  return env_ms("DVS_HOTPLUG_INTERVAL_MS", DVS_HOTPLUG_INTERVAL_MS_DEFAULT);
+}
 std::string g_cap_ports_sig;
 std::string g_link_logged = "unknown";
 
@@ -51,7 +66,7 @@ void revalidate_output_locked(AgentContext& ctx, json_object* caps) {
   json_object* cc = nullptr;
   if (json_object_object_get_ex(out, "connector", &cc) && cc)
     conn = json_object_get_string(cc);
-  int lim_w = 7680, lim_h = 4320, lim_z = 60;
+  int lim_w = DVS_OUT_MAX_W, lim_h = DVS_OUT_MAX_H, lim_z = DVS_OUT_MAX_HZ;
   bool known = false;
   json_object* arr = nullptr;
   if (caps && json_object_object_get_ex(caps, "outputPorts", &arr) && arr &&
@@ -211,7 +226,7 @@ bool agent_media_layout_allowed(AgentContext& ctx, std::string& reason_out) {
   if (!ctx.media_q) return true;
   {
     std::lock_guard<std::mutex> lk(g_ver_mu);
-    if (g_ver_known && dvs::steady_ms_now() - g_ver_at < kVerCacheMs) {
+    if (g_ver_known && dvs::steady_ms_now() - g_ver_at < ver_cache_ms()) {
       if (!g_ver_match)
         reason_out = "VERSION_MISMATCH: media engine bundle differs";
       return g_ver_match;
@@ -359,7 +374,7 @@ long long agent_cap_age_ms() {
 
 bool agent_cap_stale() {
   long long age = agent_cap_age_ms();
-  return (age < 0 || age > kCapStaleMs);
+  return (age < 0 || age > cap_stale_ms());
 }
 
 std::string agent_caps_ports_signature(json_object* caps) {
@@ -445,7 +460,8 @@ void agent_hotplug_poll_once(AgentContext& ctx) {
 
 void agent_hotplug_loop(AgentContext& ctx) {
   for (;;) {
-    std::this_thread::sleep_for(std::chrono::seconds(10));
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds((int)hotplug_interval_ms()));
     agent_hotplug_poll_once(ctx);
   }
 }

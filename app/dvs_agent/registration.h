@@ -44,6 +44,11 @@ public:
     json_object* build_heartbeat();
     json_object* build_register();
 
+    /* Identity/capability readiness gate. Returns true when the node can
+     * register honestly; otherwise err_out names the missing key. Empty or
+     * placeholder hardware values and unreported capabilities refuse. */
+    bool check_identity_ready(std::string& err_out) const;
+
     // Frame-anchored commit report forwarded to the platform barrier.
     // Only the signalled fields travel; a legacy engine answers without
     // them and the platform treats the report as frame-agnostic.

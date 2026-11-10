@@ -2,12 +2,16 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "agent_audit.h"
 #include "agent_context.h"
 #include "agent_media.h"
+#include "agent_resources.h"
 #include "dvs_node_bundle.h"
 #include "maintenance.h"
 #include "media_ipc.h"
@@ -46,22 +50,11 @@ json_object* node_capacity_json() {
     if (f >> uptime >> idle) {
     }
   }
-  double cpu_pct = 0.0;
-  {
-    std::ifstream f("/proc/stat");
-    std::string line;
-    if (std::getline(f, line) && line.rfind("cpu ", 0) == 0) {
-      long long u = 0, n = 0, s = 0, idle = 0, iow = 0, irq = 0, sirq = 0,
-                steal = 0;
-      sscanf(line.c_str() + 4, "%lld %lld %lld %lld %lld %lld %lld %lld", &u,
-             &n, &s, &idle, &iow, &irq, &sirq, &steal);
-      long long idle_all = idle + iow;
-      long long total = u + n + s + idle + iow + irq + sirq + steal;
-      if (total > 0)
-        cpu_pct = 100.0 * (double)(total - idle_all) / (double)total;
-    }
-  }
-  json_object_object_add(o, "cpuBusyPercent", json_object_new_double(cpu_pct));
+  // Same double-sample source as heartbeat resources: single snapshots are
+  // not utilization. Unknown is omitted so callers never see a fake 0%.
+  double cpu_pct = dvs_cpu_percent_blocking(120);
+  if (cpu_pct >= 0)
+    json_object_object_add(o, "cpuBusyPercent", json_object_new_double(cpu_pct));
   json_object_object_add(o, "memTotalKB", json_object_new_int64(mem_total));
   json_object_object_add(o, "memAvailableKB",
                          json_object_new_int64(mem_avail));
@@ -208,19 +201,55 @@ bool agent_handle_sys(AgentContext& ctx, const HttpRequest& req,
     std::string base = fn;
     size_t slash = base.find_last_of("/\\");
     if (slash != std::string::npos) base = base.substr(slash + 1);
-    if (base.empty() || base.size() > 128) {
+    auto valid_base = [](const std::string& b) {
+      if (b.empty() || b.size() > 128) return false;
+      if (b.find("..") != std::string::npos) return false;
+      for (char c : b) {
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-')
+          continue;
+        return false;
+      }
+      return true;
+    };
+    if (!valid_base(base)) {
       dvs::send_json(res,
                       dvs::envelope_fail("INVALID_ARGUMENT", 400, "文件名非法", "a"));
       return true;
     }
-    std::string dest = "/tmp/" + base;
-    std::ofstream out(dest, std::ios::binary);
+    // Staging is quota-guarded: 512MB per file, configurable dir, best-effort
+    // expiry of files older than 24h on each upload.
+    static const size_t kMaxFwUploadBytes = 512u * 1024u * 1024u;
+    if (req.body.size() > kMaxFwUploadBytes) {
+      dvs::send_json(res, dvs::envelope_fail("INVALID_ARGUMENT", 413,
+                                              "固件过大(上限512MB)", "a"));
+      return true;
+    }
+    const char* staging_env = std::getenv("DVS_FW_STAGING_DIR");
+    std::string staging = (staging_env && *staging_env)
+                              ? std::string(staging_env)
+                              : "/var/lib/dvs_agent/staging";
+    { // mkdir -p staging (no shell)
+      std::string cur;
+      for (size_t i = 0; i < staging.size(); i++) {
+        cur.push_back(staging[i]);
+        if (staging[i] == '/' && cur.size() > 1) mkdir(cur.c_str(), 0755);
+      }
+      if (!cur.empty()) mkdir(cur.c_str(), 0755);
+    }
+    std::string dest = staging + "/" + base;
+    std::ofstream out(dest, std::ios::binary | std::ios::trunc);
     if (!out) {
       dvs::send_json(res, dvs::envelope_fail("INTERNAL", 500, "无法写入暂存", "a"));
       return true;
     }
     out.write(req.body.data(), (std::streamsize)req.body.size());
     out.close();
+    if (!out) {
+      unlink(dest.c_str());
+      dvs::send_json(res, dvs::envelope_fail("INTERNAL", 500, "写入暂存失败", "a"));
+      return true;
+    }
     json_object* d = json_object_new_object();
     json_object_object_add(d, "path", json_object_new_string(dest.c_str()));
     json_object_object_add(d, "size",
@@ -271,8 +300,24 @@ bool agent_handle_sys(AgentContext& ctx, const HttpRequest& req,
     return true;
   }
   if (req.method == "POST" && req.path == "/api/v1/node/reboot") {
-    agent_audit("maintenance", "reboot", "applied", "reboot requested");
-    dvs::send_json(res, dvs::envelope_ok(ctx.maint->reboot(), "", "a"));
+    json_object* rbody = json_tokener_parse(req.body.c_str());
+    bool confirm = false;
+    if (rbody) {
+      json_object* cv = nullptr;
+      if (json_object_object_get_ex(rbody, "confirm", &cv) && cv)
+        confirm = json_object_get_boolean(cv) != 0;
+    }
+    if (rbody) json_object_put(rbody);
+    json_object* rr = ctx.maint->reboot(confirm);
+    bool rok = false;
+    if (rr) {
+      json_object* okv = nullptr;
+      if (json_object_object_get_ex(rr, "ok", &okv) && okv)
+        rok = json_object_get_boolean(okv) != 0;
+    }
+    agent_audit("maintenance", "reboot", rok ? "applied" : "failed",
+                confirm ? "reboot requested" : "reboot needs confirm");
+    dvs::send_json(res, dvs::envelope_ok(rr, "", "a"));
     return true;
   }
   if (req.method == "POST" && req.path == "/api/v1/node/factory-reset") {
@@ -285,8 +330,15 @@ bool agent_handle_sys(AgentContext& ctx, const HttpRequest& req,
     std::string fn = body ? dvs::json_get_str(body, "filename") : std::string("fw.bin");
     if (fn.empty()) fn = "fw.bin";
     std::string sha = body ? dvs::json_get_str(body, "sha256") : std::string();
+    std::string ver = body ? dvs::json_get_str(body, "version") : std::string();
+    bool confirm = false;
+    if (body) {
+      json_object* cv = nullptr;
+      if (json_object_object_get_ex(body, "confirm", &cv) && cv)
+        confirm = json_object_get_boolean(cv) != 0;
+    }
     if (body) json_object_put(body);
-    json_object* ur = ctx.maint->upgrade(fn, sha);
+    json_object* ur = ctx.maint->upgrade(fn, sha, ver, confirm);
     bool uok = false;
     if (ur) {
       json_object* okv = nullptr;

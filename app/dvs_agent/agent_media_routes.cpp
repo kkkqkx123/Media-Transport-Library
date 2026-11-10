@@ -42,7 +42,7 @@ bool agent_handle_media(AgentContext& ctx, const HttpRequest& req,
     return true;
   }
   if (req.method == "POST" && req.path == "/api/v1/node/media/prepare") {
-    if (!dvs::http_bearer_ok(req, ctx.api_token)) {
+    if (ctx.api_token.empty() || !dvs::http_bearer_ok(req, ctx.api_token)) {
       dvs::send_json(res, dvs::envelope_fail("UNAUTHORIZED", 401,
                                               "missing or bad token", "a"));
       return true;
@@ -56,7 +56,7 @@ bool agent_handle_media(AgentContext& ctx, const HttpRequest& req,
     return true;
   }
   if (req.method == "POST" && req.path == "/api/v1/node/media/commit") {
-    if (!dvs::http_bearer_ok(req, ctx.api_token)) {
+    if (ctx.api_token.empty() || !dvs::http_bearer_ok(req, ctx.api_token)) {
       dvs::send_json(res, dvs::envelope_fail("UNAUTHORIZED", 401,
                                               "missing or bad token", "a"));
       return true;
@@ -70,7 +70,7 @@ bool agent_handle_media(AgentContext& ctx, const HttpRequest& req,
     return true;
   }
   if (req.method == "POST" && req.path == "/api/v1/node/media/abort") {
-    if (!dvs::http_bearer_ok(req, ctx.api_token)) {
+    if (ctx.api_token.empty() || !dvs::http_bearer_ok(req, ctx.api_token)) {
       dvs::send_json(res, dvs::envelope_fail("UNAUTHORIZED", 401,
                                               "missing or bad token", "a"));
       return true;
@@ -87,7 +87,7 @@ bool agent_handle_media(AgentContext& ctx, const HttpRequest& req,
     return true;
   }
   if (req.method == "POST" && req.path == "/api/v1/node/media/layout") {
-    if (!dvs::http_bearer_ok(req, ctx.api_token)) {
+    if (ctx.api_token.empty() || !dvs::http_bearer_ok(req, ctx.api_token)) {
       dvs::send_json(res, dvs::envelope_fail("UNAUTHORIZED", 401,
                                               "missing or bad token", "a"));
       return true;

@@ -79,6 +79,18 @@ int main(int argc, char** argv) {
   ctx.platform_url = platform_url;
   ctx.api_token = (std::getenv("DVS_API_TOKEN") ? std::getenv("DVS_API_TOKEN")
                                                : "");
+  // Closed by default: an empty platform token disables the bearer channel
+  // (browser login still works). DVS_ALLOW_INSECURE=1 restores the debug
+  // bypass for single-node debugging only.
+  if (agent_auth_insecure()) {
+    fprintf(stderr,
+            "dvs-agent: WARNING insecure mode (DVS_ALLOW_INSECURE=1), "
+            "auth gate disabled\n");
+  } else if (ctx.api_token.empty()) {
+    fprintf(stderr,
+            "dvs-agent: WARNING DVS_API_TOKEN empty, platform bearer "
+            "channel disabled (browser login still required)\n");
+  }
 
   // Bundle handshake: warn-only, the engine may start later. The verdict
   // seeds the continuous version gate in agent_media.
@@ -100,17 +112,20 @@ int main(int argc, char** argv) {
 
   std::string agent_base = dvs::env_or("DVS_AGENT_BASE", "");
   if (agent_base.empty()) {
-    std::string ip = "127.0.0.1";
+    // Reachable-base advertisement must never use the loopback placeholder.
+    // Without an operator-configured base or a real network address the base
+    // stays empty and the platform treats the node as address-unknown.
+    std::string ip;
     json_object* nd = ctx.store->node();
     json_object* net = nullptr;
     if (nd && json_object_object_get_ex(nd, "network", &net) && net) {
-      const char* nip = nullptr;
       json_object* n2 = nullptr;
-      if (json_object_object_get_ex(net, "ip", &n2) && n2)
-        nip = json_object_get_string(n2);
-      if (nip) ip = nip;
+      if (json_object_object_get_ex(net, "ip", &n2) && n2 &&
+          json_object_is_type(n2, json_type_string))
+        ip = json_object_get_string(n2);
     }
-    agent_base = "http://" + ip + ":" + std::to_string(port);
+    if (ip.empty() || ip == "127.0.0.1" || ip == "::1") ip.clear();
+    if (!ip.empty()) agent_base = "http://" + ip + ":" + std::to_string(port);
   }
   ctx.reg =
       new Registration(ctx.store, ctx.media_q, platform_url, 3000, agent_base);

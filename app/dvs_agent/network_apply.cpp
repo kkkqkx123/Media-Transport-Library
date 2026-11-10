@@ -127,8 +127,18 @@ bool net_valid_iface(const std::string& iface) {
 }
 
 bool net_execution_requested(bool confirm, const std::string& opid) {
-    const char* allow = std::getenv("DVS_ALLOW_NETWORK_APPLY");
-    return allow && std::string(allow) == "1" && confirm && !opid.empty();
+    // Explicit operator intent only; no environment allowlist.
+    return confirm && !opid.empty();
+}
+
+bool net_inject_fail_requested() {
+#ifdef NDEBUG
+    (void)0;
+    return false;
+#else
+    const char* v = std::getenv("DVS_FORCE_NETWORK_FAIL");
+    return v && std::string(v) == "1";
+#endif
 }
 
 std::string net_networkd_path() {
@@ -288,15 +298,14 @@ NetExecResult net_apply_real(const NetExecParams& p) {
     std::string log = "/var/lib/dvs_agent/net_apply_" +
                       (p.opid.empty() ? std::string("manual") : p.opid) + ".log";
 
-    if (std::getenv("DVS_FORCE_NETWORK_FAIL") &&
-        std::string(std::getenv("DVS_FORCE_NETWORK_FAIL")) == "1") {
-        /* Injected failure before any system change: still exercise the
-         * snapshot path so rollback coverage stays honest. */
+    if (net_inject_fail_requested()) {
+        /* Test-only injected failure before any system change. Release
+         * builds never take this path (see net_inject_fail_requested). */
         bool existed = false;
         read_file_all(net_networkd_path(), &existed);
         r.ok = false;
         r.rolledBack = true;
-        r.error = "injected failure (DVS_FORCE_NETWORK_FAIL=1)";
+        r.error = "injected failure (test hook)";
         return r;
     }
 

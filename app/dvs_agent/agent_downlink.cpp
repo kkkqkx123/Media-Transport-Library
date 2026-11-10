@@ -112,14 +112,17 @@ void agent_install_downlink(AgentContext& ctx) {
           std::string tid = dvs::json_get_str(data, "taskId");
           std::string fn = dvs::json_get_str(data, "filename");
           std::string sha = dvs::json_get_str(data, "sha256");
+          std::string ver = dvs::json_get_str(data, "version");
           std::string nodeId = dvs::json_get_str(ctx.store->node(), "id");
           if (nodeId.empty()) nodeId = "local-node";
-          std::thread([ctxp, tid, fn, sha, nodeId]() {
+          std::thread([ctxp, tid, fn, sha, ver, nodeId]() {
             AgentContext& ctx = *ctxp;
             if (ctx.reg)
               ctx.reg->uplink_upgrade_progress(tid, nodeId, "running");
+            // Platform tasks are explicit operator intent: staged package is
+            // switched immediately (confirm=true); version travels in task.
             json_object* r =
-                ctx.maint ? ctx.maint->upgrade(fn, sha) : nullptr;
+                ctx.maint ? ctx.maint->upgrade(fn, sha, ver, true) : nullptr;
             std::string stt = "failed";
             if (r) {
               json_object* sv = nullptr;

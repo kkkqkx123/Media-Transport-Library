@@ -50,3 +50,37 @@
 ## 8 待验（需发流端 + 人眼）
 
 实际出画（V4 独立静态多路、V5 输入盒发送、V7 长稳）需对端发流与显示见证，本轮未做；按 `rk3588-manual-verification-runbook.md` 一条龙执行，结论记 `WITNESSED_PASS/FAIL`。
+
+## 9 反例修复后复测（2026-11-11 板端实测通过）
+
+起因：`docs/archive/app/2026-11-10-dvs-node-board-verification.md` §1-V6 两个反例
+（缺几何、缺 `main`）失败点错位（`prepare` 假就绪、`commit` 才败），另有暂存误消费、
+副作用先于占槽、`abort` 盲释放、错误码粗糙等问题。修复方案见
+`docs/plan/dvs/DVS_NODE_BOARD_COUNTEREXAMPLE_FIX_PLAN.md`，改动只在原模块内。
+
+编译（devs，aarch64，`ninja -C app/dvs_media/build-aarch64` exit 0，零错误）：
+`dvs_media` + 8 单测全部链接；`PATH` 仍需 buildroot `host/bin` 在前
+（meson 1.3.1/python3.11）+ 工具链 `bin`（`ar`），与归档经验一致。
+产物已推板 `~/code/mtl/bin/`（`dvs_media` md5 `f7a6dcc2`），`--version` 仍为
+`bundle 1 ipc 1`。`dvs_agent` 未改动，未重编。
+
+板上单测 8/8 通过（`test_state_machine/test_ipc/test_session_admit/test_tx_session/
+test_tx_port_map/test_stream_validate/test_audio_owner/test_capability_logic`，0 failure）。
+
+IPC 反例复测（新 `dvs_media` + `dvs_ipc_probe.py`，`--ipc-sock /tmp/dvs-media.sock`）：
+- 缺几何与缺 `main`：`prepare` 期直接 `400 INVALID_ARGUMENT`
+ （`layout invalid for current mode 1920x1080`），无 `202`、无 `prepare.result` 事件；
+  事后 `query_state` 为 `idle/rev0/lanes[]/rx0`，零预留残留。
+- 有效布局：`prepare → 202`，`commit → 200 committed rev1`，`query` 为
+  `idle/rev1/lanes[15000]/rx1/layers1`（`ready false` 无源诚实零值）。
+- 过期窗口：`commit → 400 EXPIRED`，同操作重试仍 `400 EXPIRED`
+ （修复前第二次会假成功 `200`）；`abort → 200` 后在线布局完好
+ （`idle/rev1/lanes[15000]/rx1`）。
+- 空 `streams` 数组 → `400 empty streams`；重复源 → `400 layout invalid`；
+  `rev0` 重放 → `409 STALE_REVISION`；并发占槽 → `409 INVALID_STATE`，`abort` 后归位。
+- 终态 `idle/rev1`，仅在线 lane 存活，无泄漏预留。
+
+清场：测试引擎已杀（`kill -9`，DPDK 阻塞仍需此方式）、陈旧 socket 已删、
+UDP 端口空闲；`MtlManager` 已重拉运行中。`card0` 被 Xorg、`PulseAudio` 运行中两条
+`BLOCKED` 为到达时原状（桌面常驻），本次未动显示/音频。结论：反例修复生效，
+归档原文不动。

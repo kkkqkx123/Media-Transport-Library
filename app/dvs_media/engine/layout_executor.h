@@ -20,5 +20,9 @@ void dvs_layout_pending_adjust(dvs_image_adjust_t* out);
 int dvs_layout_commit(dvs_engine* e);
 void dvs_layout_clear(dvs_engine* e);
 void dvs_layout_abort(void);
+/* Abort while keeping the given live sources admitted: staged entries also
+ * present in the live picture are left untouched so a shared-signal abort
+ * cannot drop the running compositor's admission. */
+void dvs_layout_abort_except(const file_playout_pip_stream* live, int live_n);
 
 #endif /* _DVS_LAYOUT_EXECUTOR_H_ */

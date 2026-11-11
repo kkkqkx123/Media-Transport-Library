@@ -150,6 +150,11 @@ struct json_object* dvs_engine_commit_report(dvs_engine* e);
 /* Short code for the last failed commit ("" when the last commit worked). */
 const char* dvs_engine_last_fail(dvs_engine* e);
 
+/* Record a failure code without touching media state. Used by the layout
+ * executor for barrier-level rejections (e.g. expiry) decided outside the
+ * engine swap. */
+void dvs_engine_note_fail(dvs_engine* e, const char* code);
+
 /* Stage the still / adjustment parsed from prepare; applied on commit. */
 void dvs_engine_set_pending_base(dvs_engine* e,
                                  const dvs_base_image_desc_t* base);

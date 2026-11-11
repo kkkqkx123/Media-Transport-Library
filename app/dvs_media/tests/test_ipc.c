@@ -153,7 +153,8 @@ static struct json_object* big_lane_stats(void) {
  * windows/geometry shape is refused so a pre-translation agent can never
  * stage nothing and fake success on commit.
  * Drift risk: this is a shape-only mirror, the real hook additionally
- * validates stream fields, whitelist, crop and admission. Change both
+ * validates stream fields, whitelist, crop, render rect/main/duplicates
+ * against the display mode, empty tables and admission. Change both
  * together when the prepare gate changes. */
 static int test_prepare_gate(struct json_object* req, char* err, size_t errlen) {
   struct json_object* t = NULL;

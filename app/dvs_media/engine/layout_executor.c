@@ -129,6 +129,9 @@ int dvs_layout_prepare_from_json(struct json_object* req) {
     file_playout_pip_stream buf[MP4_PIP_MAX_LANES];
     int n = 0;
     if (dvs_layout_from_json(req, buf, &n) != 0) return -1;
+    /* An explicit empty array is not a clear-screen: clear has its own verb.
+     * The barrier close without a streams key never reaches here. */
+    if (n <= 0) return -1;
 
     /* optional audio routing carried on the same request */
     char owner[64] = "";
@@ -229,7 +232,10 @@ int dvs_layout_prepare_from_json(struct json_object* req) {
     struct json_object* exv = NULL;
     if (req && json_object_object_get_ex(req, "expiresAtTaiNs", &exv) && exv)
       expires = (uint64_t)json_object_get_int64(exv);
-    if (expires > 0 && realtime_now_ns() > expires) return -1;
+    if (expires > 0 && realtime_now_ns() > expires) {
+        pthread_mutex_unlock(&g_pending_mu);
+        return -1;
+    }
     g_pending_apply_at_ns = apply_at;
     g_pending_expires_ns = expires;
     g_pending_frame = frame;
@@ -276,9 +282,9 @@ int dvs_layout_commit(dvs_engine* e) {
     pthread_mutex_lock(&g_pending_mu);
     n = g_pending_count;
     int valid = g_pending_valid;
-    g_pending_valid = 0;
+    /* Keep the staged layout on failure so a retry re-attempts the same
+     * picture instead of no-op succeeding; only success consumes it. */
     uint64_t expires = g_pending_expires_ns;
-    g_pending_expires_ns = 0;
     memcpy(buf, g_pending, (size_t)n * sizeof(*buf));
     memcpy(owner, g_pending_audio_owner, sizeof(owner));
     volume = g_pending_audio_volume;
@@ -292,7 +298,10 @@ int dvs_layout_commit(dvs_engine* e) {
         /* no layout was staged: keep the running picture */
         return 0;
     }
-    if (expires > 0 && realtime_now_ns() > expires) return -1;
+    if (expires > 0 && realtime_now_ns() > expires) {
+        if (e) dvs_engine_note_fail(e, "EXPIRED");
+        return -1;
+    }
 
     /* push audio routing to the engine before (re)building the compositor */
     dvs_engine_set_audio(e, owner, volume);
@@ -305,6 +314,7 @@ int dvs_layout_commit(dvs_engine* e) {
                                             frame.frame_index);
     if (rc == 0) {
         pthread_mutex_lock(&g_pending_mu);
+        g_pending_valid = 0;
         g_pending_count = 0;
         g_pending_apply_at_ns = 0;
         g_pending_expires_ns = 0;
@@ -335,10 +345,8 @@ void dvs_layout_clear(dvs_engine* e) {
     pthread_mutex_unlock(&g_pending_mu);
 }
 
-void dvs_layout_abort(void) {
-    /* Release what this prepare reserved so an aborted prepare leaves the
-     * admission table as it found it. Live layouts re-admit on their next
-     * commit; entries shared with the live picture are simply re-added. */
+void dvs_layout_abort_except(const file_playout_pip_stream* live, int live_n) {
+    /* Release what this prepare reserved, minus whatever is still live. */
     file_playout_pip_stream staged[MP4_PIP_MAX_LANES];
     int n = 0;
     pthread_mutex_lock(&g_pending_mu);
@@ -358,7 +366,22 @@ void dvs_layout_abort(void) {
     g_pending_audio_volume = 0;
     pthread_mutex_unlock(&g_pending_mu);
     for (int i = 0; i < n; i++) {
-        if (staged[i].sip[0])
-            dvs_session_release(staged[i].sip, staged[i].udp_port);
+        if (!staged[i].sip[0]) continue;
+        int keep = 0;
+        if (live && live_n > 0) {
+            for (int j = 0; j < live_n; j++) {
+                if (live[j].sip[0] &&
+                    strcmp(staged[i].sip, live[j].sip) == 0 &&
+                    staged[i].udp_port == live[j].udp_port) {
+                    keep = 1;
+                    break;
+                }
+            }
+        }
+        if (!keep) dvs_session_release(staged[i].sip, staged[i].udp_port);
     }
+}
+
+void dvs_layout_abort(void) {
+    dvs_layout_abort_except(NULL, 0);
 }

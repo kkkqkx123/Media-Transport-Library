@@ -525,13 +525,9 @@ static int handle_line(dvs_client_t* c, char* line) {
         goto done;
       }
     }
-    if (g_hooks.prepare) {
-      if (g_hooks.prepare(body, err, sizeof(err)) != 0) {
-        respond_cached(c, rid, cacheable, 400, "INVALID_ARGUMENT",
-                       err[0] ? err : "bad prepare", NULL);
-        goto done;
-      }
-    }
+    /* Occupy the operation slot before running any side effect: the
+     * prepare hook reserves admission and stages the shadow layout, so a
+     * rejected operation must leave neither behind. */
     int rc = dvs_state_begin_prepare(opid, revision, err, sizeof(err));
     if (rc != 0) {
       int status = (rc == DVS_ERR_STALE_REVISION) ? 409 : 400;
@@ -543,6 +539,15 @@ static int handle_line(dvs_client_t* c, char* line) {
       }
       respond_cached(c, rid, cacheable, status, code, err, NULL);
       goto done;
+    }
+    if (g_hooks.prepare) {
+      if (g_hooks.prepare(body, err, sizeof(err)) != 0) {
+        dvs_state_fail_prepare(opid);
+        if (g_hooks.abort) g_hooks.abort();
+        respond_cached(c, rid, cacheable, 400, "INVALID_ARGUMENT",
+                       err[0] ? err : "bad prepare", NULL);
+        goto done;
+      }
     }
     int slot = (int)(c - g_clients);
     spawn_prepare(c, slot, c->gen, c->fd, rid, opid, revision);
@@ -593,9 +598,10 @@ static int handle_line(dvs_client_t* c, char* line) {
       goto done;
     }
     if (res.engine_failed) {
-      /* Surface the engine's own failure code (DECODE_NOT_READY and friends)
-       * instead of a generic INTERNAL so the barrier can audit and the
-       * platform can tell a sick signal from a broken commit. */
+      /* Surface the engine's own failure code so the barrier can audit:
+       * client payload bugs (conflict/expired) read 400 and fix the
+       * layout, a sick signal (not ready) reads 422 and waits, only a
+       * real media failure reads 500 and retries the commit. */
       const char* ecode =
           (g_hooks.commit_error) ? g_hooks.commit_error() : "";
       int status = 500;
@@ -603,6 +609,8 @@ static int handle_line(dvs_client_t* c, char* line) {
       if (ecode && ecode[0]) {
         code = ecode;
         if (strcmp(ecode, "DECODE_NOT_READY") == 0) status = 422;
+        else if (strcmp(ecode, "LAYOUT_CONFLICT") == 0 ||
+                 strcmp(ecode, "EXPIRED") == 0) status = 400;
       }
       respond_cached(c, rid, cacheable, status, code, "layout apply failed",
                      NULL);

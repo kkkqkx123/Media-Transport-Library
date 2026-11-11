@@ -13,6 +13,7 @@
 #include "engine/stream_validate.h"
 #include "engine/capability.h"
 #include "display_layout.h"
+#include <pthread.h>
 #include <time.h>
 #include <mtl_api.h>
 #include <stddef.h>
@@ -259,7 +260,8 @@ static int hook_prepare(struct json_object* req, char* err, size_t errlen) {
      * windows/geometry shape is no longer silently accepted: since the agent
      * translates to streams, a windows-shape prepare means a pre-translation
      * agent — refuse it loudly instead of staging nothing. Streams are
-     * validated here (whitelist + shape) so prepare fails fast with 400 and
+     * validated here (shape + crop + whitelist + render rect/main/duplicates
+     * against the current mode) so prepare fails fast with 400 and
      * never stages a layout the commit could only half-apply. */
     {
         struct json_object* t = NULL;
@@ -285,29 +287,49 @@ static int hook_prepare(struct json_object* req, char* err, size_t errlen) {
                 snprintf(err, errlen, "bad layout");
                 return -1;
             }
+            /* An explicit empty array is not a clear-screen (clear has its
+             * own verb); a barrier close without streams never reaches here. */
+            if (vn <= 0) {
+                snprintf(err, errlen, "empty streams");
+                return -1;
+            }
             for (int i = 0; i < vn; i++) {
-                if (!vs[i].sip[0] || !vs[i].udp_port || vs[i].width <= 0 ||
-                    vs[i].height <= 0 || vs[i].fps <= 0.0f) {
-                    snprintf(err, errlen, "bad stream %d", i);
+                char cerr[128] = {0};
+                if (dvs_stream_shape_valid(vs[i].sip, vs[i].udp_port,
+                                             vs[i].width, vs[i].height,
+                                             vs[i].fps, cerr,
+                                             sizeof(cerr)) != 0) {
+                    snprintf(err, errlen, "stream %d: %s", i,
+                             cerr[0] ? cerr : "bad stream");
                     return -1;
                 }
-                {
-                    char cerr[128] = {0};
-                    if (dvs_stream_src_valid(vs[i].src_ip, cerr, sizeof(cerr)) != 0) {
-                        snprintf(err, errlen, "stream %d: %s", i, cerr);
-                        return -1;
-                    }
-                    if (dvs_stream_crop_valid(vs[i].width, vs[i].height,
-                                              vs[i].src_x, vs[i].src_y,
-                                              vs[i].src_w, vs[i].src_h,
-                                              cerr, sizeof(cerr)) != 0) {
-                        snprintf(err, errlen, "stream %d: %s", i, cerr);
-                        return -1;
-                    }
+                if (dvs_stream_src_valid(vs[i].src_ip, cerr, sizeof(cerr)) != 0) {
+                    snprintf(err, errlen, "stream %d: %s", i, cerr);
+                    return -1;
+                }
+                if (dvs_stream_crop_valid(vs[i].width, vs[i].height,
+                                            vs[i].src_x, vs[i].src_y,
+                                            vs[i].src_w, vs[i].src_h,
+                                            cerr, sizeof(cerr)) != 0) {
+                    snprintf(err, errlen, "stream %d: %s", i, cerr);
+                    return -1;
                 }
                 if (!dvs_session_whitelist_check(vs[i].sip, vs[i].udp_port)) {
                     snprintf(err, errlen, "source %s:%u not whitelisted",
                              vs[i].sip, (unsigned)vs[i].udp_port);
+                    return -1;
+                }
+            }
+            /* Authoritative layout gate (render rect, exactly-one main,
+             * duplicates, lane budget) against the current display mode so
+             * prepare fails fast and never stages what commit must refuse. */
+            {
+                int mode_w = 1920, mode_h = 1080;
+                if (s_eng) file_playout_mode_dims(&s_eng->cfg, &mode_w, &mode_h);
+                if (file_playout_pip_validate(vs, vn, mode_w, mode_h) != 0) {
+                    snprintf(err, errlen,
+                             "layout invalid for current mode %dx%d",
+                             mode_w, mode_h);
                     return -1;
                 }
             }
@@ -327,12 +349,15 @@ static int hook_prepare(struct json_object* req, char* err, size_t errlen) {
                     snprintf(err, errlen, "prepare admission failed");
                     return -1;
                 }
-            }
-            /* Stage via the layout executor so applyAtNs/audioOwner routing
-             * stay in the pending shadow; commit applies them atomically. */
-            if (dvs_layout_prepare_from_json(req) != 0) {
-                snprintf(err, errlen, "bad layout");
-                return -1;
+                /* Stage via the layout executor so applyAtNs/audioOwner
+                 * routing stay in the pending shadow; commit applies them
+                 * atomically. A staging failure must not keep the batch. */
+                if (dvs_layout_prepare_from_json(req) != 0) {
+                    for (int i = 0; i < vn; i++)
+                        dvs_session_release(vs[i].sip, vs[i].udp_port);
+                    snprintf(err, errlen, "bad layout");
+                    return -1;
+                }
             }
             return 0;
         }
@@ -353,6 +378,22 @@ static void hook_clear(void) {
 }
 
 static void hook_abort(void) {
+    /* Release staged sources minus whatever is still live so an abort of a
+     * shared-signal prepare cannot drop the running picture's admission. */
+    if (s_eng) {
+        file_playout_pip_stream live[MP4_PIP_MAX_LANES];
+        int live_n = 0;
+        pthread_mutex_lock(&s_eng->mu);
+        live_n = s_eng->cfg.pip_stream_count;
+        if (live_n < 0) live_n = 0;
+        if (live_n > MP4_PIP_MAX_LANES) live_n = MP4_PIP_MAX_LANES;
+        if (live_n > 0)
+            memcpy(live, s_eng->cfg.pip_streams,
+                   (size_t)live_n * sizeof(*live));
+        pthread_mutex_unlock(&s_eng->mu);
+        dvs_layout_abort_except(live, live_n);
+        return;
+    }
     dvs_layout_abort();
 }
 

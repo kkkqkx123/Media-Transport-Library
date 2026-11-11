@@ -1,6 +1,6 @@
 # dvs_media 功能清单
 
-> 分析对象：`app/dvs_media/`（节点侧媒体引擎，纯 C）。更新时间：2026-11-10，基于 `feat/rk3588-apps` 分支现状。
+> 分析对象：`app/dvs_media/`（节点侧媒体引擎，纯 C）。更新时间：2026-11-11，基于 `feat/rk3588-apps` 分支现状（含单一媒体包收敛实施与板端验证，见 `docs/plan/rk3588/RK3588_DVS_MEDIA_CONVERGENCE_DESIGN.md`）。
 
 ## 1. 定位
 
@@ -32,7 +32,7 @@ dvs_media --version                            # 输出 bundle + IPC 版本后�
 | 目录/文件 | 职责 |
 |---|---|
 | `dvs_media_main.c` | 入口：能力探测、配置加载、引擎创建，选择独立/受控模式 |
-| `engine/engine_ctx.c` | 引擎上下文（`dvs_engine`）：持有 MTL 实例与当前 compositor；input/output 角色互斥；布局应用（几何变更走快路径复用 compositor，其余走影子交换重建）、帧锚定提交、commit 报告；TX 编排入口（TX 启动前先停 RX 合成器） |
+| `engine/engine_ctx.c` | 引擎上下文（`dvs_engine`）：持有 MTL 实例与当前 compositor；input/output 角色互斥（切 input 前探测采集口，无设备直接拒绝并经 `err` 回显原因）；布局应用（几何变更走快路径复用 compositor，其余走影子交换重建）、帧锚定提交、commit 报告；TX 编排入口（TX 启动前先停 RX 合成器） |
 | `engine/session_mgr.c` | 会话管理薄封装：创建/销毁引擎、应用布局、请求停止、白名单设置 |
 | `engine/session_admit.c` | 会话准入：`(mcast_ip, udp_port)` → lane 映射，白名单 + 8 槽 LRU 表；`dvs_session_reserve_batch` 提供 prepare 阶段的全有全无批量准入；abort 释放本次预留；无 MTL/MPP 依赖，x86 可单测 |
 | `engine/layout_executor.c` | 两阶段布局执行：prepare 把布局暂存到 shadow（含帧锚、底图、画面调节、音频路由、applyAtNs），commit 时统一应用到引擎；未暂存的 commit 保持当前画面 |
@@ -41,13 +41,13 @@ dvs_media --version                            # 输出 bundle + IPC 版本后�
 | `engine/base_image.c` | 底图（墙纸）：节点侧解码本地文件 → 裁剪子矩形 → 拉伸为 XRGB8888 画布 → 推送给合成器背景层；FFmpeg 软解 PNG/JPEG，支持 RGB24/RGBA/BGR24/GRAY8/YUV420P（BT.601），其余报 unsupported；状态机 `none/loading/ready/failed/unsupported`，compositor 重建后重推缓存像素 |
 | `engine/capability.c` | 能力探测与上报：DRM 连接器/模式、V4L2 输入口（端口→设备路径→物理身份→信号）、MPP 解码会话上限、DRM 层数、TX 静态上限、PTP 状态/偏移、MTL 版本与 backend；探测永不 abort，允许部分能力继续服务 IPC |
 | `engine/stream_validate.c` | 流参数纯校验（身份尺寸、源裁剪、SSM 源地址），prepare 阶段 fail-fast，与 commit 侧 authoritative 校验保持一致 |
-| `engine/tx_session.c` | TX 参数校验 + 生命周期状态机：`idle → configured → running / failed`；参数范围（640–3840×480–2160、24–60fps、500–20000kbps、GOP 0 或 250–4000ms）；**诚实规则**：出货二进制恒装 backend，成功即 `running`；无 backend（`configured + backend_pending`）只存在于 x86 单测接缝，绝不声称发流 |
+| `engine/tx_session.c` | TX 参数校验 + 生命周期状态机：状态仅 `idle / running / failed`（成功即 `running`，失败即 `failed`，无中间态）；参数范围（640–3840×480–2160、24–60fps、500–20000kbps、GOP 0 或 250–4000ms）；**诚实规则**：出货二进制恒装 backend，成功即 `running`；无 backend 时启动直接 `failed`（`TX_BACKEND_MISSING`，x86 单测接缝），绝不声称发流；`backend_pending` 恒为 0，仅保留 JSON 形状 |
 | `engine/tx_port_map.c` | 捕获端口映射：物理身份优先（QUERYCAP card+bus_info+input 索引）绑定 HDMIk；TX 启动时重扫解析，目标缺失/无信号则拒绝并附可用表，绝不静默改绑；另含 codec 名→编码格式、kbps→bps、GOP 默认/换算等纯函数 |
 | `engine/tx_backend.h` + `tx_backend_live_ingest.c` | TX 数据面：链接 `rk3588_live_tx` 的 donor 链（V4L2 capture → RGA → MPP encode → MTL TX + 可选 ST2110-30 音频采集发送）。MPP/RGA 均为构建必需，常链接；`tx_session` 的无 backend 分支仅为 x86 单测接缝 |
 | `engine/ipc_engine_bridge.c` | IPC → 引擎桥接：把引擎函数装进 `dvs_ipc_engine_hooks_t` 钩子表；解析 `configure` 的 scope（whitelist/output/role/st21_pacing）与 `tx_start` 参数；prepare 做白名单+形状+资源预留三重校验；真实二进制专属，不进无 MTL 单测 |
 | `ipc/ipc_server.c` | Unix socket JSON 行协议服务：长连接（最多 8 客户端）、messageId 回显与请求幂等重放缓存、`hello` 握手、异步 prepare + `media.prepare.result` 事件、commit/clear 串行执行器、commit 广播；钩子表未安装时可纯状态机运行（无 MTL/MPP 单测） |
 | `ipc/state_machine.c` | 操作状态机：`IDLE → PREPARING → PREPARED`（commit 后回 IDLE，revision 递增）；错误码 `INVALID_ARG / STALE_REVISION / INVALID_STATE / INTERNAL` |
-| `tests/` | 8 个 gtest 目标（见 §11），核心逻辑模块刻意不依赖 MTL/MPP，x86 可直接单测 |
+| `tests/` | 8 个单测目标（见 §15），核心逻辑模块刻意不依赖 MTL/MPP，x86 可直接单测 |
 
 ## 4. 对外接口（IPC 动词）
 
@@ -56,7 +56,7 @@ dvs_media --version                            # 输出 bundle + IPC 版本后�
 | 动词 | 行为 |
 |---|---|
 | `hello` | 握手：上报 `ipcVersion`、包版本、当前状态快照（供代理核对同包配对） |
-| `configure` | 统一配置入口，载荷决定语义：`whitelist`（字符串/数组/对象元组三种写法，逐项校验）分支走白名单设置；`scope/output` 设置 DRM 输出（连接器名、宽高、刷新率、`force/hotplug` 模式，越界拒绝）；`scope/role` 切换 `input/output`；`scope/st21_pacing` 设置 TX pacing（见 §10）；其余载荷转布局 staging |
+| `configure` | 统一配置入口，载荷决定语义：`whitelist`（字符串/数组/对象元组三种写法，逐项校验）分支走白名单设置；`scope/output` 设置 DRM 输出（连接器名、宽高、刷新率、`force/hotplug` 模式，越界拒绝）；`scope/role` 切换 `input/output`（切 input 无采集设备时 400 拒收并回显 `input unsupported: no capture device`，非法取值回 `bad role`）；`scope/st21_pacing` 设置 TX pacing（见 §13）；其余载荷转布局 staging |
 | `set_sources` | `configure` 的布局别名：同一份 prepare 校验与暂存路径 |
 | `prepare` | 异步两阶段第一步：`operationId` 必填，`revision` 缺省为 `revision+1`；先做布局校验与资源预留（见 §5），再经状态机进入 `PREPARING`，立即回 `202 ACCEPTED`，后台 worker 完成后发 `media.prepare.result` 事件（`ready/blocked` + lanes 通道摘要）；同 `operationId+revision` 重放直接回 `202` 不重复派 worker |
 | `commit` | 串行执行器上的重动词：先应用暂存布局，成功后再推进状态机；响应合并 commit 报告（`frameIndex/appliedAtTaiNs/late/revision`）；已提交操作的重放直接回 `200 committed` 不重触引擎；引擎失败透出短码（`DECODE_NOT_READY` → 422，其余 500），状态机不推进以便重试/abort；成功广播 `media.layout_applied` + `media.state_changed` |
@@ -83,7 +83,7 @@ dvs_media --version                            # 输出 bundle + IPC 版本后�
 - V4L2 输入口：与 TX 后端共用同一套扫描表（QUERYCAP 物理身份优先，设备路径兜底），按扫描顺序绑定 `HDMIk`；每口上报 `id/label/kind` + 当前设备路径 + 稳定物理身份 + 信号有无 + 3840×2160@60 上限；无设备时为空数组，不报错。
 - 解码上限：静态上限 = min（合成 lane 上限 8，NV12 路径 4，DRM plane 数，MPP 上限默认 4）；`DVS_MAX_DECODE_SESSIONS` 环境变量优先覆盖；可用数 = 静态上限 − 已准入数（钳制 ≥0）。
 - TX 上限：SoC 公开极限（`h264,h265`、3840×2160@60、20000kbps），捕获口复用 `inputPorts`，不另行探测。
-- PTP：`synced/unsynced/unknown` + 偏移 µs；monotonic 时钟模式恒报 `unknown`；`capability` 快照取探测值，`query_state` 走 live hook（MTL TAI 与本地 TAI 差换算，MTL 未就绪则 unknown）。
+- PTP：`synced/unsynced/unknown` + 偏移 µs；monotonic 时钟模式恒报 `unsynced`（已知未同步）；`capability` 快照取探测值，`query_state` 走 live hook（MTL TAI 与本地 TAI 差换算，MTL 未就绪则 unknown）。
 - MTL：版本号 live 刷新；backend 按端口名前缀映射（`kernel:`→kernel、`native_af_xdp/dpdk_af_xdp/dpdk_af_packet`→af_xdp、其余→dpdk），双端口前缀不一致时报 `unknown`。
 - 探测永不 abort，允许部分能力继续服务 IPC；`dvs_capability_to_json` / `dvs_capability_state_json` 为纯序列化，`max_decode_sessions` 字段报静态上限、`availableDecodeSessions` 报可用数。
 
@@ -103,11 +103,11 @@ dvs_media --version                            # 输出 bundle + IPC 版本后�
 
 ## 9. TX（input 角色）
 
-- 参数门：`port`（`HDMIk`/`/dev/videoN`/稳定身份三选一）+ `codec(h264/h265)` + 宽高/fps/码率 + `target{sip,udpPort}` 必填，`gopMs` 缺省走编码器默认（跟 fps），`audioUdpPort` 为 0 表示无音频 TX；范围见 `tx_session.h`，先范围校验再按上报 capability  gating。
+- 参数门：`port`（`HDMIk`/`/dev/videoN`/稳定身份三选一）+ `codec(h264/h265)` + 宽高/fps/码率 + `target{sip,udpPort}` 必填，`gopMs` 缺省走编码器默认（跟 fps），`audioUdpPort` 为 0 表示无音频 TX；启动路径做范围校验（见 `tx_session.h`）；`dvs_tx_validate_against_capability` 为纯函数上限校验（供单测与调用方前置检查），未接入启动路径，实际能力不足在后端解析/创建阶段 loud 失败。
 - 端口解析：启动绑定表按物理身份优先，TX 启动时重扫；目标缺失/无信号直接拒绝并附可用表（`HDMI1(/dev/video0), …`），绝不静默改绑。
 - 数据面：`tx_backend_live_ingest` 持有 MTL TX 会话 + TX pipeline；视频链为 V4L2→RGA→MPP→MTL ST22；音频链为 ALSA 采集（48kHz 双声道 PCM16，1ms 包/10ms 帧）→ ST2110-30，音频 bring-up 失败则整个 TX start  loud 失败，不发无声视频。所有进入/退出都在引擎锁下，`tx_stop`/角色切换/clear/stop 全路径对称 teardown。
-- **诚实规则**：`tx_session` 的无 backend（`configured + backend_pending`）分支只活在 x86 单测里；出货二进制恒装 live_ingest backend，`tx_start` 成功即 `running`，失败即 `failed`，不存在第三种出货形态；`tx_stop` 幂等清参回 `idle`。backend 契约二进制化：返回 0 为成功，任何非零为失败；正返回值属契约违规，以 `TX_BACKEND_CONTRACT` 短码直接失败，永不映射为 pending。
-- `query_state.tx` 为 `dvs_tx_status_json` 快照（`state/params/error/backend_pending`）；commit 失败短码：`DECODE_NOT_READY`（影子无首帧，旧画面保持）/ `LAYOUT_APPLY_FAILED` / `MEDIA_SESSION_FAILED` / `LAYOUT_CONFLICT`（input 角色下推布局）。
+- **诚实规则**：出货二进制恒装 live_ingest backend，`tx_start` 成功即 `running`，失败即 `failed`，不存在第三种出货形态；无 backend 时启动直接 `failed`（`TX_BACKEND_MISSING`）；`tx_stop` 幂等清参回 `idle`。backend 契约二进制化：返回 0 为成功，任何非零为失败；正返回值属契约违规，以 `TX_BACKEND_CONTRACT` 短码直接失败，永不映射为 pending。
+- `query_state.tx` 为 `dvs_tx_status_json` 快照（`state/params/error/backend_pending`，`backend_pending` 恒 0）；commit 失败短码：`DECODE_NOT_READY`（影子无首帧，旧画面保持）/ `MEDIA_SESSION_FAILED` / `LAYOUT_CONFLICT`（input 角色下推布局）。
 
 ## 10. 帧锚定提交、快慢路径与角色互斥
 
@@ -133,9 +133,11 @@ dvs_media --version                            # 输出 bundle + IPC 版本后�
 
 TX pacing profile 复用 file_playout 的解析（in-tree，不复制）：配置文件字段 `st21_pacing`（`auto|tsc|tsc_narrow|rl`），默认 `tsc_narrow`（ST 2110-21 Narrow，广播互通首选）；IPC `configure` 新增 `scope: "st21_pacing"`，`value.st21_pacing` 为同取值字符串；MTL 已初始化时拒绝（需 clear 后再配，下次 MTL init 生效）。`tsc_narrow` 不受 ST22 会话 RL→TSC 强制覆盖影响；VRX 余量校验用 `../rk3588_playout_rx/tests/verify_vrx_margin.py`。
 
-## 14. in-tree 源码复用（非拷贝）
+## 14. in-tree 源码复用与归属（非拷贝）
 
-`meson.build` 以相对路径直接编译 `rk3588_playout_rx` 的 `rx/`、`shared/`（含 `mp4_demux`、`extradata_handler`）、`rk3588_common`，以及 `rk3588_live_tx` 的 `hal/`、`io/v4l2_capturer`、`codec/` 编码侧、`pipeline/tx_pipeline`（含 `tx_encode/tx_supervise/tx_stats`）、`mtl_tx`。**修改这两个应用的这些目录会直接影响 dvs_media 的构建与行为。**
+`meson.build` 以相对路径直接编译 `rk3588_playout_rx` 的 `rx/`（含管线、合成器）、`shared/`（`mpp_decoder`、`drm_renderer`、`mp4_demux` 解封装探针）、`rk3588_common`（环形缓冲、内存池、定时器、时间戳、布局显示、时钟换算、`extradata_handler` 解码辅助、`rx_e2e_stats` 端到端统计），以及 `rk3588_live_tx` 的 `hal/`、`io/v4l2_capturer`、`codec/` 编码侧、`pipeline/tx_pipeline`（含 `tx_encode/tx_supervise/tx_stats`）、`mtl_tx`。**修改这些目录会直接影响 dvs_media 的构建与行为。**
+
+归属规则（单一媒体包收敛后）：无状态公共基础归 `rk3588_common` 所有，`dvs_shared` 是其在媒体引擎内的唯一提供方（发送侧不再重复编译公共源）；硬件强相关的数据面仍归各自 donor 所有（输出侧归 `rk3588_playout_rx`，输入侧归 `rk3588_live_tx`），接口冻结后由后端入口原样调用，不复制、不建替代模块。
 
 ## 15. 构建与测试
 
@@ -144,7 +146,7 @@ cd app/dvs_media && meson setup build && ninja -C build
 ./build/dvs_media --version
 ```
 
-依赖：MTL、Rockchip MPP（**必需**，缺失则 meson 直接 error）、librga（**必需**，缺失直接构建失败，不再产出 backend-less 二进制）、libdrm、ALSA、json-c、FFmpeg（libavformat/avcodec/avutil）。单元测试为独立 meson 目标（`tests/meson.build`），8 个可执行文件，MTL/MPP 无关模块 x86 可单测：
+依赖：MTL、Rockchip MPP（**必需**，缺失则 meson 直接 error）、librga（**必需**，缺失直接构建失败，不再产出 backend-less 二进制）、libdrm、ALSA、json-c、FFmpeg（libavformat/avcodec/avutil）。单元测试为独立 meson 目标（`tests/meson.build`），8 个可执行文件，MTL/MPP 无关模块 x86 可单测。RK3588 侧用 sysroot 交叉构建（输出 `build-aarch64/`），三端一次通过；板端基线（2026-11-11，内核后端）：双二进制动态链接干净、`--version` 对齐 bundle/IPC、8 项单测全过、IPC 角色四连测符合预期、`tx_start` 以 30fps 稳定出流后可停机回空闲（见收敛设计 §12）。
 
 | 目标 | 覆盖 |
 |---|---|

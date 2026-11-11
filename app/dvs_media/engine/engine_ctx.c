@@ -522,7 +522,18 @@ int dvs_engine_apply_layout_frame(dvs_engine* e,
             int lane = 0;
             dvs_session_admit(old[i].sip, old[i].udp_port, &lane);
         }
-        engine_set_fail(e, "MEDIA_SESSION_FAILED");
+        /* A layout the mode validator rejects is a client payload bug,
+         * not a sick signal: report conflict so the barrier fixes the
+         * payload instead of retrying. Anything else stays a media
+         * failure (allocation, whitelist race, unknown backend). */
+        {
+            int mw = 0, mh = 0;
+            file_playout_mode_dims(&e->cfg, &mw, &mh);
+            if (file_playout_pip_validate(saved_new, count, mw, mh) != 0)
+                engine_set_fail(e, "LAYOUT_CONFLICT");
+            else
+                engine_set_fail(e, "MEDIA_SESSION_FAILED");
+        }
         pthread_mutex_unlock(&e->mu);
         fprintf(stderr, "dvs_engine: shadow prepare failed, picture kept\n");
         return -1;
@@ -828,6 +839,10 @@ struct json_object* dvs_engine_commit_report(dvs_engine* e) {
 const char* dvs_engine_last_fail(dvs_engine* e) {
     if (!e || !e->last_fail[0]) return "";
     return e->last_fail;
+}
+
+void dvs_engine_note_fail(dvs_engine* e, const char* code) {
+    engine_set_fail(e, code);
 }
 
 void dvs_engine_set_pending_base(dvs_engine* e,

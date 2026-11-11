@@ -155,6 +155,14 @@ int dvs_session_reserve_batch(char ips[][DVS_SESSION_KEY_LEN],
         if (!ips[i][0]) return -1;
         if (!dvs_session_whitelist_check(ips[i], ports[i])) return -1;
     }
+    /* A batch naming the same source twice is a caller bug: the commit-time
+     * validator rejects it, so fail here too instead of admitting it once
+     * and hiding the duplication from the admission table. */
+    for (int i = 0; i < n; i++) {
+        for (int j = i + 1; j < n; j++) {
+            if (ports[i] == ports[j] && strcmp(ips[i], ips[j]) == 0) return -1;
+        }
+    }
     for (int i = 0; i < n; i++) {
         int lane = 0;
         /* Cannot fail: every entry passed the whitelist check above and

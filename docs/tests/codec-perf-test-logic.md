@@ -4,7 +4,7 @@
 > ① x86 上游遗留的 `app/perf` 帧格式转换/DMA 基准（C，DPDK 环境跑）；
 > ② 本 fork RK3588 板端的 `tests/perf` 采集/编解码画像编排（Python，标准库直跑）。
 > 设计方案原文见 `docs/tests/rk3588-capture-encode-decode-perf-design.md`，板端使用说明见 `tests/perf/README.md`。
-> 延时指标的精确语义与正确性分析见 `docs/tests/codec-latency-semantics.md`。
+> 延时指标的精确语义与正确性分析见 `docs/archive/perf/2026-11-11-codec-latency-truth.md`。
 
 ## 一、总体结构
 

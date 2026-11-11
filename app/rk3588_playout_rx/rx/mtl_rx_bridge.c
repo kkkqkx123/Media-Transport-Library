@@ -11,7 +11,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <st_api.h>
+
+/* Sliding window for per-packet bridge work cost (us). */
+#define BRIDGE_WORK_WIN 128
 
 struct mtl_rx_bridge {
     mtl_rx_bridge_params cfg;
@@ -20,6 +24,15 @@ struct mtl_rx_bridge {
     uint64_t             stat_bridged;
     uint64_t             stat_stamp_ok;
     uint32_t             stat_drops;
+    /* Contention observability, single writer (bridge thread):
+     * work = memcpy+SEI+push cost, wait = blocked time in ring_pop_wait,
+     * ring_max = max mtl_ring depth observed. Shared-core contention shows
+     * as work_ema inflation + wait_ema collapse + ring_max growth. */
+    uint64_t             stat_work_us_ema;
+    uint64_t             stat_wait_us_ema;
+    uint32_t             stat_work_win[BRIDGE_WORK_WIN];
+    int                  stat_work_count;
+    int                  stat_ring_max;
     FILE*                dump_h264;
     FILE*                dump_idx;
     uint64_t             dump_bytes;
@@ -88,6 +101,37 @@ static void bridge_dump_close(mtl_rx_bridge* b) {
     }
 }
 
+static uint64_t bridge_now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
+static void bridge_note_timing(mtl_rx_bridge* b, uint64_t t_wait0,
+                               uint64_t t_work0, uint64_t t_done) {
+    uint64_t wait_us = t_work0 > t_wait0 ? (t_work0 - t_wait0) / 1000ULL : 0;
+    uint64_t work_us = t_done > t_work0 ? (t_done - t_work0) / 1000ULL : 0;
+    /* integer EMA x9/10, same shape as mpp_encoder encode_cost */
+    b->stat_wait_us_ema = b->stat_wait_us_ema
+        ? (b->stat_wait_us_ema * 9 + wait_us + 5) / 10
+        : wait_us;
+    b->stat_work_us_ema = b->stat_work_us_ema
+        ? (b->stat_work_us_ema * 9 + work_us + 5) / 10
+        : work_us;
+    if (b->stat_work_count < BRIDGE_WORK_WIN) {
+        b->stat_work_win[b->stat_work_count++] = (uint32_t)work_us;
+    } else {
+        memmove(&b->stat_work_win[0], &b->stat_work_win[1],
+                (size_t)(BRIDGE_WORK_WIN - 1) * sizeof(uint32_t));
+        b->stat_work_win[BRIDGE_WORK_WIN - 1] = (uint32_t)work_us;
+    }
+    if (b->cfg.mtl_ring) {
+        int depth = atomic_load(&b->cfg.mtl_ring->count);
+        if (depth > b->stat_ring_max)
+            b->stat_ring_max = depth;
+    }
+}
+
 static void* bridge_thread(void* arg) {
     mtl_rx_bridge* b = (mtl_rx_bridge*)arg;
 #if defined(__linux__) && defined(_GNU_SOURCE)
@@ -97,8 +141,10 @@ static void* bridge_thread(void* arg) {
 
     while (atomic_load(&b->running)) {
         struct file_playout_rx_pkt* mp = NULL;
+        uint64_t t_wait0 = bridge_now_ns();
         if (ring_pop_wait(b->cfg.mtl_ring, (void**)&mp, &b->running) != 0)
             continue;
+        uint64_t t_work0 = bridge_now_ns();
         if (!mp || !mp->frame || !mp->size) {
             bridge_release_rx_pkt(b, mp);
             continue;
@@ -154,6 +200,7 @@ static void* bridge_thread(void* arg) {
             b->stat_drops++;
             continue;
         }
+        bridge_note_timing(b, t_wait0, t_work0, bridge_now_ns());
         b->stat_bridged++;
     }
 
@@ -221,4 +268,50 @@ void mtl_rx_bridge_get_stats(const mtl_rx_bridge* b, uint64_t* bridged,
         *drops = b->stat_drops;
     if (stamp_ok)
         *stamp_ok = b->stat_stamp_ok;
+}
+
+void mtl_rx_bridge_get_timing(const mtl_rx_bridge* b, uint32_t* work_ema_us,
+                              uint32_t* wait_ema_us, uint32_t* work_p50_us,
+                              uint32_t* work_p99_us, int* ring_max_depth) {
+    uint32_t tmp[BRIDGE_WORK_WIN];
+    int n;
+    if (work_ema_us)
+        *work_ema_us = 0;
+    if (wait_ema_us)
+        *wait_ema_us = 0;
+    if (work_p50_us)
+        *work_p50_us = 0;
+    if (work_p99_us)
+        *work_p99_us = 0;
+    if (ring_max_depth)
+        *ring_max_depth = 0;
+    if (!b)
+        return;
+    if (work_ema_us)
+        *work_ema_us = (uint32_t)b->stat_work_us_ema;
+    if (wait_ema_us)
+        *wait_ema_us = (uint32_t)b->stat_wait_us_ema;
+    if (ring_max_depth)
+        *ring_max_depth = b->stat_ring_max;
+    /* Benign race: single writer (bridge thread), torn window reads only
+     * skew one stats sample. */
+    n = b->stat_work_count;
+    if (n <= 0)
+        return;
+    if (n > BRIDGE_WORK_WIN)
+        n = BRIDGE_WORK_WIN;
+    memcpy(tmp, b->stat_work_win, (size_t)n * sizeof(uint32_t));
+    for (int i = 1; i < n; i++) {
+        uint32_t v = tmp[i];
+        int j = i;
+        while (j > 0 && tmp[j - 1] > v) {
+            tmp[j] = tmp[j - 1];
+            j--;
+        }
+        tmp[j] = v;
+    }
+    if (work_p50_us)
+        *work_p50_us = tmp[(n * 50) / 100 >= n ? n - 1 : (n * 50) / 100];
+    if (work_p99_us)
+        *work_p99_us = tmp[(n * 99) / 100 >= n ? n - 1 : (n * 99) / 100];
 }

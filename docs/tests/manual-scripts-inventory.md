@@ -9,7 +9,7 @@
 | 本地 | 板端源码 | 板端产物 | 输入 → 输出 | 对照设计 |
 |---|---|---|---|---|
 | `debug/v4l2_cap_latency.c` | `src/debug/v4l2_cap_latency.c` | `bin/v4l2_cap_latency` | `/dev/video0` → 帧间隔分布 + `--csv` | `rk3588-capture-encode-decode-perf-design.md` 采集基线 |
-| `debug/mpp_enc_frame_latency.c` | `src/debug/mpp_enc_frame_latency.c` | `bin/mpp_enc_latency` | `streams/*.nv12/bgr3` → 单帧提交到产出耗时 + `--csv`/`--out h264` | 同上编码上限；BGR 直通语义见 `codec-latency-semantics.md` |
+| `debug/mpp_enc_frame_latency.c` | `src/debug/mpp_enc_frame_latency.c` | `bin/mpp_enc_latency` | `streams/*.nv12/bgr3` → 单帧提交到产出耗时 + `--csv`/`--out h264` | 同上编码上限；BGR 直通语义见 `docs/archive/perf/2026-11-11-codec-latency-truth.md` |
 | `debug/mpp_dec_frame_latency.c` | `src/debug/mpp_dec_frame_latency.c` | `bin/mpp_dec_latency` | `streams/*.h264` → 送入到首帧耗时 + `--csv` | 同上解码上限；`--wait-ms` 为单 AU 拉取截止期，必须大于最慢真实帧，否则慢帧被误记 `no_output`（旧板二进制无此参数，已重编收敛） |
 | `debug/rga_blit_latency.c` | `src/debug/rga_blit_latency.c` | `bin/rga_blit_latency` | 堆内缓冲自拷贝/缩放 → 单次 blit 耗时 + `--csv` | 同上转换开销；`--srcfmt bgr3` 覆盖生产采集路径 |
 | `debug/bgr_stride_matrix.sh` | `src/debug/bgr_stride_matrix.sh` | 板上直跑 | 生成条纹 BGR/NV12 → 4 格编码对照 verdict | BGR 对齐取证（CLEAN/640 周期 TILED） |

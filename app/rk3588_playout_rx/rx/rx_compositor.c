@@ -1,4 +1,5 @@
 #include "rx_compositor.h"
+#include "rx_decode_common.h"
 #include "mtl_rx_mp4.h"
 #include "mtl_rx_bridge.h"
 #include "mtl_rx_audio.h"
@@ -51,6 +52,11 @@ typedef struct rx_video_lane {
     uint64_t              stat_decoded;
     uint64_t              last_rx_pts;
     uint64_t              last_progress_mono_ns;
+    /* per-frame decode latency: feed -> first displayable frame of that AU.
+     * Single-writer (lane decode thread); window lives in rx_decode_common. */
+    rx_dec_lat            dec_lat;
+    uint64_t              dec_feed_start_ns;
+    bool                  dec_first_pending;
     rx_e2e_stats          e2e;
     uint64_t              snap_received;
     uint64_t              snap_decoded;
@@ -134,77 +140,46 @@ static void pin_thread(pthread_t thd, int cpu) {
     pthread_setaffinity_np(thd, sizeof(cset), &cset);
 }
 
-static int lane_dispatch_frame(rx_video_lane* lane, int out_fd, uint32_t out_h_stride,
-                               uint32_t out_v_stride, uint64_t rx_timestamp,
-                               uint64_t capture_tai_ns) {
-    lane->stat_decoded++;
-    playout_buffer_push(&lane->pb, out_fd, out_h_stride, out_v_stride, rx_timestamp,
-                        capture_tai_ns);
-    return 1;
+static uint64_t lane_now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
 
-static int lane_drain_decoder(rx_compositor* comp, rx_video_lane* lane, uint64_t au_pts,
-                              uint64_t capture_tai_ns, int idle_rounds) {
-    void* dec = lane->decoder->priv;
-    int outputs = 0;
-    int idle = 0;
-    int au_frame_idx = 0;
-
-    for (;;) {
-        int out_fd;
-        uint32_t out_h_stride, out_v_stride;
-
-        if (mpp_dec_pull(dec, &out_fd, &out_h_stride, &out_v_stride) == 1) {
-            idle = 0;
-            uint64_t frame_pts;
-            if (au_pts)
-                frame_pts = au_pts + (uint64_t)au_frame_idx * lane->frame_period_ns;
-            else if (lane->layer_idx == comp->main_lane_idx)
-                frame_pts = av_sync_playout_target_ns(&comp->sync);
-            else
-                frame_pts = 0;
-            lane_dispatch_frame(lane, out_fd, out_h_stride, out_v_stride, frame_pts,
-                                capture_tai_ns);
-            au_frame_idx++;
-            outputs++;
-            continue;
-        }
-        if (idle >= idle_rounds)
-            break;
-        idle++;
-        for (int w = 0; w < 50; w++)
-            sched_yield();
+/* Shared-drain frame sink: count, latency-sample the first frame per feed,
+ * then queue for render. pts 0 (sub-lane, no au stamp) rides through for
+ * newest-frame pop. */
+static void lane_dispatch_cb(int out_fd, uint32_t out_h_stride,
+                             uint32_t out_v_stride, uint64_t frame_pts,
+                             uint64_t capture_tai_ns, void* arg) {
+    rx_video_lane* lane = (rx_video_lane*)arg;
+    lane->stat_decoded++;
+    if (lane->dec_first_pending) {
+        rx_dec_lat_record(&lane->dec_lat, lane->dec_feed_start_ns);
+        lane->dec_first_pending = false;
     }
-    return outputs;
+    playout_buffer_push(&lane->pb, out_fd, out_h_stride, out_v_stride,
+                        frame_pts, capture_tai_ns);
+}
+
+/* Fallback pts when the AU carries no stamp: main lane waits on the playout
+ * target, sub lanes pop newest regardless. Computed once per feed (per-frame
+ * values would differ by less than one decode service; absorbed by the
+ * playout delay and invisible to E2E-C, which keys off capture_tai_ns). */
+static uint64_t lane_fallback_pts(rx_compositor* comp, rx_video_lane* lane) {
+    if (lane->layer_idx == comp->main_lane_idx)
+        return av_sync_playout_target_ns(&comp->sync);
+    return 0;
 }
 
 static int lane_feed_packet(rx_compositor* comp, rx_video_lane* lane, uint8_t* data,
                             size_t size, uint64_t rx_timestamp, uint64_t capture_tai_ns) {
-    const uint8_t* feed_data = data;
-    size_t feed_size = size;
-    int feed_owned = 0;
-    void* dec = lane->decoder->priv;
-
-    if (lane->h264) {
-        if (h264_prep_for_mpp(lane->h264, data, size, &feed_data, &feed_size,
-                              &feed_owned) < 0)
-            return -1;
-    }
-
-    if (mpp_dec_uses_whole_au(dec)) {
-        if (mpp_dec_put_whole(dec, (uint8_t*)feed_data, feed_size) < 0) {
-            if (feed_owned) free((void*)feed_data);
-            return -1;
-        }
-    } else if (mpp_dec_put(dec, (uint8_t*)feed_data, feed_size) < 0) {
-        if (feed_owned) free((void*)feed_data);
-        return -1;
-    }
-
-    int idle_rounds = mpp_dec_uses_aggressive_pull(dec) ? MPP_DEC_AGGRESSIVE_IDLE_ROUNDS : 0;
-    int outputs = lane_drain_decoder(comp, lane, rx_timestamp, capture_tai_ns, idle_rounds);
-    if (feed_owned) free((void*)feed_data);
-    return outputs;
+    lane->dec_feed_start_ns = lane_now_ns();
+    lane->dec_first_pending = true;
+    return rx_decode_feed_and_drain(lane->decoder->priv, lane->h264, data,
+                                    size, rx_timestamp, lane->frame_period_ns,
+                                    lane_fallback_pts(comp, lane), capture_tai_ns,
+                                    0, lane_dispatch_cb, lane, NULL, NULL);
 }
 
 static void* decode_thread(void* arg) {
@@ -237,9 +212,13 @@ static void* decode_thread(void* arg) {
 
     if (mpp_dec_uses_aggressive_pull(dec)) {
         mpp_dec_send_eos(dec);
-        lane_drain_decoder(comp, lane, lane->last_rx_pts, 0, MPP_DEC_EOS_FLUSH_IDLE_ROUNDS);
+        rx_decode_drain(dec, lane->last_rx_pts, lane->frame_period_ns,
+                        lane_fallback_pts(comp, lane), 0,
+                        MPP_DEC_EOS_FLUSH_IDLE_ROUNDS, lane_dispatch_cb, lane);
     } else {
-        lane_drain_decoder(comp, lane, lane->last_rx_pts, 0, 0);
+        rx_decode_drain(dec, lane->last_rx_pts, lane->frame_period_ns,
+                        lane_fallback_pts(comp, lane), 0, 0, lane_dispatch_cb,
+                        lane);
     }
     return NULL;
 }
@@ -409,6 +388,7 @@ static void lane_free(rx_video_lane* lane) {
     }
     if (lane->h264) h264_prep_free(lane->h264);
     rx_e2e_stats_destroy(&lane->e2e);
+    rx_dec_lat_destroy(&lane->dec_lat);
     playout_buffer_destroy(&lane->pb);
 }
 
@@ -478,6 +458,7 @@ static int lane_init(rx_compositor* comp, int idx, const file_playout_pip_stream
         return -1;
 
     rx_e2e_stats_init(&lane->e2e);
+    rx_dec_lat_init(&lane->dec_lat);
     snprintf(lane->stats_label, sizeof(lane->stats_label), "%u", stream->udp_port);
 
     playout_buffer_init(&lane->pb);
@@ -879,21 +860,34 @@ void rx_compositor_report_stats(rx_compositor* comp, int period_s, bool reset_pe
         uint64_t d_dec = lane->stat_decoded - lane->snap_decoded;
         uint32_t d_mtl_drop = mtl_drops - lane->snap_mtl_drops;
         uint32_t d_br_drop  = br_drops - lane->snap_br_drops;
+        uint32_t dec_p50 = 0, dec_p99 = 0;
+        rx_dec_lat_percentiles(&lane->dec_lat, &dec_p50, &dec_p99);
 
         rx_e2e_stats_print(&lane->e2e, lane->stats_label, true, d_stamp,
                            comp->cfg.time_now != NULL);
         printf("  RX[%s]: mtl_rx=+%llu bridge=+%llu dec=+%llu "
-               "mtl_drop=+%u br_drop=+%u corrupt=%u incomplete=%u\n",
+               "mtl_drop=+%u br_drop=+%u corrupt=%u incomplete=%u "
+               "dec_p50=%uus dec_p99=%uus\n",
                lane->stats_label,
                (unsigned long long)d_mtl, (unsigned long long)d_br,
                (unsigned long long)d_dec, d_mtl_drop, d_br_drop, corrupt,
-               incomplete);
+               incomplete, dec_p50, dec_p99);
         uint64_t overrun = playout_buffer_overrun_drops(&lane->pb);
         printf("  RX[%s] total: pkt=%llu dec=%llu overrun=%llu\n",
                lane->stats_label,
                (unsigned long long)lane->stat_received,
                (unsigned long long)lane->stat_decoded,
                (unsigned long long)overrun);
+        if (lane->bridge) {
+            uint32_t work_ema = 0, wait_ema = 0, work_p50 = 0, work_p99 = 0;
+            int ring_max = 0;
+            mtl_rx_bridge_get_timing(lane->bridge, &work_ema, &wait_ema,
+                                     &work_p50, &work_p99, &ring_max);
+            printf("  BR[%s]: work_ema=%uus work_p50=%uus work_p99=%uus "
+                   "wait_ema=%uus ring_max=%d\n",
+                   lane->stats_label, work_ema, work_p50, work_p99, wait_ema,
+                   ring_max);
+        }
 
         if (reset_period) {
             rx_e2e_stats_reset_period(&lane->e2e);

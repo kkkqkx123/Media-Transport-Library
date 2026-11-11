@@ -27,4 +27,11 @@ void mtl_rx_bridge_free(mtl_rx_bridge* b);
 void mtl_rx_bridge_get_stats(const mtl_rx_bridge* b, uint64_t* bridged,
                              uint32_t* drops, uint64_t* stamp_ok);
 
+/** Snapshot bridge timing (us): work = memcpy+SEI+push cost, wait = time
+ * blocked in ring_pop_wait, work_p50/p99 over a sliding window,
+ * ring_max_depth = max mtl_ring depth observed. All may be NULL. */
+void mtl_rx_bridge_get_timing(const mtl_rx_bridge* b, uint32_t* work_ema_us,
+                              uint32_t* wait_ema_us, uint32_t* work_p50_us,
+                              uint32_t* work_p99_us, int* ring_max_depth);
+
 #endif /* _MTL_RX_BRIDGE_H_ */

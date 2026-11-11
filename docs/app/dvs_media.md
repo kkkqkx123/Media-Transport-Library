@@ -81,7 +81,7 @@ dvs_media --version                            # 输出 bundle + IPC 版本后�
 
 - DRM 输出口：`/dev/dri/card0` 连接器枚举，未连接且无模式的跳过；命名 `HDMI-A-<type_id>`，每口上报最大宽高/刷新率与模式数；`max_layers` 取 plane 总数。
 - V4L2 输入口：与 TX 后端共用同一套扫描表（QUERYCAP 物理身份优先，设备路径兜底），按扫描顺序绑定 `HDMIk`；每口上报 `id/label/kind` + 当前设备路径 + 稳定物理身份 + 信号有无 + 3840×2160@60 上限；无设备时为空数组，不报错。
-- 解码上限：静态上限 = min（合成 lane 上限 8，NV12 路径 4，DRM plane 数，MPP 上限默认 4）；`DVS_MAX_DECODE_SESSIONS` 环境变量优先覆盖；可用数 = 静态上限 − 已准入数（钳制 ≥0）。
+- 解码上限：静态上限 = min（合成 lane 上限 8，NV12 lane 上限 4，DRM plane 数，MPP 上限默认 4）；`DVS_MAX_DECODE_SESSIONS` 环境变量优先覆盖；可用数 = 静态上限 − 已准入数（钳制 ≥0）。NV12 上限 4 为板上实测的硬件 plane 数（11-11 探针验证，见归档 `docs/archive/tx-rx/2026-11-11-eight-lane-probe-revert.md`），超限截断告警。
 - TX 上限：SoC 公开极限（`h264,h265`、3840×2160@60、20000kbps），捕获口复用 `inputPorts`，不另行探测。
 - PTP：`synced/unsynced/unknown` + 偏移 µs；monotonic 时钟模式恒报 `unsynced`（已知未同步）；`capability` 快照取探测值，`query_state` 走 live hook（MTL TAI 与本地 TAI 差换算，MTL 未就绪则 unknown）。
 - MTL：版本号 live 刷新；backend 按端口名前缀映射（`kernel:`→kernel、`native_af_xdp/dpdk_af_xdp/dpdk_af_packet`→af_xdp、其余→dpdk），双端口前缀不一致时报 `unknown`。

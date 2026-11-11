@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "rx_pipeline.h"
+#include "rx_decode_common.h"
 #include "mtl_rx_audio.h"
 #include "mtl_rx_mp4.h"
 #include "mtl_rx_bridge.h"
@@ -27,8 +28,6 @@
 #include <unistd.h>
 
 /* Legacy path chunks at 8KB inside mpp_dec_put (see FEED_CHUNK_SIZE). */
-
-#define RX_DEC_LAT_WIN 300
 
 static uint64_t rx_now_ns(void) {
     struct timespec ts;
@@ -67,10 +66,8 @@ struct rx_pipeline {
     rx_e2e_stats         e2e;
     uint64_t last_rx_pts;
     /* per-frame decode latency: feed -> first displayable frame of that AU.
-     * Single-writer (decode thread), windowed like mpp_encoder's lat_win. */
-    pthread_mutex_t      dec_lat_lock;
-    uint32_t             dec_lat_win[RX_DEC_LAT_WIN];
-    int                  dec_lat_count;
+     * Single-writer (decode thread); window lives in rx_decode_common. */
+    rx_dec_lat           dec_lat;
     uint64_t             dec_feed_start_ns;
     bool                 dec_first_pending;
     char                 stats_label[24];
@@ -84,71 +81,26 @@ struct rx_pipeline {
     uint32_t             snap_br_drops;
 };
 
-static int rx_dispatch_frame(rx_pipeline* rp, int out_fd, uint32_t out_h_stride,
-                             uint32_t out_v_stride, uint64_t rx_timestamp,
-                             uint64_t capture_tai_ns) {
+/* Shared-drain frame sink: count, latency-sample the first frame per feed,
+ * map pts 0 to the playout target, then queue for render. */
+static void rx_dispatch_cb(int out_fd, uint32_t out_h_stride,
+                           uint32_t out_v_stride, uint64_t frame_pts,
+                           uint64_t capture_tai_ns, void* arg) {
+    rx_pipeline* rp = (rx_pipeline*)arg;
     rp->stat_decoded++;
 
     /* first displayable frame after a feed: record feed->pull latency */
-    if (rp->dec_first_pending && rp->dec_feed_start_ns) {
-        uint64_t now = rx_now_ns();
-        if (now > rp->dec_feed_start_ns) {
-            uint32_t us = (uint32_t)((now - rp->dec_feed_start_ns) / 1000ULL);
-            pthread_mutex_lock(&rp->dec_lat_lock);
-            if (rp->dec_lat_count < RX_DEC_LAT_WIN) {
-                rp->dec_lat_win[rp->dec_lat_count++] = us;
-            } else {
-                memmove(&rp->dec_lat_win[0], &rp->dec_lat_win[1],
-                        (size_t)(RX_DEC_LAT_WIN - 1) * sizeof(uint32_t));
-                rp->dec_lat_win[RX_DEC_LAT_WIN - 1] = us;
-            }
-            pthread_mutex_unlock(&rp->dec_lat_lock);
-        }
+    if (rp->dec_first_pending) {
+        rx_dec_lat_record(&rp->dec_lat, rp->dec_feed_start_ns);
         rp->dec_first_pending = false;
     }
 
-    if (!rx_timestamp)
-        rx_timestamp = av_sync_playout_target_ns(&rp->sync);
+    if (!frame_pts)
+        frame_pts = av_sync_playout_target_ns(&rp->sync);
 
-    playout_buffer_push(&rp->pb, out_fd, out_h_stride, out_v_stride, rx_timestamp,
+    playout_buffer_push(&rp->pb, out_fd, out_h_stride, out_v_stride, frame_pts,
                         capture_tai_ns);
     rp->stat_queued++;
-    return 1;
-}
-
-/** Pull displayable frames; optional idle retries (B-frame reorder delay).
- * P3: each MPP output gets au_pts + n * frame_period (n = 0,1,... within AU). */
-static int rx_drain_decoder(rx_pipeline* rp, uint64_t au_pts, uint64_t capture_tai_ns,
-                            int idle_rounds) {
-    void* dec = rp->decoder->priv;
-    int outputs = 0;
-    int idle = 0;
-    int au_frame_idx = 0;
-
-    for (;;) {
-        int out_fd;
-        uint32_t out_h_stride, out_v_stride;
-
-        if (mpp_dec_pull(dec, &out_fd, &out_h_stride, &out_v_stride) == 1) {
-            idle = 0;
-            uint64_t frame_pts;
-            if (au_pts)
-                frame_pts = au_pts + (uint64_t)au_frame_idx * rp->frame_period_ns;
-            else
-                frame_pts = av_sync_playout_target_ns(&rp->sync);
-            rx_dispatch_frame(rp, out_fd, out_h_stride, out_v_stride, frame_pts,
-                              capture_tai_ns);
-            au_frame_idx++;
-            outputs++;
-            continue;
-        }
-        if (idle >= idle_rounds)
-            break;
-        idle++;
-        for (int w = 0; w < 50; w++)
-            sched_yield();
-    }
-    return outputs;
 }
 
 static int rx_render_frame(rx_pipeline* rp, int dma_fd, uint32_t hor_stride,
@@ -167,38 +119,19 @@ static int rx_render_frame(rx_pipeline* rp, int dma_fd, uint32_t hor_stride,
 
 static int rx_feed_packet(rx_pipeline* rp, uint8_t* data, size_t size,
                           uint64_t rx_timestamp, uint64_t capture_tai_ns) {
-    const uint8_t* feed_data = data;
-    size_t feed_size = size;
-    int feed_owned = 0;
-    void* dec = rp->decoder->priv;
+    int prep_fail = 0, put_fail = 0;
+    int outputs;
 
-    rp->dec_feed_start_ns  = rx_now_ns();
-    rp->dec_first_pending  = true;
+    rp->dec_feed_start_ns = rx_now_ns();
+    rp->dec_first_pending = true;
 
-    if (rp->h264) {
-        if (h264_prep_for_mpp(rp->h264, data, size, &feed_data, &feed_size,
-                              &feed_owned) < 0) {
-            rp->stat_prep_invalid++;
-            return -1;
-        }
-    }
-
-    if (mpp_dec_uses_whole_au(dec)) {
-        if (mpp_dec_put_whole(dec, (uint8_t*)feed_data, feed_size) < 0) {
-            rp->stat_put_fail++;
-            if (feed_owned) free((void*)feed_data);
-            return -1;
-        }
-    } else if (mpp_dec_put(dec, (uint8_t*)feed_data, feed_size) < 0) {
-        rp->stat_put_fail++;
-        if (feed_owned) free((void*)feed_data);
-        return -1;
-    }
-
-    int idle_rounds = mpp_dec_uses_aggressive_pull(dec) ? MPP_DEC_AGGRESSIVE_IDLE_ROUNDS : 0;
-    int outputs = rx_drain_decoder(rp, rx_timestamp, capture_tai_ns, idle_rounds);
-
-    if (feed_owned) free((void*)feed_data);
+    /* pts 0 maps to the playout target inside the sink (same as before). */
+    outputs = rx_decode_feed_and_drain(rp->decoder->priv, rp->h264, data, size,
+                                       rx_timestamp, rp->frame_period_ns, 0,
+                                       capture_tai_ns, 0, rx_dispatch_cb, rp,
+                                       &prep_fail, &put_fail);
+    rp->stat_prep_invalid += (uint64_t)prep_fail;
+    rp->stat_put_fail += (uint64_t)put_fail;
 
     if (outputs > 0)
         rp->dec_err_streak = 0;
@@ -318,9 +251,11 @@ static void* decode_thread(void* arg) {
 
     if (mpp_dec_uses_aggressive_pull(dec)) {
         mpp_dec_send_eos(dec);
-        rx_drain_decoder(rp, rp->last_rx_pts, 0, MPP_DEC_EOS_FLUSH_IDLE_ROUNDS);
+        rx_decode_drain(dec, rp->last_rx_pts, rp->frame_period_ns, 0, 0,
+                        MPP_DEC_EOS_FLUSH_IDLE_ROUNDS, rx_dispatch_cb, rp);
     } else {
-        rx_drain_decoder(rp, rp->last_rx_pts, 0, 0);
+        rx_decode_drain(dec, rp->last_rx_pts, rp->frame_period_ns, 0, 0, 0,
+                        rx_dispatch_cb, rp);
     }
 
     return NULL;
@@ -339,7 +274,7 @@ rx_pipeline* rx_pipeline_create(const rx_pipeline_params* params) {
     if (!rp) return NULL;
     rp->cfg = *params;
     rx_e2e_stats_init(&rp->e2e);
-    pthread_mutex_init(&rp->dec_lat_lock, NULL);
+    rx_dec_lat_init(&rp->dec_lat);
     if (params->udp_port)
         snprintf(rp->stats_label, sizeof(rp->stats_label), "%u", params->udp_port);
     else
@@ -432,6 +367,7 @@ void rx_pipeline_free(rx_pipeline* rp) {
     if (rp->h264) h264_prep_free(rp->h264);
     rx_e2e_stats_destroy(&rp->e2e);
     playout_buffer_destroy(&rp->pb);
+    rx_dec_lat_destroy(&rp->dec_lat);
     pthread_mutex_destroy(&rp->sync.lock);
     free(rp);
 }
@@ -554,26 +490,8 @@ void rx_pipeline_report_stats(rx_pipeline* rp, const mtl_rx_mp4* mrx,
     uint32_t d_br_drop  = br_drops - rp->snap_br_drops;
 
     /* decode latency percentiles over the sliding window (us; 0 = no sample) */
-    uint32_t dec_lat[RX_DEC_LAT_WIN];
-    int dec_lat_n;
-    pthread_mutex_lock(&rp->dec_lat_lock);
-    dec_lat_n = rp->dec_lat_count;
-    if (dec_lat_n > 0)
-        memcpy(dec_lat, rp->dec_lat_win, (size_t)dec_lat_n * sizeof(uint32_t));
-    pthread_mutex_unlock(&rp->dec_lat_lock);
     uint32_t dec_p50 = 0, dec_p99 = 0;
-    if (dec_lat_n > 0) {
-        for (int i = 1; i < dec_lat_n; i++) {
-            uint32_t v = dec_lat[i];
-            int j = i;
-            while (j > 0 && dec_lat[j - 1] > v) { dec_lat[j] = dec_lat[j - 1]; j--; }
-            dec_lat[j] = v;
-        }
-        dec_p50 = dec_lat[(dec_lat_n * 50) / 100 >= dec_lat_n
-                              ? dec_lat_n - 1 : (dec_lat_n * 50) / 100];
-        dec_p99 = dec_lat[(dec_lat_n * 99) / 100 >= dec_lat_n
-                              ? dec_lat_n - 1 : (dec_lat_n * 99) / 100];
-    }
+    rx_dec_lat_percentiles(&rp->dec_lat, &dec_p50, &dec_p99);
 
     printf("=== RX stats (+%ds) ===\n", period_s > 0 ? period_s : 0);
     rx_e2e_stats_print(&rp->e2e, rp->stats_label, true, d_stamp,
@@ -593,6 +511,16 @@ void rx_pipeline_report_stats(rx_pipeline* rp, const mtl_rx_mp4* mrx,
            (unsigned long long)rp->stat_rendered,
            (unsigned long long)rp->stat_pb_skip,
            (unsigned long long)rp->stat_pb_underrun);
+    if (bridge) {
+        uint32_t work_ema = 0, wait_ema = 0, work_p50 = 0, work_p99 = 0;
+        int ring_max = 0;
+        mtl_rx_bridge_get_timing(bridge, &work_ema, &wait_ema, &work_p50,
+                                 &work_p99, &ring_max);
+        printf("  BR[%s]: work_ema=%uus work_p50=%uus work_p99=%uus "
+               "wait_ema=%uus ring_max=%d\n",
+               rp->stats_label, work_ema, work_p50, work_p99, wait_ema,
+               ring_max);
+    }
 
     if (reset_period) {
         rx_e2e_stats_reset_period(&rp->e2e);

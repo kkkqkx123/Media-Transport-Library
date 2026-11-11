@@ -58,7 +58,7 @@ ZL 只有异步编码、没有异步解码（解码侧靠多路并发与呈现�
 只有当异步上限明显高于生产实际吞吐、且生产侧出现 `put_fail` /
 `drain_pull` 堆积时，才考虑生产解码异步化。在此之前**不动生产解码代码**。
 
-定案（11-11，正式决策见 `docs/plan/rk3588/RK3588_DECODE_ASYNC_PLAN.md`）：
+定案（11-11，门控状态见 `docs/archive/perf/2026-11-11-codec-latency-truth.md` §5）：
 上限复现（+27~32%，跨启动稳定）。但并发对照（1080p x4 交错复测两轮）
 证明**多会话下 sync 全面反超 async**（aggregate 高约 20%，stretch
 0.58 vs 0.40）——并发 sync 已打满 HW，生产吞吐侧**不替换**。
@@ -161,7 +161,7 @@ python3 ~/code/mtl/src/perf/mpp_async_ceiling.py \
 
 round1 的 file 模式探针是 CPU memcpy 进 MPP 内部分配缓冲，生产却是
 RGA 池 dma-buf 经 `mpp_buffer_import(EXT_DMA)` 零拷贝直投——两者差一个
-约 2.7GB/s 的冷缓冲 DRAM 开销（见 round1 报告 §3），file 模式数字不能
+约 2.7GB/s 的冷缓冲 DRAM 开销（round1 归档已随旧口径文档清理，结论见真相源 §4 R1），file 模式数字不能
 直接代表生产。因此编码探针加 `--src file|dmaheap`（默认 file，旧行为不变）：
 
 - `dmaheap`：从生产同款 dma32 堆（`system-uncached-dma32` 优先，回退

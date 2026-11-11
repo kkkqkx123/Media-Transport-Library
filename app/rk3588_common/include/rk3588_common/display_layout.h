@@ -8,6 +8,9 @@
 #define MP4_PIP_SIP_LEN           32
 #define DISPLAY_LAYOUT_MAX_LAYERS 8
 #define MP4_PIP_MAX_LANES         8
+/* Direct-display NV12 lanes. Board-verified: the
+ * RK3588 exposes exactly 4 NV12-capable planes on the video CRTC, so the
+ * lane cap stays 4; beyond that needs RGA pre-composition (future work). */
 #define MP4_PIP_V1_NV12_LANES     4
 
 /** JSON display_viewport — Phase A single window. */
@@ -19,7 +22,7 @@ typedef struct file_playout_display_viewport {
     int  height;
 } file_playout_display_viewport;
 
-/** One ST22 receive lane (Phase B pip_streams[] entry). */
+/** One ST22 receive lane. */
 typedef struct file_playout_pip_stream {
     int      lane;
     bool     main;

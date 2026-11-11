@@ -77,6 +77,12 @@ struct dec_async_shared {
   volatile int stop;
   volatile int fail;
   int fed;
+  int fr;   /* frame (non-header) AUs fed; gate counts these, since header
+               * AUs (SPS/PPS/SEI/AUD) never yield frames and would occupy
+               * a fed-minus-framed gate permanently. For baseline streams
+               * without B-frames each non-header AU yields exactly one
+               * frame, so (fr - framed) is the true in-flight depth. */
+  int depth; /* max frame-AUs in flight (gate); --depth, default 16 */
   int put_fail;
   int framed;
   int err_frames;
@@ -85,9 +91,49 @@ struct dec_async_shared {
   uint64_t t_start;
 };
 
+/* Default max frame-AUs in flight. Bounds the MPP input queue so a flood
+ * of puts never pushes the decoder into its full-queue blocking regime;
+ * the feeder then runs at exactly the decoder drain rate and wall fps is
+ * the true pipelined ceiling. */
+#define DEC_ASYNC_MAX_OUTSTANDING 16
+
+/* NAL unit type of the AU at p (p points at the start code). Header AUs
+ * (SEI/SPS/PPS/AUD) never produce frames; the gate must not count them. */
+static int au_is_header(const uint8_t* p, size_t len) {
+  size_t sc = 0;
+  if (len >= 4 && p[0] == 0 && p[1] == 0 && p[2] == 1)
+    sc = 3;
+  else if (len >= 5 && p[0] == 0 && p[1] == 0 && p[2] == 0 && p[3] == 1)
+    sc = 4;
+  else
+    return 0;
+  if (sc >= len) return 0;
+  int nal = p[sc] & 0x1F;
+  return (nal == 6 || nal == 7 || nal == 8 || nal == 9);
+}
+
 static void* dec_async_feeder(void* arg) {
   struct dec_async_shared* a = (struct dec_async_shared*)arg;
   for (int i = 0; i < a->au_total && !a->stop; i++) {
+    int gate_spins = 0;
+    for (;;) {
+      int outstanding;
+      pthread_mutex_lock(&a->slock);
+      /* Gate on frame-AUs in flight, not all AUs: header AUs never
+       * yield frames, so a fed-minus-framed gate would wedge permanently
+       * once depth <= header count. */
+      outstanding = a->fr - a->framed;
+      pthread_mutex_unlock(&a->slock);
+      if (outstanding < a->depth || a->stop) break;
+      struct timespec rq = {.tv_sec = 0, .tv_nsec = 200000};
+      nanosleep(&rq, NULL);
+      if (++gate_spins > 50000) { /* ~10s without drain: HW stall */
+        a->fail = 1;
+        a->stop = 1;
+        break;
+      }
+    }
+    if (a->stop) break;
     MppPacket pkt = NULL;
     mpp_packet_init(&pkt, NULL, 0);
     mpp_packet_set_data(pkt, (void*)(a->data + a->au_off[i]));
@@ -106,12 +152,16 @@ static void* dec_async_feeder(void* arg) {
         break;
       }
     }
+    /* Header-ness is known from content before the put; only frame AUs
+     * advance the gate counter (see struct dec_async_shared.fr). */
+    int is_hdr = au_is_header(a->data + a->au_off[i], a->au_len[i]);
     mpp_packet_deinit(&pkt);
     if (a->stop) break;
     if (attempts <= 200) {
       pthread_mutex_lock(&a->slock);
       a->submit[i] = now_ns();
       a->fed++;
+      if (!is_hdr) a->fr++;
       pthread_mutex_unlock(&a->slock);
     }
   }
@@ -133,6 +183,13 @@ static void* dec_async_feeder(void* arg) {
   return NULL;
 }
 
+/* Completion: the output count can never equal the fed count (SPS/PPS/SEI
+ * non-frame AUs plus priming never yield frames, same allowance as the
+ * verdict). After the feeder is done, framed >= fed - allowance with a
+ * short quiet window means drained; the 5s cap stays as a hard guard. */
+#define DEC_ASYNC_NO_OUTPUT_ALLOWANCE 12
+#define DEC_ASYNC_DRAIN_QUIET_MS 100
+
 static void* dec_async_collector(void* arg) {
   struct dec_async_shared* a = (struct dec_async_shared*)arg;
   int idle = 0;
@@ -141,9 +198,20 @@ static void* dec_async_collector(void* arg) {
     if (a->api->decode_get_frame(a->ctx, &frame) != MPP_OK || !frame) {
       struct timespec rq = {.tv_sec = 0, .tv_nsec = 1000000};
       nanosleep(&rq, NULL);
-      if (++idle > DEC_ASYNC_STALL_MAX ||
-          (a->feeder_done && idle > DEC_ASYNC_DRAIN_IDLE_MAX))
+      idle++;
+      if (idle > DEC_ASYNC_STALL_MAX)
         break;
+      if (a->feeder_done) {
+        int fed, framed;
+        pthread_mutex_lock(&a->slock);
+        fed = a->fed;
+        framed = a->framed;
+        pthread_mutex_unlock(&a->slock);
+        if ((framed >= fed - DEC_ASYNC_NO_OUTPUT_ALLOWANCE &&
+             idle > DEC_ASYNC_DRAIN_QUIET_MS) ||
+            idle > DEC_ASYNC_DRAIN_IDLE_MAX)
+          break;
+      }
       continue;
     }
     idle = 0;
@@ -169,7 +237,9 @@ static void* dec_async_collector(void* arg) {
     pthread_mutex_unlock(&a->slock);
     if (ts > 0 && t1 > ts && a->n_cost < a->au_total)
       a->cost[a->n_cost++] = (uint32_t)((t1 - ts) / 1000ULL);
+    pthread_mutex_lock(&a->slock);
     a->framed++;
+    pthread_mutex_unlock(&a->slock);
     mpp_frame_deinit(&frame);
   }
   return NULL;
@@ -179,7 +249,8 @@ static void* dec_async_collector(void* arg) {
  * rule as the sync path), then runs feeder/collector. Prints the legacy
  * summary line plus wall_fps and a RESULT line for scripts. */
 static int run_dec_async(MppCtx ctx, MppApi* api, const uint8_t* data,
-                         size_t fsize, int max_au, int warmup, const char* csv) {
+                         size_t fsize, int max_au, int warmup, const char* csv,
+                         int depth) {
   size_t* offs = malloc(((size_t)max_au + 1) * sizeof(size_t));
   size_t* lens = malloc(((size_t)max_au + 1) * sizeof(size_t));
   uint64_t* submit = calloc((size_t)max_au + 1, sizeof(uint64_t));
@@ -223,6 +294,7 @@ static int run_dec_async(MppCtx ctx, MppApi* api, const uint8_t* data,
   a.au_total = total;
   a.submit = submit;
   a.cost = cost;
+  a.depth = depth > 0 ? depth : DEC_ASYNC_MAX_OUTSTANDING;
   pthread_mutex_init(&a.slock, NULL);
   a.t_start = now_ns();
   pthread_t th_feed, th_collect;
@@ -247,10 +319,11 @@ static int run_dec_async(MppCtx ctx, MppApi* api, const uint8_t* data,
     qsort(s, (size_t)n, sizeof(uint32_t), cmp_u32);
     /* Sojourn percentiles include pipeline queueing; fps is the ceiling. */
     printf("au_fed=%d framed=%d no_output=%d put_fail=%d "
-           "mean_us=%.1f p50=%u p90=%u p99=%u wall_fps=%.1f mode=async\n",
+           "mean_us=%.1f p50=%u p90=%u p99=%u wall_fps=%.1f mode=async "
+           "depth=%d\n",
            a.fed, a.framed, no_output, a.put_fail, (double)sum / n,
            pct_u32(s, (int)n, 50), pct_u32(s, (int)n, 90),
-           pct_u32(s, (int)n, 99), wall_fps);
+           pct_u32(s, (int)n, 99), wall_fps, a.depth);
     free(s);
     if (csv) {
       FILE* cf = fopen(csv, "w");
@@ -267,14 +340,14 @@ static int run_dec_async(MppCtx ctx, MppApi* api, const uint8_t* data,
             a.framed, a.put_fail);
   }
   printf("RESULT async dec au_fed=%d framed=%d no_output=%d put_fail=%d "
-         "wall_ms=%.0f wall_fps=%.1f err_frames=%d\n",
+         "wall_ms=%.0f wall_fps=%.1f err_frames=%d depth=%d\n",
          a.fed, a.framed, no_output, a.put_fail, wall_ms, wall_fps,
-         a.err_frames);
+         a.err_frames, a.depth);
   free(offs);
   free(lens);
   free(submit);
   free(cost);
-  return (rc == 0 && !a.fail) ? 0 : rc;
+  return (rc == 0 && !a.fail) ? 0 : 1;
 }
 
 int main(int argc, char** argv) {
@@ -287,6 +360,9 @@ int main(int argc, char** argv) {
 
   const char* mode = "sync"; /* sync: legacy put-wait; async: feeder/collector */
   int warmup = 10; /* async: skipped priming output samples */
+  /* Max frame-AUs in flight (async gate). Default preserves the legacy
+   * depth; small values (2~4) bound queueing delay for latency budgets. */
+  int depth = DEC_ASYNC_MAX_OUTSTANDING;
   static struct option opts[] = {
     {"input", required_argument, 0, 'i'},
     {"max-au", required_argument, 0, 'n'},
@@ -294,10 +370,11 @@ int main(int argc, char** argv) {
     {"wait-ms", required_argument, 0, 'm'},
     {"mode", required_argument, 0, 'M'},
     {"warmup", required_argument, 0, 'W'},
+    {"depth", required_argument, 0, 'd'},
     {0, 0, 0, 0},
   };
   int o;
-  while ((o = getopt_long(argc, argv, "i:n:c:m:M:W:", opts, NULL)) != -1) {
+  while ((o = getopt_long(argc, argv, "i:n:c:m:M:W:d:", opts, NULL)) != -1) {
     switch (o) {
       case 'i': input = optarg; break;
       case 'n': max_au = atoi(optarg); break;
@@ -305,8 +382,9 @@ int main(int argc, char** argv) {
       case 'm': wait_ms = atoi(optarg); break;
       case 'M': mode = optarg; break;
       case 'W': warmup = atoi(optarg); break;
+      case 'd': depth = atoi(optarg); break;
       default:
-        fprintf(stderr, "usage: %s --input H264 [--max-au N] [--csv FILE] [--wait-ms MS] [--mode sync|async] [--warmup N]\n", argv[0]);
+        fprintf(stderr, "usage: %s --input H264 [--max-au N] [--csv FILE] [--wait-ms MS] [--mode sync|async] [--warmup N] [--depth N]\n", argv[0]);
         return 1;
     }
   }
@@ -353,7 +431,8 @@ int main(int argc, char** argv) {
 
   int exit_code = 0;
   if (async_mode) {
-    exit_code = run_dec_async(ctx, api, data, (size_t)fsize, max_au, warmup, csv);
+    exit_code = run_dec_async(ctx, api, data, (size_t)fsize, max_au, warmup,
+                              csv, depth);
   } else {
   size_t pos = next_sc(data, (size_t)fsize, 0);
   int fed = 0, framed = 0;

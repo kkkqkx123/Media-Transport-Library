@@ -9,9 +9,15 @@
  *     -lrockchip_mpp -I/usr/include/rockchip
  */
 #include <errno.h>
+#include <fcntl.h>
 #include <getopt.h>
+#include <linux/dma-buf.h>
+#include <linux/dma-heap.h>
 #include <pthread.h>
 #include <stdbool.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <unistd.h>
 #include <rockchip/mpp_buffer.h>
 #include <rockchip/mpp_frame.h>
 #include <rockchip/mpp_meta.h>
@@ -52,13 +58,28 @@ static uint32_t pct_u32(uint32_t* v, int n, int p) {
  * with sync-mode service latency or judged against frame-interval budgets.
  * Output order matches input order (single session, CBR baseline, no
  * B-frames), so submit stamps pair by FIFO. */
-#define ENC_ASYNC_NBUF 8
+/* Pipeline depth must exceed the MPP encoder's worst-case output delay.
+ * 8 wedged stochastically (feeder gate vs MPP startup buffering deadlocks
+ * and only the 3s reclaim saved the run); 16 still stalled ~3s once per
+ * run; 32 runs clean with drops=0. Memory is transient (run duration):
+ * 32 x frame size (1080p ~100MB, 4K ~400MB per buffer pool). */
+#ifndef ENC_ASYNC_NBUF
+#define ENC_ASYNC_NBUF 32
+#endif
 #define ENC_ASYNC_PRELOAD_MAX 32
 
 struct enc_async_shared {
   MppCtx ctx;
   MppApi* api;
   MppBuffer bufs[ENC_ASYNC_NBUF];
+  /* dmaheap source: zero-copy dma-buf fds (production import path). */
+  int use_heap;
+  int heap_fds[ENC_ASYNC_NBUF];
+  void* heap_ptr[ENC_ASYNC_NBUF];
+  size_t mpp_buf_size;
+  /* Per-slot busy flag (under qlock): a slot may be reused only after its
+   * output arrived, mirroring production's release-after-recv discipline. */
+  int* slot_busy;
   const uint8_t* preload;
   int n_pre;
   size_t img_bytes;
@@ -71,6 +92,9 @@ struct enc_async_shared {
   volatile int stop;
   volatile int fail;
   long put_retries;
+  long drops;      /* slots reclaimed by timeout (frame assumed lost) */
+  long pts_fallback; /* outputs with unusable PTS (ordinal pairing) */
+  uint64_t* submit_ns; /* per-seq submit time, indexed by seq */
   pthread_mutex_t qlock;
   int64_t* stamps;
   int qcap, qhead, qtail, qcount;
@@ -81,27 +105,111 @@ struct enc_async_shared {
   uint64_t t_start;
 };
 
-/* Same row packing as the sync path: file rows (tight) -> MPP rows. */
-static void enc_async_pack(struct enc_async_shared* a, uint8_t* dst,
-                           const uint8_t* src) {
-  size_t fw = a->file_row, mw = a->mpp_row;
+/* dma32 heap alloc: same heap order as production dma32_allocator
+ * (uncached first, then cached). Returns the dma-buf fd or -1. */
+static int enc_heap_alloc_one(size_t size) {
+  static const char* heaps[] = {
+    "/dev/dma_heap/system-uncached-dma32",
+    "/dev/dma_heap/system-dma32",
+  };
+  for (size_t i = 0; i < sizeof(heaps) / sizeof(heaps[0]); i++) {
+    int hfd = open(heaps[i], O_RDWR | O_CLOEXEC);
+    if (hfd < 0) continue;
+    struct dma_heap_allocation_data data;
+    memset(&data, 0, sizeof(data));
+    data.len = size;
+    data.fd_flags = O_RDWR | O_CLOEXEC;
+    int r = ioctl(hfd, DMA_HEAP_IOCTL_ALLOC, &data);
+    close(hfd);
+    if (r == 0) return (int)data.fd;
+  }
+  return -1;
+}
+
+/* CPU-side cache maintenance after filling a heap buffer (no-op on
+ * uncached heaps; errors ignored like production). */
+static void enc_heap_sync_end(int fd) {
+  struct dma_buf_sync sync;
+  memset(&sync, 0, sizeof(sync));
+  sync.flags = DMA_BUF_SYNC_RW | DMA_BUF_SYNC_END;
+  ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
+}
+
+/* Row packing shared by all fill paths: file rows (tight) -> MPP rows. */
+static void enc_pack_rows(uint8_t* dst, const uint8_t* src, size_t fw,
+                          size_t mw, int h, int is_nv12) {
   size_t copy = fw < mw ? fw : mw;
-  if (a->is_nv12) {
-    for (int r = 0; r < a->h; r++) {
+  if (is_nv12) {
+    for (int r = 0; r < h; r++) {
       memcpy(dst + (size_t)r * mw, src + (size_t)r * fw, copy);
       if (mw > copy) memset(dst + (size_t)r * mw + copy, 0, mw - copy);
     }
-    uint8_t* uv_dst = dst + mw * (size_t)a->h;
-    const uint8_t* uv_src = src + fw * (size_t)a->h;
-    for (int r = 0; r < a->h / 2; r++) {
+    uint8_t* uv_dst = dst + mw * (size_t)h;
+    const uint8_t* uv_src = src + fw * (size_t)h;
+    for (int r = 0; r < h / 2; r++) {
       memcpy(uv_dst + (size_t)r * mw, uv_src + (size_t)r * fw, copy);
       if (mw > copy) memset(uv_dst + (size_t)r * mw + copy, 0, mw - copy);
     }
   } else {
-    for (int r = 0; r < a->h; r++) {
+    for (int r = 0; r < h; r++) {
       memcpy(dst + (size_t)r * mw, src + (size_t)r * fw, copy);
       if (mw > copy) memset(dst + (size_t)r * mw + copy, 0, mw - copy);
     }
+  }
+}
+
+static void enc_async_pack(struct enc_async_shared* a, uint8_t* dst,
+                           const uint8_t* src) {
+  enc_pack_rows(dst, src, a->file_row, a->mpp_row, a->h, a->is_nv12);
+}
+
+/* Allocate + mmap + fill N heap NV12 buffers from the input file (cycling).
+ * Returns 0 on success with fds/ptrs filled; caller tears down. */
+static int enc_heap_setup(int n, size_t heap_size, FILE* f, size_t file_bytes,
+                          size_t file_row, size_t mpp_row, int h,
+                          int* fds, void** ptrs) {
+  uint8_t* tmp = malloc(file_bytes);
+  if (!tmp) return -1;
+  for (int i = 0; i < n; i++) {
+    fds[i] = -1;
+    ptrs[i] = NULL;
+  }
+  int ok = 0;
+  for (int i = 0; i < n; i++) {
+    int fd = enc_heap_alloc_one(heap_size);
+    if (fd < 0) break;
+    void* p = mmap(NULL, heap_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (p == MAP_FAILED) {
+      close(fd);
+      break;
+    }
+    if (fread(tmp, 1, file_bytes, f) != file_bytes) {
+      fseek(f, 0, SEEK_SET);
+      if (fread(tmp, 1, file_bytes, f) != file_bytes) break;
+    }
+    enc_pack_rows(p, tmp, file_row, mpp_row, h, 1 /* nv12 */);
+    enc_heap_sync_end(fd);
+    fds[i] = fd;
+    ptrs[i] = p;
+    ok++;
+  }
+  free(tmp);
+  if (ok < n) {
+    for (int i = 0; i < n; i++) {
+      if (ptrs[i]) munmap(ptrs[i], heap_size);
+      if (fds[i] >= 0) close(fds[i]);
+    }
+    return -1;
+  }
+  return 0;
+}
+
+static void enc_heap_teardown(int n, size_t heap_size, int* fds, void** ptrs) {
+  for (int i = 0; i < n; i++) {
+    if (ptrs[i]) munmap(ptrs[i], heap_size);
+    if (fds[i] >= 0) close(fds[i]);
+    ptrs[i] = NULL;
+    fds[i] = -1;
   }
 }
 
@@ -131,13 +239,34 @@ static bool enc_async_qpop(struct enc_async_shared* a, int64_t* ts) {
 static void* enc_async_feeder(void* arg) {
   struct enc_async_shared* a = (struct enc_async_shared*)arg;
   for (long seq = 0; seq < a->total && !a->stop; seq++) {
+    /* Slot gate: a buffer may be reused only after its output arrived
+     * (production release-after-recv discipline). A slot busy longer than
+     * SLOT_TIMEOUT_MS is reclaimed and counted as a drop, so no MPP delay
+     * or reorder pattern can deadlock the feeder. */
+    int slot = (int)(seq % ENC_ASYNC_NBUF);
     int spins = 0;
     for (;;) {
-      bool full;
+      bool busy = false;
+      bool timed_out = false;
       pthread_mutex_lock(&a->qlock);
-      full = (a->sent - a->got) >= ENC_ASYNC_NBUF;
+      busy = a->slot_busy[slot];
+      if (busy && seq >= ENC_ASYNC_NBUF) {
+        /* The occupying submit is seq-8,seq-16,...; the latest (seq-8)
+         * carries this slot's deadline. */
+        long prev = seq - ENC_ASYNC_NBUF;
+        uint64_t st = (prev >= 0 && prev < a->total) ? a->submit_ns[prev] : 0;
+        if (st > 0 && now_ns() - st > (uint64_t)3000000 * 1000ULL) {
+          a->slot_busy[slot] = 0;
+          a->drops++;
+          busy = false;
+          timed_out = true;
+        }
+      }
       pthread_mutex_unlock(&a->qlock);
-      if (!full || a->stop) break;
+      if (timed_out && a->drops <= 5)
+        fprintf(stderr, "async: slot %d timeout reclaimed (seq=%ld)\n",
+                slot, seq);
+      if (!busy || a->stop) break;
       struct timespec rq = {.tv_sec = 0, .tv_nsec = 200000};
       nanosleep(&rq, NULL);
       if (++spins > 25000) { /* ~5s without a free slot: HW stall */
@@ -147,9 +276,16 @@ static void* enc_async_feeder(void* arg) {
       }
     }
     if (a->stop) break;
-    MppBuffer dst = a->bufs[seq % ENC_ASYNC_NBUF];
-    enc_async_pack(a, mpp_buffer_get_ptr(dst),
-                   a->preload + (size_t)(seq % a->n_pre) * a->img_bytes);
+    /* Buffer per slot, imported once at setup (heap) or allocated once
+     * (file). Re-importing the same dma-buf per submit was shown to emit
+     * packets with no matching submit (pairing shift + swallowed frames +
+     * gate deadlock); single import per slot is also what mpi_enc_test and
+     * the file path do. Import cost itself is covered by run_enc_sync_heap. */
+    MppBuffer imp = a->bufs[slot];
+    if (!a->use_heap) {
+      enc_async_pack(a, mpp_buffer_get_ptr(imp),
+                     a->preload + (size_t)(seq % a->n_pre) * a->img_bytes);
+    }
     MppFrame frame = NULL;
     mpp_frame_init(&frame);
     mpp_frame_set_width(frame, a->w);
@@ -157,7 +293,11 @@ static void* enc_async_feeder(void* arg) {
     mpp_frame_set_hor_stride(frame, a->hor_stride);
     mpp_frame_set_ver_stride(frame, a->h);
     mpp_frame_set_fmt(frame, a->fmt);
-    mpp_frame_set_buffer(frame, dst);
+    mpp_frame_set_buffer(frame, imp);
+    /* NOTE: packet-PTS pairing was tried here but this MPP build faults
+     * inside mpp_packet_get_pts for encoder output packets, so pairing
+     * stays ordinal (same as ZL's release pairing). Slot timeout below
+     * converts any stall into counted drops instead of deadlock. */
     int attempts = 0;
     for (;;) {
       MPP_RET r = a->api->encode_put_frame(a->ctx, frame);
@@ -173,10 +313,20 @@ static void* enc_async_feeder(void* arg) {
     }
     mpp_frame_deinit(&frame);
     if (a->stop) break;
-    enc_async_qpush(a, (int64_t)now_ns());
+    uint64_t submit_now = now_ns();
+    enc_async_qpush(a, (int64_t)submit_now);
     pthread_mutex_lock(&a->qlock);
+    a->slot_busy[slot] = 1;
+    if (seq < a->total) a->submit_ns[seq] = submit_now;
     a->sent++;
     pthread_mutex_unlock(&a->qlock);
+    { /* Slot-transition trace for stall forensics (env-gated). */
+      static int strc_on = -1;
+      if (strc_on < 0) strc_on = (getenv("MPP_ENC_DEBUG_SLOTS") != NULL);
+      if (strc_on)
+        fprintf(stderr, "slot mark seq=%ld slot=%d sent=%ld\n", seq, slot,
+                a->sent);
+    }
   }
   a->feeder_done = 1;
   return NULL;
@@ -193,6 +343,20 @@ static void* enc_async_collector(void* arg) {
     if (done) break;
     MppPacket pkt = NULL;
     if (a->api->encode_get_packet(a->ctx, &pkt) == MPP_OK && pkt) {
+      /* Packet trace for pairing-shift diagnosis (env-gated, off by default).
+       * Logs output index, length and first payload bytes: header NALs
+       * (SPS 0x67 / PPS 0x68) vs slice data reveal extra-packet shifts. */
+      static int trace_on = -1;
+      if (trace_on < 0)
+        trace_on = (getenv("MPP_ENC_DEBUG_PACKETS") != NULL);
+      if (trace_on) {
+        size_t tl = mpp_packet_get_length(pkt);
+        uint8_t* tp = mpp_packet_get_pos(pkt);
+        if (!tp) tp = mpp_packet_get_data(pkt);
+        fprintf(stderr, "pkt out=%ld len=%zu head=%02x%02x%02x%02x\n", a->got,
+                tl, tp && tl > 0 ? tp[0] : 0, tp && tl > 1 ? tp[1] : 0,
+                tp && tl > 2 ? tp[2] : 0, tp && tl > 3 ? tp[3] : 0);
+      }
       uint64_t t1 = now_ns();
       int64_t ts = 0;
       if (enc_async_qpop(a, &ts) && t1 > (uint64_t)ts &&
@@ -207,8 +371,17 @@ static void* enc_async_collector(void* arg) {
       }
       mpp_packet_deinit(&pkt);
       pthread_mutex_lock(&a->qlock);
+      /* Ordinal pairing (in-order single session). */
+      a->slot_busy[a->got % ENC_ASYNC_NBUF] = 0;
       a->got++;
       pthread_mutex_unlock(&a->qlock);
+      { /* Slot-transition trace for stall forensics (env-gated). */
+        static int strc_on = -1;
+        if (strc_on < 0) strc_on = (getenv("MPP_ENC_DEBUG_SLOTS") != NULL);
+        if (strc_on)
+          fprintf(stderr, "slot free out=%ld slot=%ld got=%ld\n",
+                  a->got - 1, (a->got - 1) % ENC_ASYNC_NBUF, a->got);
+      }
       idle = 0;
       continue;
     }
@@ -222,6 +395,108 @@ static void* enc_async_collector(void* arg) {
   return NULL;
 }
 
+/* Serial dma-buf import baseline: one submit-wait round trip per frame over
+ * real dma32-heap buffers, same legacy output shape as the file sync path. */
+static int run_enc_sync_heap(MppCtx ctx, MppApi* api, FILE* f, FILE* outf,
+                             int w, int h, int frames, int fps, int level,
+                             int hor_stride, size_t file_bytes, size_t file_row,
+                             size_t mpp_row, size_t mpp_buf_size,
+                             const char* csv) {
+  int fds[2];
+  void* ptrs[2];
+  if (enc_heap_setup(2, mpp_buf_size, f, file_bytes, file_row, mpp_row, h,
+                     fds, ptrs)) {
+    fprintf(stderr, "sync-heap: heap setup failed\n");
+    return 1;
+  }
+  uint32_t* cost = calloc((size_t)(frames > 0 ? frames : 1), sizeof(uint32_t));
+  if (!cost) {
+    enc_heap_teardown(2, mpp_buf_size, fds, ptrs);
+    return 1;
+  }
+  int done = 0;
+  uint64_t total_out = 0;
+  for (int i = 0; i < frames; i++) {
+    MppBuffer imp = NULL;
+    MppBufferInfo info;
+    memset(&info, 0, sizeof(info));
+    info.type = MPP_BUFFER_TYPE_EXT_DMA;
+    info.size = mpp_buf_size;
+    info.fd = fds[i % 2];
+    if (mpp_buffer_import(&imp, &info) != MPP_OK || !imp) {
+      fprintf(stderr, "sync-heap: import failed at %d\n", i);
+      break;
+    }
+    MppFrame frame = NULL;
+    mpp_frame_init(&frame);
+    mpp_frame_set_width(frame, w);
+    mpp_frame_set_height(frame, h);
+    mpp_frame_set_hor_stride(frame, hor_stride);
+    mpp_frame_set_ver_stride(frame, h);
+    mpp_frame_set_fmt(frame, MPP_FMT_YUV420SP);
+    mpp_frame_set_buffer(frame, imp);
+    uint64_t t0 = now_ns();
+    if (api->encode_put_frame(ctx, frame)) {
+      fprintf(stderr, "sync-heap: put failed at %d\n", i);
+      mpp_frame_deinit(&frame);
+      mpp_buffer_put(imp);
+      break;
+    }
+    MppPacket pkt = NULL;
+    int waited = 0;
+    while (waited < 200) {
+      if (api->encode_get_packet(ctx, &pkt) == MPP_OK && pkt) break;
+      struct timespec rq = {.tv_sec = 0, .tv_nsec = 1000000};
+      nanosleep(&rq, NULL);
+      waited++;
+    }
+    mpp_frame_deinit(&frame);
+    mpp_buffer_put(imp);
+    if (!pkt) {
+      fprintf(stderr, "sync-heap: get timeout at %d\n", i);
+      break;
+    }
+    uint64_t t1 = now_ns();
+    if (i > 0) cost[done++] = (uint32_t)((t1 - t0) / 1000ULL);
+    total_out += mpp_packet_get_length(pkt);
+    if (outf) {
+      void* p = mpp_packet_get_pos(pkt);
+      size_t len = mpp_packet_get_length(pkt);
+      if (p && len) fwrite(p, 1, len, outf);
+    }
+    mpp_packet_deinit(&pkt);
+  }
+  int rc = 1;
+  if (done > 0) {
+    uint32_t* s = malloc((size_t)done * sizeof(uint32_t));
+    memcpy(s, cost, (size_t)done * sizeof(uint32_t));
+    uint64_t sum = 0;
+    for (int i = 0; i < done; i++) sum += cost[i];
+    qsort(s, (size_t)done, sizeof(uint32_t), cmp_u32);
+    printf("frames=%d %dx%d@%dfps level=%d mean_us=%.1f p50=%u p90=%u p99=%u "
+           "out_kbps=%.0f src=dmaheap\n",
+           done, w, h, fps, level, (double)sum / done,
+           pct_u32(s, done, 50), pct_u32(s, done, 90), pct_u32(s, done, 99),
+           (double)total_out * 8 / 1000);
+    free(s);
+    if (csv) {
+      FILE* cf = fopen(csv, "w");
+      if (cf) {
+        fprintf(cf, "frame,cost_us\n");
+        for (int i = 0; i < done; i++) fprintf(cf, "%d,%u\n", i, cost[i]);
+        fclose(cf);
+        printf("written: %s\n", csv);
+      }
+    }
+    rc = 0;
+  } else {
+    fprintf(stderr, "sync-heap: FAIL: no frames encoded\n");
+  }
+  free(cost);
+  enc_heap_teardown(2, mpp_buf_size, fds, ptrs);
+  return rc;
+}
+
 /* Runs the async pipeline reusing the already-configured ctx/api. Returns
  * process exit code. Prints both the legacy summary line (plus wall_fps)
  * and a RESULT line for scripts. */
@@ -229,7 +504,8 @@ static int run_enc_async(MppCtx ctx, MppApi* api, FILE* f, FILE* outf, int w,
                          int h, int frames, int fps, int bps, int level,
                          int hor_stride, size_t file_row, size_t mpp_row,
                          size_t mpp_buf_size, size_t file_bytes, int is_nv12,
-                         MppFrameFormat mpp_fmt, const char* csv, int warmup) {
+                         MppFrameFormat mpp_fmt, const char* csv, int warmup,
+                         int use_heap) {
   (void)bps;
   struct enc_async_shared a;
   memset(&a, 0, sizeof(a));
@@ -244,44 +520,90 @@ static int run_enc_async(MppCtx ctx, MppApi* api, FILE* f, FILE* outf, int w,
   a.file_row = file_row;
   a.mpp_row = mpp_row;
   a.img_bytes = file_bytes;
+  a.use_heap = use_heap;
+  a.mpp_buf_size = mpp_buf_size;
   a.total = (long)warmup + frames;
-  a.n_pre = a.total < ENC_ASYNC_PRELOAD_MAX ? (int)a.total
-                                             : ENC_ASYNC_PRELOAD_MAX;
-  a.preload = NULL;
-  uint8_t* pre = malloc((size_t)a.n_pre * file_bytes);
-  if (!pre) {
-    fprintf(stderr, "async: preload oom\n");
+  a.slot_busy = calloc(ENC_ASYNC_NBUF, sizeof(int));
+  if (!a.slot_busy) {
+    fprintf(stderr, "async: oom\n");
     return 1;
   }
-  for (int i = 0; i < a.n_pre; i++) {
-    if (fread(pre + (size_t)i * file_bytes, 1, file_bytes, f) != file_bytes) {
-      fseek(f, 0, SEEK_SET);
-      if (fread(pre + (size_t)i * file_bytes, 1, file_bytes, f) != file_bytes) {
-        fprintf(stderr, "async: preload read failed at %d\n", i);
-        free(pre);
+  uint8_t* pre = NULL;
+  if (use_heap) {
+    for (int i = 0; i < ENC_ASYNC_NBUF; i++) a.bufs[i] = NULL;
+    if (enc_heap_setup(ENC_ASYNC_NBUF, mpp_buf_size, f, file_bytes, file_row,
+                       mpp_row, h, a.heap_fds, a.heap_ptr)) {
+      fprintf(stderr, "async: heap setup failed\n");
+      free(a.slot_busy);
+      return 1;
+    }
+    /* Import once per heap buffer and reuse the wrapper for the whole run.
+     * Zero-copy is preserved (same dma-buf, same EXT_DMA mapping); only the
+     * per-submit re-import — shown to emit submit-less packets — is gone. */
+    for (int i = 0; i < ENC_ASYNC_NBUF; i++) {
+      MppBufferInfo info;
+      memset(&info, 0, sizeof(info));
+      info.type = MPP_BUFFER_TYPE_EXT_DMA;
+      info.size = mpp_buf_size;
+      info.fd = a.heap_fds[i];
+      if (mpp_buffer_import(&a.bufs[i], &info) != MPP_OK || !a.bufs[i]) {
+        fprintf(stderr, "async: heap import %d failed\n", i);
+        for (int k = 0; k < i; k++) mpp_buffer_put(a.bufs[k]);
+        enc_heap_teardown(ENC_ASYNC_NBUF, mpp_buf_size, a.heap_fds, a.heap_ptr);
+        free(a.slot_busy);
         return 1;
       }
     }
-  }
-  a.preload = pre;
-  for (int i = 0; i < ENC_ASYNC_NBUF; i++) {
-    if (mpp_buffer_get(NULL, &a.bufs[i], mpp_buf_size)) {
-      fprintf(stderr, "async: mpp_buffer_get %d failed\n", i);
-      free(pre);
+  } else {
+    a.n_pre = a.total < ENC_ASYNC_PRELOAD_MAX ? (int)a.total
+                                               : ENC_ASYNC_PRELOAD_MAX;
+    pre = malloc((size_t)a.n_pre * file_bytes);
+    if (!pre) {
+      fprintf(stderr, "async: preload oom\n");
+      free(a.slot_busy);
       return 1;
+    }
+    for (int i = 0; i < a.n_pre; i++) {
+      if (fread(pre + (size_t)i * file_bytes, 1, file_bytes, f) != file_bytes) {
+        fseek(f, 0, SEEK_SET);
+        if (fread(pre + (size_t)i * file_bytes, 1, file_bytes, f) != file_bytes) {
+          fprintf(stderr, "async: preload read failed at %d\n", i);
+          free(pre);
+          free(a.slot_busy);
+          return 1;
+        }
+      }
+    }
+    a.preload = pre;
+    for (int i = 0; i < ENC_ASYNC_NBUF; i++) {
+      if (mpp_buffer_get(NULL, &a.bufs[i], mpp_buf_size)) {
+        fprintf(stderr, "async: mpp_buffer_get %d failed\n", i);
+        for (int k = 0; k < i; k++) mpp_buffer_put(a.bufs[k]);
+        free(pre);
+        free(a.slot_busy);
+        return 1;
+      }
     }
   }
   a.qcap = (int)a.total + 16;
   a.stamps = calloc((size_t)a.qcap, sizeof(int64_t));
   a.cost = calloc((size_t)a.total > 0 ? (size_t)a.total : 1, sizeof(uint32_t));
-  if (!a.stamps || !a.cost) {
+  a.submit_ns = calloc((size_t)a.total > 0 ? (size_t)a.total : 1,
+                        sizeof(uint64_t));
+  if (!a.stamps || !a.cost || !a.submit_ns) {
     fprintf(stderr, "async: oom\n");
     free(pre);
     free(a.stamps);
     free(a.cost);
+    free(a.submit_ns);
     return 1;
   }
+  /* NOTE: MPP_SET_OUTPUT_TIMEOUT (ZL pattern, 100ms) was tried here but
+   * reverted: on this MPP build it changes output timing (burst + long
+   * silence) and trips the slot gate. The collector's own idle guards
+   * already bound the join; get_packet keeps its default behavior. */
   pthread_mutex_init(&a.qlock, NULL);
+  /* submit_ns lives as long as the run; freed with the other arrays. */
   a.t_start = now_ns();
   pthread_t th_feed, th_collect;
   pthread_create(&th_feed, NULL, enc_async_feeder, &a);
@@ -306,14 +628,18 @@ static int run_enc_async(MppCtx ctx, MppApi* api, FILE* f, FILE* outf, int w,
     /* Legacy-shaped line plus wall_fps; sojourn mean/p50/p90/p99 include
      * pipeline queueing and are NOT comparable to sync-mode numbers. */
     printf("frames=%ld %dx%d@%dfps level=%d mean_us=%.1f p50=%u p90=%u p99=%u "
-           "out_kbps=%.0f wall_fps=%.1f mode=async\n",
+           "out_kbps=%.0f wall_fps=%.1f mode=async src=%s drops=%ld "
+           "pts_fallback=%ld\n",
            n, w, h, fps, level, (double)sum / n, pct_u32(s, (int)n, 50),
-           pct_u32(s, (int)n, 90), pct_u32(s, (int)n, 99), out_kbps, wall_fps);
+           pct_u32(s, (int)n, 90), pct_u32(s, (int)n, 99), out_kbps, wall_fps,
+           a.use_heap ? "dmaheap" : "file", a.drops, a.pts_fallback);
     printf("RESULT async enc %dx%d frames=%ld wall_ms=%.0f wall_fps=%.1f "
-           "mean_us=%.1f p50=%u p90=%u p99=%u out_kbps=%.0f put_retries=%ld\n",
+           "mean_us=%.1f p50=%u p90=%u p99=%u out_kbps=%.0f put_retries=%ld "
+           "src=%s drops=%ld pts_fallback=%ld\n",
            w, h, n, wall_ms, wall_fps, (double)sum / n,
            pct_u32(s, (int)n, 50), pct_u32(s, (int)n, 90),
-           pct_u32(s, (int)n, 99), out_kbps, a.put_retries);
+           pct_u32(s, (int)n, 99), out_kbps, a.put_retries,
+           a.use_heap ? "dmaheap" : "file", a.drops, a.pts_fallback);
     free(s);
     if (csv) {
       FILE* cf = fopen(csv, "w");
@@ -327,13 +653,21 @@ static int run_enc_async(MppCtx ctx, MppApi* api, FILE* f, FILE* outf, int w,
     }
     rc = 0;
   } else {
-    fprintf(stderr, "async: FAIL sent=%ld got=%ld fail=%d\n", a.sent, a.got,
-            a.fail);
+    fprintf(stderr, "async: FAIL sent=%ld got=%ld fail=%d put_retries=%ld "
+            "busy=", a.sent, a.got, a.fail, a.put_retries);
+    for (int i = 0; i < ENC_ASYNC_NBUF; i++) fprintf(stderr, "%d", a.slot_busy[i]);
+    fprintf(stderr, "\n");
   }
-  for (int i = 0; i < ENC_ASYNC_NBUF; i++) mpp_buffer_put(a.bufs[i]);
+  for (int i = 0; i < ENC_ASYNC_NBUF; i++)
+    if (a.bufs[i]) mpp_buffer_put(a.bufs[i]);
+  free(a.submit_ns);
+  if (a.use_heap) {
+    enc_heap_teardown(ENC_ASYNC_NBUF, mpp_buf_size, a.heap_fds, a.heap_ptr);
+  }
   free(pre);
   free(a.stamps);
   free(a.cost);
+  free(a.slot_busy);
   return rc;
 }
 
@@ -348,6 +682,9 @@ int main(int argc, char** argv) {
   int file_stride = 0;     /* row bytes in input file, 0 = tight */
   const char* mode = "sync"; /* sync: legacy submit-wait; async: feeder/collector */
   int warmup = 10; /* async: extra fed frames + skipped priming samples */
+  const char* src = "file"; /* file: CPU memcpy into MPP buffers;
+                             * dmaheap: dma32-heap NV12 fds via EXT_DMA import
+                             * (production zero-copy path) */
   FILE* outf = NULL;
 
   static struct option opts[] = {
@@ -365,10 +702,11 @@ int main(int argc, char** argv) {
     {"file-stride", required_argument, 0, 'T'},
     {"mode", required_argument, 0, 'm'},
     {"warmup", required_argument, 0, 'W'},
+    {"src", required_argument, 0, 'G'},
     {0, 0, 0, 0},
   };
   int o;
-  while ((o = getopt_long(argc, argv, "i:w:H:n:b:f:c:F:o:L:S:T:m:W:", opts, NULL)) != -1) {
+  while ((o = getopt_long(argc, argv, "i:w:H:n:b:f:c:F:o:L:S:T:m:W:G:", opts, NULL)) != -1) {
     switch (o) {
       case 'i': input = optarg; break;
       case 'w': w = atoi(optarg); break;
@@ -384,8 +722,9 @@ int main(int argc, char** argv) {
       case 'T': file_stride = atoi(optarg); break;
       case 'm': mode = optarg; break;
       case 'W': warmup = atoi(optarg); break;
+      case 'G': src = optarg; break;
       default:
-        fprintf(stderr, "usage: %s --input FILE --w W --h H [--frames N] [--bps B] [--fps F] [--csv FILE] [--infmt nv12|bgr3|rgb3] [--level N] [--hor-stride PX] [--file-stride BYTES] [--mode sync|async] [--warmup N]\n", argv[0]);
+        fprintf(stderr, "usage: %s --input FILE --w W --h H [--frames N] [--bps B] [--fps F] [--csv FILE] [--infmt nv12|bgr3|rgb3] [--level N] [--hor-stride PX] [--file-stride BYTES] [--mode sync|async] [--warmup N] [--src file|dmaheap]\n", argv[0]);
         return 1;
     }
   }
@@ -483,12 +822,25 @@ int main(int argc, char** argv) {
 
   int async_mode = (strcmp(mode, "async") == 0);
   if (warmup < 0) warmup = 0;
+  int use_heap = (strcmp(src, "dmaheap") == 0);
+  if (strcmp(src, "file") != 0 && !use_heap) {
+    fprintf(stderr, "unknown --src %s (file|dmaheap)\n", src);
+    return 1;
+  }
+  int is_nv12 = (mpp_fmt == MPP_FMT_YUV420SP);
+  if (use_heap && !is_nv12) {
+    fprintf(stderr, "--src dmaheap requires NV12 input\n");
+    return 1;
+  }
   int exit_code = 0;
   if (async_mode) {
-    int is_nv12 = (mpp_fmt == MPP_FMT_YUV420SP);
     exit_code = run_enc_async(ctx, api, f, outf, w, h, frames, fps, bps, level,
                               hs_px, file_row, mpp_row, mpp_buf_size, file_bytes,
-                              is_nv12, mpp_fmt, csv, warmup);
+                              is_nv12, mpp_fmt, csv, warmup, use_heap);
+  } else if (use_heap) {
+    exit_code = run_enc_sync_heap(ctx, api, f, outf, w, h, frames, fps, level,
+                                  hs_px, file_bytes, file_row, mpp_row,
+                                  mpp_buf_size, csv);
   } else {
   int done = 0;
   uint64_t total_out = 0;

@@ -17,6 +17,7 @@ tests/perf/
 │   └── thresholds.json    # 判定阈值（初值，三轮收敛后调整）
 ├── tx_capture_encode_perf.py  # 发送侧：采集+编码画像与预算
 ├── rx_decode_perf.py           # 接收侧：收流+解码画像与预算
+├── mpp_async_ceiling.py        # MPP 异步吞吐上限：sync/async 对比 + 负载分类
 ├── e2e_latency_budget.py       # 端到端：单板回环预算表
 └── gen_test_stream.sh         # 预置 NV12/H264 合成流生成
 ```
@@ -42,6 +43,20 @@ python3 tests/perf/tx_capture_encode_perf.py --duration 30 --out ~/code/mtl/perf
 # 接收侧画像（离线预置流；或 --mode mtl 接真实组播）
 python3 tests/perf/rx_decode_perf.py --mode offline \
   --input ~/code/mtl/streams/clock_1920x1080.h264 --out ~/code/mtl/perf/rx
+
+# 异步吞吐上限（sync/async 对比 + rkvenc/rkvdec 负载分类，约 5 分钟）
+python3 tests/perf/mpp_async_ceiling.py --matrix "1920x1080,3840x2160" \
+  --repeat 2 --out ~/code/mtl/perf/async_ceiling
+
+# 编码零拷贝保真度（--srcs file,dmaheap，dmaheap 走 EXT_DMA 直投）
+python3 tests/perf/mpp_async_ceiling.py --suites enc \
+  --matrix "1920x1080,3840x2160" --srcs file,dmaheap --repeat 2 \
+  --out ~/code/mtl/perf/async_ceiling_dmaheap
+
+# 解码盒验证（浅缓冲拐点 + 多会话 stretch；depth_sweep/concurrent 只记录不判定）
+python3 tests/perf/mpp_async_ceiling.py --suites dec \
+  --matrix "1920x1080,3840x2160" --depths '1,2,4,8,16' --concurrent '2,4,8' \
+  --cdepth 4 --repeat 2 --out ~/code/mtl/perf/dec_shallow_verify
 
 # 接收侧 4K 画像（优先走 mpp_dec_latency 探针，含分位与阈值判定；
 # --dec-binary 省略时自动探测 ~/code/mtl/bin/mpp_dec_latency，

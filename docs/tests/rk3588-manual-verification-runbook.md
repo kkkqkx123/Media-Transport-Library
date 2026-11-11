@@ -15,6 +15,7 @@
 # 1) 推脚本（按需取子集；board_env.sh 必推，它是所有 e2e 的门禁）
 scp debug/tests/board_env.sh board:~/code/mtl/src/debug/tests/
 scp app/rk3588_playout_rx/tests/run_tx_rx_e2e.sh board:~/code/mtl/src/playout-tests/
+scp app/rk3588_playout_rx/tests/run_playout_delay_sweep.sh board:~/code/mtl/src/playout-tests/  # T4 扫参脚本（见 §3）
 # 2) 二进制若有 C 改动：在 devs 交叉重编后再推（板上不编译，见 §5；本地禁构建，见 AGENTS.md）
 scp app/rk3588_playout_rx/build/file_playout_rx board:~/code/mtl/bin/
 # DVS 节点包（devs 产物经本地中转，devs 不能直连 board）：
@@ -23,7 +24,7 @@ scp devs:/data/kkkqkx/mtl/app/dvs_agent/build-aarch64/dvs_agent /tmp/ && scp /tm
 scp debug/tests/dvs_node_smoke.sh debug/tests/dvs_agent_api_smoke.sh debug/tests/dvs_ipc_probe.py board:~/code/mtl/src/debug/tests/
 scp -r app/dvs_agent/web/src board:~/code/mtl/src/dvs-agent-web
 # 3) 板上拷可执行副本进 bin/ 并赋权
-ssh board "cp ~/code/mtl/src/debug/tests/board_env.sh ~/code/mtl/src/debug/tests/dvs_node_smoke.sh ~/code/mtl/src/debug/tests/dvs_agent_api_smoke.sh ~/code/mtl/src/debug/tests/dvs_ipc_probe.py ~/code/mtl/src/playout-tests/run_tx_rx_e2e.sh ~/code/mtl/bin/ && chmod +x ~/code/mtl/bin/board_env.sh ~/code/mtl/bin/dvs_node_smoke.sh ~/code/mtl/bin/dvs_agent_api_smoke.sh ~/code/mtl/bin/dvs_ipc_probe.py ~/code/mtl/bin/dvs_media ~/code/mtl/bin/dvs_agent ~/code/mtl/bin/run_tx_rx_e2e.sh"
+ssh board "cp ~/code/mtl/src/debug/tests/board_env.sh ~/code/mtl/src/debug/tests/dvs_node_smoke.sh ~/code/mtl/src/debug/tests/dvs_agent_api_smoke.sh ~/code/mtl/src/debug/tests/dvs_ipc_probe.py ~/code/mtl/src/playout-tests/run_tx_rx_e2e.sh ~/code/mtl/src/playout-tests/run_playout_delay_sweep.sh ~/code/mtl/bin/ && chmod +x ~/code/mtl/bin/board_env.sh ~/code/mtl/bin/dvs_node_smoke.sh ~/code/mtl/bin/dvs_agent_api_smoke.sh ~/code/mtl/bin/dvs_ipc_probe.py ~/code/mtl/bin/dvs_media ~/code/mtl/bin/dvs_agent ~/code/mtl/bin/run_tx_rx_e2e.sh ~/code/mtl/bin/run_playout_delay_sweep.sh"
 # 4) 抽查 md5，全 SAME 方为对齐
 ssh board "md5sum ~/code/mtl/src/debug/tests/board_env.sh ~/code/mtl/bin/board_env.sh"
 md5sum debug/tests/board_env.sh
@@ -53,6 +54,8 @@ cd ~/code/mtl/bin
 ./board_env.sh run -- ./run_multinode_composite.sh T2 40  # 双路合成（T0/T1/T3 同理可单独跑）
 ./board_env.sh run -- ./display_compare.sh         # A/B 对照：先直通后链路，按提示看屏
 ./board_env.sh run -- ./manual_check_visual.sh T2 120    # 看屏见证：逐项 y/n，结论进见证文件
+./board_env.sh run -- ./run_playout_delay_sweep.sh '80 20 8 2 0' 40        # playout 扫参（T4）：逐档看屏 + 见证
+TX_SRC=file ./board_env.sh run -- ./run_playout_delay_sweep.sh '80 20 8 2 0' 40  # 文件源对照（运动连续，更适合看抖动）
 ```
 
 期望输出：机器部分以 `OVERALL: PASS`（单路）或各 `PASS: T*` 行收尾，末尾汇总行引用的是末值窗口
@@ -69,6 +72,16 @@ cd ~/code/mtl/bin
 
 结论记入 `manual_witness_*.log`（`WITNESSED_PASS/FAIL`），非交互终端只跑流并标 `UNWITNESSED`，不伪造结论。
 
+`run_playout_delay_sweep.sh` 的检查单（每档各问一次，`80ms` 档先立稳态参照）：
+
+1. 有连续画面、无超过半秒的冻结；
+2. 无黑场/花屏/撕裂/横向分块（一票否决项）；
+3. 运动平滑可接受（自然内容几乎无感可过；`testsrc`/摇镜下轻微抖动注明接受也可过）。
+
+机器行只做提示，不做 `PASS/FAIL`：`skip/dec≤1%` 且欠载稳态收敛多半可接受；`1~5%` 看用途
+（监控/预览可接受，录制/测量不可）；`>5%`、欠载持续增长、`overrun>0` 不可接受。
+结论记入 `playout_sweep_witness_*.log`（每档 `WITNESSED_PASS/FAIL` + 备注），机器汇总行附后备查。
+
 ## 5 二进制与环境恢复
 
 - C 改动只在 devs 交叉重编（`app/rk3588_live_tx`、`app/rk3588_playout_rx`、`app/dvs_media`、`app/dvs_agent` 各自 `ninja -C build-aarch64` 增量即可；devs 上 PATH 需含工具链 `bin` 与 buildroot `host/bin`，否则 meson 再生钩找不到 `ar`/python），推 `bin/` 后 `md5` 对齐；板上只 `gcc` 直编 `mpp_*_latency/drm_smoke/hdmi_passthrough/alsa_tone/v4l2_cap_latency` 类探针。本地禁构建，见 AGENTS.md。
@@ -84,6 +97,7 @@ cd ~/code/mtl/bin
 | `TX build ret -283` / `trs -142` | 同上（应用无帧可发/发送环无包是结果） | 同上，先清残留再谈链路 |
 | `ALSA open failed` / `mtl_rx_audio` 无建连 | 声卡被占或设备名不对 | `status` 定责 → `prepare audio/all` |
 | `render` 远小于 `dec` | 预期内（按时钟取最新帧主动跳帧） | 只看趋势与零错误，不做相等断言 |
+| 扫参低档 `pb_skip` 高 / `pb_underrun` 增长 | `delay` 小于抖动包络，帧到期前没播完 | 人眼先判（见 §4）；机器侧按脚本尾阈值分级，不调大 `delay` 掩盖
 | `composite_frames=0` | lane 参数错配（端口/宽高帧率） | 先对齐饰演参数，再查码流上限与播放延迟 |
 | 显示提交失败/黑屏但日志正常 | Xorg 占 master | 走 `run --`（自动停桌面），勿 `fuser -k card0` |
 | HDMI 时序跳变中途截断 | 源抖动 | 按 issue 文档 §3 预检源，抖动窗口内只跑 T1 |
@@ -99,7 +113,9 @@ cd ~/code/mtl/bin
 每轮一页：拓扑、源类型、参数摘要、五级帧数、时延分位、音频状态、硬件负载、结论与定位
 （失败必须指明发送/网络/接收三段中的一段）。取证物即 `OUT_DIR` 当轮文件＋`perf/` 输出，
 归档到 `docs/archive/perf/`（按日期命名）。数值对照上轮同场景 validation-report，
-阈值收敛统一改 `tests/perf/common/thresholds.json`，不在脚本里硬编码。
+阈值收敛统一改 `tests/perf/common/thresholds.json`，不在脚本里硬编码。扫参轮的见证文件
+（`playout_sweep_witness_*.log`）与各档发送/接收日志（`OUT_DIR` 默认 `/tmp/playout_sweep`）
+一并归档到 `docs/archive/perf/`（按日期命名），后续步骤见 `docs/plan/rk3588/` 下扫参后续文档。
 DVS 节点包的人工验证见 §8，结论记 `docs/archive/app/`（按日期命名）。
 
 ## 8 DVS 节点包人工验证（V3/V4/V5/V7，需人眼与浏览器）

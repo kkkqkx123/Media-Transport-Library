@@ -44,6 +44,7 @@
 | 脚本 | 板端 | 对照设计 |
 |---|---|---|
 | `run_tx_rx_e2e.sh` | `src/playout-tests/` + `bin/` 可执行副本，单板回环默认 60s | `rk3588-tx-rx-e2e-verification-design.md` L0–L7；报告见 `rk3588-tx-rx-e2e-validation-report.md` |
+| `run_playout_delay_sweep.sh` | 同上；逐档覆写 `playout_delay_ms`（`80 20 8 2 0`）+ 人眼 y/n/s 见证 | 预算 `T4` 扫参的人工执行器；阈值见脚本尾判定参考 |
 | `run_multinode_composite.sh` | 同上；`OUT_DIR` 先定义后使用（此前引用未定义变量，`set -u` 下直接失败，已修复） | `rk3588-multinode-composite-verification-design.md` T0–T3；报告见 `rk3588-multinode-composite-validation-report.md`；音频正式结论见 §5 |
 | `manual_check_visual.sh` | 同上 | 目检流程（与 `display_compare.sh` 互补） |
 | `gen_av_file_source.sh` | 同上（只跑一次，产物进 `streams/`，见 §6） | 生成 T1/T2 默认文件片源（有声非静音，替代旧 `/usr/local/test.mp4`） |

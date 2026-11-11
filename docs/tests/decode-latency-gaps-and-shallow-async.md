@@ -39,15 +39,14 @@ Python 编排零扰动已验证。
    其中 dec 段等第 1 项回填，net 段（MTL pacing + 网络）与 playout 段
    （AV sync 缓冲等待）无独立测量。做法：一次带齐全打点的 e2e run，
    用 `e2e_latency_budget.py` 把表填实，而不是各段各自为政。
-3. **p50/p99 尾因未归因。** dec 4K p99/p50 = 2.06，enc 生产 p99 6.3ms vs
-   探针单点 4ms。候选：IDR（GOP=60 周期尾）、RC、CBR 启始、MPP 批输出、
-   调度。补充做法（只改探针，最便宜）：按 GOP 相位（seq % gop）分组
-   打印分位，一次 run 即知尾是周期性（IDR/RC）还是随机（调度/饿死），
-   再定要不要 IDR-aware 预算。enc async 的 gappy run 不在此列
-   （那是门控 artifact，p99 恒等于超时，已有定论）。
-4. **多流共享 HW 的 stretch 未测。** 单会话上限 ≠ 多会话并发时每流延时。
-   做法：板上多进程并发跑 dec 探针（2/4 会话同跑），各记分位，
-   看每流 p50/p99 相对单会话 stretch 多少。这是解码盒容量规划的直接输入。
+3. **p50/p99 尾因未归因。** ✅ 已闭环（11-11）：`--csv` 逐帧成本按
+   `seq % 60` 分组，enc top 样本相位随机、带宽仅 ~55~70us；dec 大值
+   全是启动前几帧。尾 = 启动瞬态 + 系统噪声，无 IDR/RC 周期项，
+   无需 IDR-aware 预算（warmup 跳过已覆盖最坏部分）。
+4. **多流共享 HW 的 stretch 未测。** ✅ 已闭环（11-11）：并发批跑
+   x2/x4/x8，sync/async 双模式交错复测；x4 sync stretch 0.58、async
+   0.40，aggregate 776~800 vs 659~668。数据见 §3.4 与 plan，
+   容量规划改用 aggregate 口径。
 
 第 4 项正是下一节小缓冲 async 的前置数据。
 
@@ -85,14 +84,14 @@ Python 编排零扰动已验证。
 找到拐点（预期 N = 2~4 即达上限约 95%，再深只涨 p99 不涨 fps）。
 同时跑第 2 节第 4 项的多会话并发，确认每流 stretch 可接受。
 
-第二步（动生产，需门楣三者其一）：多流需求落地（N≥2 会话），或
-生产 RX 出现 `put_fail` / `drain_pull` 堆积，或回填的 `dec_p50/p99`
-显示 HW 饿死间隙。改动面：`shared/mpp_decoder.c` 加 shallow-async
-模式（默认 sync 不变，file_playout/dvs_media 按需开），每流独立
-session + depth 2~4，沿用现有 `dec_p50/p99` + 反压计数作可观测，
-准入按 §3.1 算式。depth > 4 不做（无益，只加延时）。
+第二步（动生产，需网络抖动 A/B 胜出——唯一门控）：吞吐门控已关闭
+（并发 sync 反超 async 约 20%，交错复测确认；见 §3.4 与 plan）；
+`put_fail` 全零说明文件输入下无反压可治；HW 饿死间隙在文件输入下
+不存在。改动面不变（`shared/mpp_decoder.c` 加 shallow-async 模式，
+默认 sync 不变），但执行条件收紧为 A/B 实验胜出（方法见 plan）。
 
 在此之前，§1.2 "不动生产解码代码"继续有效。
+正式决策与条件性实施预案见 `docs/plan/rk3588/RK3588_DECODE_ASYNC_PLAN.md`。
 
 ### 3.4 验证结果（11-11，见 `docs/archive/perf/2026-11-11-decode-shallow-async-verify.md`）
 

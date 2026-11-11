@@ -168,3 +168,20 @@ frames=120 3840x2160@30fps level=51 mean_us=14829 p99=15389（带编排层负载
 | 3 | 生产 enc_cost 丢帧路径 submit 时间戳错位 | `codec/mpp_encoder.c` 收集线程 | `total==0` 与 `ring_push` 失败两条丢帧路径均补 `submit_pop` 消费（并修复 ring 满时 slab 块泄漏） | ✅ 已修，三 app 交叉编译通过 |
 | 4 | RX 生产路径无逐帧解码延时 | `rx/rx_pipeline.c` | feed→首帧输出滑动 300 帧窗口，周期统计行新增 `dec_p50=xxus dec_p99=xxus` | ✅ 已修，playout_rx 编译通过 |
 | 5 | mpi_dec_test 兜底在本板零输出 | `tests/perf/rx_decode_perf.py` + README | 自动探测 `~/code/mtl/bin/mpp_dec_latency` 默认路径；mpi_dec_test 解析失败时报错给出改用探针的指引 | ✅ 已修 |
+
+## 六、11-11 补测：GOP 相位尾因与编码重测（本节新增）
+
+- **p99 尾无 GOP 周期性。** `--csv` 逐帧成本按 `seq % 60` 分组：enc
+  1080p/4K 的 top 成本样本相位随机（6,5,26,11,23,…），带宽仅
+  ~55~70us；dec 的大值全是启动前几帧（首帧解码器初始化），其后随机。
+  结论：尾 = 启动瞬态 + 系统噪声，无 IDR/RC 周期项；warmup 跳过已覆盖
+  最坏部分，无需 IDR-aware 预算。
+- **编码 sync 三轮复现，async-enc 不可复现。** sync（file/dmaheap）：
+  1080p 246.0/256.2、4K 70.4/71.1fps，与 round1/round2 逐位一致；
+  持续 2000 帧 `mean 3969 p50 3963 p99 4117`，零漂移（无降频/过热）。
+  async 同配置重测 14~20fps（p99 = 秒级门控超时），round1 的
+  192/51fps 为 MPP 状态相关的幸运值，不再引用；编码上限以 sync 为准。
+- **dec 并发对照（plan 决策依据）。** x4 sync aggregate 776~800、
+  stretch 0.58，x4 async 659~668、stretch 0.40（交错复测两轮确认）；
+  x2 sync stretch 0.98~1.0。并发 sync 已打满 HW（rkvdec 99%），
+  生产吞吐侧不替换，详见 `docs/plan/rk3588/RK3588_DECODE_ASYNC_PLAN.md`。

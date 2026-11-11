@@ -53,10 +53,11 @@ python3 tests/perf/mpp_async_ceiling.py --suites enc \
   --matrix "1920x1080,3840x2160" --srcs file,dmaheap --repeat 2 \
   --out ~/code/mtl/perf/async_ceiling_dmaheap
 
-# 解码盒验证（浅缓冲拐点 + 多会话 stretch；depth_sweep/concurrent 只记录不判定）
+# 解码盒验证（浅缓冲拐点 + 多会话 stretch；depth_sweep/concurrent 只记录不判定；
+# --cmode sync|async 切批跑模式，sync 作对照基线）
 python3 tests/perf/mpp_async_ceiling.py --suites dec \
   --matrix "1920x1080,3840x2160" --depths '1,2,4,8,16' --concurrent '2,4,8' \
-  --cdepth 4 --repeat 2 --out ~/code/mtl/perf/dec_shallow_verify
+  --cdepth 4 --cmode async --repeat 2 --out ~/code/mtl/perf/dec_shallow_verify
 
 # 接收侧 4K 画像（优先走 mpp_dec_latency 探针，含分位与阈值判定；
 # --dec-binary 省略时自动探测 ~/code/mtl/bin/mpp_dec_latency，

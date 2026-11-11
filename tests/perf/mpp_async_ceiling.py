@@ -357,6 +357,8 @@ def main():
     ap.add_argument("--cdepth", type=int, default=4,
                     help="并发批跑用的门控深度（默认4，即预期拐点；"
                     " sweep 后若拐点他处可重设）")
+    ap.add_argument("--cmode", default="async", choices=["async", "sync"],
+                    help="并发批跑各会话的模式（默认async；sync 作对照基线）")
     ap.add_argument("--streams", default=os.path.expanduser("~/code/mtl/streams"))
     ap.add_argument("--src-dir", default=None,
                     help="探针源码目录（默认相对仓库 debug/）")
@@ -467,6 +469,9 @@ def main():
                         dec_runs["async_vs_sync"] = round(a / s, 2)
                 # Depth sweep（单会话门控深度拐点）与并发 stretch 均为表征，
                 # 只记录 INFO，不翻转 overall（探针报错除外）。
+                # Sweep 依赖 async 模式；并发批跑自带 --cmode，与 modes 无关。
+                conc = [int(n.strip()) for n in args.concurrent.split(",")
+                        if n.strip()]
                 if "async" in modes:
                     depths = []
                     for d in args.depths.split(","):
@@ -500,11 +505,8 @@ def main():
                                 "depth={} 单会话表征 fps={}".format(d, r.get("fps"))]
                         sweep[str(d)] = r
                     dec_runs["depth_sweep"] = sweep
-                    conc = []
-                    for n in args.concurrent.split(","):
-                        n = n.strip()
-                        if n:
-                            conc.append(int(n))
+                if any(n > 1 for n in conc):
+                    sweep = dec_runs.get("depth_sweep", {}) or {}
                     conc_res = {}
                     for n in conc:
                         if n <= 1:
@@ -512,15 +514,16 @@ def main():
                         cmds = []
                         for _ in range(n):
                             cmd = [dec_bin, "--input", dec_in, "--mode",
-                                   "async", "--warmup", str(args.warmup),
-                                   "--depth", str(args.cdepth)]
+                                   args.cmode, "--warmup", str(args.warmup)]
+                            if args.cmode == "async":
+                                cmd += ["--depth", str(args.cdepth)]
                             if args.max_au:
                                 cmd += ["--max-au", str(args.max_au)]
                             cmds.append(cmd)
                         outs, cloads = run_dec_batch(cmds)
                         sessions = []
                         for rc, text in outs:
-                            sessions.append(parse_dec_output(text, rc, "async"))
+                            sessions.append(parse_dec_output(text, rc, args.cmode))
                         ok = [s for s in sessions if s.get("fps") is not None]
                         batch = {"sessions": n, "cdepth": args.cdepth,
                                  "per_session": sessions,
@@ -535,15 +538,19 @@ def main():
                             batch["min_fps"] = round(min(fpss), 1)
                             batch["mean_fps"] = round(
                                 sum(fpss) / len(fpss), 1)
-                            ref = sweep.get(str(args.cdepth), {}).get("fps")
-                            ref = ref or dec_runs.get("async", {}).get("fps")
+                            if args.cmode == "async":
+                                ref = sweep.get(str(args.cdepth), {}).get("fps")
+                                ref = ref or dec_runs.get("async", {}).get("fps")
+                            else:
+                                ref = dec_runs.get("sync", {}).get("fps")
                             batch["ref_single_fps"] = ref
+                            batch["cmode"] = args.cmode
                             batch["stretch"] = round(batch["min_fps"] / ref, 3) \
                                 if ref else None
                             batch["verdict"] = "INFO"
                             batch["notes"] = [
-                                "x{} 并发@depth={} min_fps={} stretch={}".format(
-                                    n, args.cdepth, batch["min_fps"],
+                                "x{}{}@depth={} min_fps={} stretch={}".format(
+                                    n, args.cmode, args.cdepth, batch["min_fps"],
                                     batch["stretch"])]
                         conc_res[str(n)] = batch
                     if conc_res:
@@ -584,7 +591,8 @@ def main():
                             tgt = c.get("fps_target") or 0
                             ratio = round(fps / tgt, 3) if fps and tgt else "-"
                             rows.append([c["resolution"], suite,
-                                         "async-x{}".format(n), fps, ratio,
+                                         "{}-x{}".format(b.get("cmode", "async"), n),
+                                         fps, ratio,
                                          b.get("rkvdec_max", "-"), "-",
                                          b.get("verdict", "?")])
                         continue

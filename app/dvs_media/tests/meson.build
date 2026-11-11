@@ -1,5 +1,7 @@
-# dvs_media unit tests (no MTL dependency needed for ipc/ modules)
-test_dep = [threads_dep, libjson_c_dep]
+# dvs_media unit tests. test_ipc and test_capability_logic compile
+# engine/capability.c, which includes file_playout_app.h (MTL headers)
+# for the PTP clock-mode enum, so they need mtl_dep like the main target.
+test_dep = [threads_dep, libjson_c_dep, mtl_dep]
 
 test_state_machine = executable('test_state_machine',
   files('test_state_machine.c', '../ipc/state_machine.c'),
@@ -59,7 +61,7 @@ test_capability_logic = executable('test_capability_logic',
   files('test_capability_logic.c', '../engine/capability.c',
         '../engine/tx_port_map.c', '../engine/session_admit.c'),
   c_args: common_c_args,
-  dependencies: [threads_dep, libjson_c_dep],
+  dependencies: [threads_dep, libjson_c_dep, mtl_dep],
   include_directories: [include_directories('..'),
                         include_directories('../../dvs_common/include'),
                         file_playout_inc],

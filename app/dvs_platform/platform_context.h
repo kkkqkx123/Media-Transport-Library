@@ -1,5 +1,6 @@
 #pragma once
 #include <condition_variable>
+#include <list>
 #include <mutex>
 #include <queue>
 #include <string>
@@ -29,7 +30,12 @@ struct PlatformContext {
     ChannelRegistry channels;
     std::mutex up_mu;
     std::condition_variable up_cv;
-    std::queue<UpgradeJob> up_q;
+    // Upgrade backlog on std::list, not the default deque: the cross
+    // toolchain (GCC 13) emits std::__throw_bad_array_new_length for deque
+    // growth, which the board sysroot libstdc++ (6.0.28) does not provide.
+    // vector members must likewise be moved, never copied, for the same
+    // reason (see route_upgrade / start_upgrade_worker).
+    std::queue<UpgradeJob, std::list<UpgradeJob>> up_q;
     // Bearer token for agent-to-platform calls. Empty means misconfigured:
     // main refuses to start and the HTTP/WS gates reject every mutating call.
     std::string api_token;

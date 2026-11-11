@@ -54,9 +54,12 @@ bool route_upgrade(PlatformContext& ctx, const HttpRequest& req,
                              dvs::json_escape(ver) + "\"}");
         if (b) json_object_put(b);
         std::string task_id = ct::next_msg_id("p");
+        int queued = (int)nodes.size();
         {
             std::lock_guard<std::mutex> lk(ctx.up_mu);
-            ctx.up_q.push(UpgradeJob{task_id, nodes, fn, sha});
+            UpgradeJob job{task_id, std::move(nodes), std::move(fn),
+                           std::move(sha)};
+            ctx.up_q.push(std::move(job));
         }
         ctx.up_cv.notify_one();
         ctx.store->audit("{\"upgrade-enqueue\":\"" + dvs::json_escape(task_id) +
@@ -64,8 +67,7 @@ bool route_upgrade(PlatformContext& ctx, const HttpRequest& req,
         json_object* d = json_object_new_object();
         json_object_object_add(d, "taskId",
                                json_object_new_string(task_id.c_str()));
-        json_object_object_add(d, "queued",
-                               json_object_new_int((int)nodes.size()));
+        json_object_object_add(d, "queued", json_object_new_int(queued));
         dvs::send_json(res, dvs::envelope_ok(d, "queued"));
         return true;
     }
@@ -112,7 +114,7 @@ void start_upgrade_worker(PlatformContext& ctx) {
             {
                 std::unique_lock<std::mutex> lk(ctx.up_mu);
                 ctx.up_cv.wait(lk, [&ctx]() { return !ctx.up_q.empty(); });
-                job = ctx.up_q.front();
+                job = std::move(ctx.up_q.front());
                 ctx.up_q.pop();
             }
             for (auto& nid : job.nodes) {

@@ -31,7 +31,6 @@ LayoutDelivery deliver_layout_prepare(
     std::string agent_base = dvs::json_get_str(nd, "agentBase");
     json_object* geo = nullptr;
     json_object_object_get_ex(nd, "geometry", &geo);
-    bool geo_ok = geo && dvs::json_rect_int(geo, "w") > 0 && dvs::json_rect_int(geo, "h") > 0;
     bool has_channel =
         (ctx.channels.fd_of(node_id) >= 0) || !agent_base.empty();
     std::string shortfall = node_shortfall_reason(nd, has_channel);
@@ -230,8 +229,12 @@ void fanout_layout_parallel(PlatformContext& ctx,
     if (shards < 1) shards = 1;
     if (shards > (int)ids.size()) shards = (int)ids.size();
     std::vector<std::thread> workers;
+    // ids is captured by reference: workers are joined below before ids
+    // goes out of scope. A by-value capture would copy the vector, whose
+    // allocator the cross toolchain emits against a newer libstdc++ than
+    // the board sysroot provides (undefined std::__throw_bad_array_new_length).
     for (int s = 0; s < shards; s++) {
-        workers.emplace_back([s, shards, ids, opid, rev, apply_at, windows_json,
+        workers.emplace_back([s, shards, &ids, opid, rev, apply_at, windows_json,
                               volume, token, wall_id, scene_id, hash, epoch_ns,
                               fps, frame_index, wall_w, wall_h, base_json,
                               adjust_json, is_rollback, expires_at_ns, &ctx]() {

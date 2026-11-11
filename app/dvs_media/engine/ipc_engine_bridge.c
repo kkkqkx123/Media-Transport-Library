@@ -228,7 +228,10 @@ static int hook_prepare(struct json_object* req, char* err, size_t errlen) {
             const char* role = value ? json_str(value, "role") : NULL;
             if (!role && value && json_object_is_type(value, json_type_string)) role = json_object_get_string(value);
             if (!role) { snprintf(err, errlen, "missing role"); return -1; }
-            if (dvs_engine_set_role(s_eng, role) != 0) { snprintf(err, errlen, "bad role"); return -1; }
+            if (dvs_engine_set_role(s_eng, role, err, errlen) != 0) {
+                if (!err[0]) snprintf(err, errlen, "bad role");
+                return -1;
+            }
             return 0;
         }
         if (scope && strcmp(scope, "st21_pacing") == 0) {

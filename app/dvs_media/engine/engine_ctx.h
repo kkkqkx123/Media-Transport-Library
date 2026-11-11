@@ -173,8 +173,14 @@ int dvs_engine_set_output(dvs_engine* e, const char* connector, int width,
 
 /* Store a role switch. Input boxes stop display output; output boxes stay
  * idle until a layout arrives. Switching to output also stops any TX
- * session; switching to input stops the RX compositor. */
-int dvs_engine_set_role(dvs_engine* e, const char* role);
+ * session; switching to input stops the RX compositor. Switching to input
+ * requires at least one probed capture device and is refused otherwise, so
+ * a capability-less node fails fast instead of starting a TX chain that can
+ * never capture. Output is always accepted: an absent display surfaces at
+ * compositor creation, and headless nodes must still reach an idle output
+ * role. */
+int dvs_engine_set_role(dvs_engine* e, const char* role, char* err,
+                        size_t errlen);
 
 /* Current node role ("input" | "output"). Never NULL. */
 const char* dvs_engine_role(const dvs_engine* e);

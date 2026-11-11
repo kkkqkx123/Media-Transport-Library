@@ -653,13 +653,32 @@ int dvs_engine_media_idle(dvs_engine* e) {
     return idle;
 }
 
-int dvs_engine_set_role(dvs_engine* e, const char* role) {
-    if (!e || !role) return -1;
-    if (strcmp(role, "input") != 0 && strcmp(role, "output") != 0) return -1;
+int dvs_engine_set_role(dvs_engine* e, const char* role, char* err,
+                        size_t errlen) {
+    if (!e || !role) {
+        if (err && errlen > 0) snprintf(err, errlen, "bad role");
+        return -1;
+    }
+    if (strcmp(role, "input") != 0 && strcmp(role, "output") != 0) {
+        if (err && errlen > 0) snprintf(err, errlen, "bad role");
+        return -1;
+    }
     /* Same-role switches are no-ops so repeated calls never disturb a
      * running TX chain or tear down an already idle RX side. */
     if (strcmp(e->role, role) == 0) return 0;
     if (strcmp(role, "input") == 0) {
+        dvs_capability cap;
+        dvs_capability_probe(&cap);
+        int n = cap.input_port_count;
+        dvs_capability_free(&cap);
+        if (n <= 0) {
+            if (err && errlen > 0)
+                snprintf(err, errlen,
+                         "input unsupported: no capture device");
+            fprintf(stderr,
+                    "dvs_engine: role input refused (no capture device)\n");
+            return -1;
+        }
         pthread_mutex_lock(&e->mu);
         snprintf(e->role, sizeof(e->role), "input");
         /* RX-only teardown: keep any TX session untouched so a repeated
@@ -680,6 +699,8 @@ int dvs_engine_set_role(dvs_engine* e, const char* role) {
         atomic_store(&e->decoding, 0);
         atomic_store(&e->layers, 0);
         pthread_mutex_unlock(&e->mu);
+        fprintf(stderr, "dvs_engine: role -> input (%d capture port(s))\n",
+                n);
         return 0;
     }
     snprintf(e->role, sizeof(e->role), "output");
@@ -687,6 +708,7 @@ int dvs_engine_set_role(dvs_engine* e, const char* role) {
     dvs_tx_backend_stop();
     dvs_tx_stop(&e->tx);
     pthread_mutex_unlock(&e->mu);
+    fprintf(stderr, "dvs_engine: role -> output\n");
     return 0;
 }
 

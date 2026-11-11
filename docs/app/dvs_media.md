@@ -114,7 +114,7 @@ dvs_media --version                            # 输出 bundle + IPC 版本后�
 - 布局可携带帧锚 `(epochTaiNs, fps, frameIndex)` 与目标 TAI 时刻 `applyAtNs`：`epoch==0` 或 `frameIndex<0` = 立即（当前帧）提交；锚定提交换算到帧起始时刻，所有节点同一瞬间换布局；commit 报告（`dvs_engine_commit_report`）回报实际提交的帧号、提交时刻（TAI ns）、是否迟到（`late`），配合 `dvs_platform` 的跨节点 prepare/commit 屏障实现多节点同时切换。
 - **快路径**：纯几何变更（窗口位置/大小调整）复用运行中的 compositor，未来目标在快路径上等待 TAI 时钟到达后换布局。
 - **慢路径**：流增减/编码变化走影子交换（build + start + 等首帧 + swap + 释旧）；影子失败（build/start/50×100ms 等首帧超时）保持旧画面并分别报 `MEDIA_SESSION_FAILED` / `DECODE_NOT_READY`；空布局（count 0）切到 0-lane backdrop 合成器保持扫出，MTL 不下电。
-- **角色互斥**：`dvs_engine_set_role` 切到 input 即停 RX 合成器并释放 admission，切到 output 即停 TX 会话；同角色重复切换为 no-op，不打断运行链；TX 只能在 input 角色启动（否则 `TX_ROLE_MISMATCH`），布局只能在 output 角色合成（否则 `LAYOUT_CONFLICT`）；输出模式变更有 compositor 时经帧路径重建即时生效，否则等下次布局。
+- **角色互斥**：`dvs_engine_set_role(role, err)` 切到 input 即停 RX 合成器并释放 admission，切到 output 即停 TX 会话；同角色重复切换为 no-op，不打断运行链；切 input 前探测采集口，无采集设备直接拒绝，output 始终可切；TX 只能在 input 角色启动（否则 `TX_ROLE_MISMATCH`），布局只能在 output 角色合成（否则 `LAYOUT_CONFLICT`）；输出模式变更有 compositor 时经帧路径重建即时生效，否则等下次布局。
 - `dvs_engine_media_idle` 无泄漏断言：`pip_stream_count==0` 且 TX 为 `idle` 才算空闲（backdrop 空合成器视为空闲显示）。
 
 ## 11. 白名单与流校验

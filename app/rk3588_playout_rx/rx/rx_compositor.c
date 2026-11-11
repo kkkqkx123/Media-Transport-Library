@@ -12,7 +12,7 @@
 #include "codec_plugin.h"
 #include "../shared/mpp_decoder.h"
 #include "../shared/drm_renderer.h"
-#include "../shared/rx_e2e_stats.h"
+#include "rx_e2e_stats.h"
 #include <drm_fourcc.h>
 #include <errno.h>
 #include <pthread.h>

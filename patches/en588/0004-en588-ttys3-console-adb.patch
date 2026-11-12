@@ -1,37 +1,36 @@
-From 4ed3a9682432d053417e0e29e652efd93aa8706f Mon Sep 17 00:00:00 2001
+From 6e72362dba10f5e53721e928baabe90a250acfaf Mon Sep 17 00:00:00 2001
 From: zhanglei <596504085@qq.com>
 Date: Thu, 12 Nov 2026 12:00:00 +0800
 Subject: [PATCH 4/4] en588: ttyS3 console + adb over USB-OTG
 
-Serial: en DTS chosen (uart3 last -> /dev/console) plus the u-boot
-env_update that stops fdt_chosen() from dropping every console=.
-No inittab: systemd (0003) spawns getty from the console= list.
-adb: BR2_PACKAGE_ANDROID_ADBD plus the usbdevice gadget framework
-(same scripts as the debian overlay / rk3568 rkscript, wired for
-both systemd and busybox init).
-
 ---
+ .../rockchip/en588/fs-overlay/data/.keep      |   0
  .../en588/fs-overlay/etc/init.d/.usb_config   |   1 +
  .../en588/fs-overlay/etc/init.d/S50usbdevice  |  22 +
  .../en588/fs-overlay/etc/profile.d/adbd.sh    |   2 +
  .../fs-overlay/etc/profile.d/usbdevice.sh     |  13 +
  .../sysinit.target.wants/usbdevice.service    |   1 +
- .../lib/udev/rules.d/61-usbdevice.rules       |   2 +
  .../en588/fs-overlay/usr/bin/usbdevice        | 644 ++++++++++++++++++
  .../usr/lib/systemd/system/usbdevice.service  |  13 +
+ .../usr/lib/udev/rules.d/61-usbdevice.rules   |   2 +
  .../configs/rockchip_rk3588_en588_defconfig   |   5 +
  .../arm64/boot/dts/rockchip/ztl-rk3588-en.dts |   9 +
+ .../arch/arm64/configs/ztl_rk3588.config      |   3 +
  u-boot/arch/arm/mach-rockchip/board.c         |  11 +
- 11 files changed, 723 insertions(+)
+ 13 files changed, 726 insertions(+)
+ create mode 100644 buildroot/board/rockchip/en588/fs-overlay/data/.keep
  create mode 100644 buildroot/board/rockchip/en588/fs-overlay/etc/init.d/.usb_config
  create mode 100755 buildroot/board/rockchip/en588/fs-overlay/etc/init.d/S50usbdevice
  create mode 100644 buildroot/board/rockchip/en588/fs-overlay/etc/profile.d/adbd.sh
  create mode 100644 buildroot/board/rockchip/en588/fs-overlay/etc/profile.d/usbdevice.sh
  create mode 120000 buildroot/board/rockchip/en588/fs-overlay/etc/systemd/system/sysinit.target.wants/usbdevice.service
- create mode 100644 buildroot/board/rockchip/en588/fs-overlay/lib/udev/rules.d/61-usbdevice.rules
  create mode 100755 buildroot/board/rockchip/en588/fs-overlay/usr/bin/usbdevice
  create mode 100644 buildroot/board/rockchip/en588/fs-overlay/usr/lib/systemd/system/usbdevice.service
+ create mode 100644 buildroot/board/rockchip/en588/fs-overlay/usr/lib/udev/rules.d/61-usbdevice.rules
 
+diff --git a/buildroot/board/rockchip/en588/fs-overlay/data/.keep b/buildroot/board/rockchip/en588/fs-overlay/data/.keep
+new file mode 100644
+index 0000000..e69de29
 diff --git a/buildroot/board/rockchip/en588/fs-overlay/etc/init.d/.usb_config b/buildroot/board/rockchip/en588/fs-overlay/etc/init.d/.usb_config
 new file mode 100644
 index 0000000..3de3a0b
@@ -102,14 +101,6 @@ index 0000000..bc449ea
 @@ -0,0 +1 @@
 +/lib/systemd/system/usbdevice.service
 \ No newline at end of file
-diff --git a/buildroot/board/rockchip/en588/fs-overlay/lib/udev/rules.d/61-usbdevice.rules b/buildroot/board/rockchip/en588/fs-overlay/lib/udev/rules.d/61-usbdevice.rules
-new file mode 100644
-index 0000000..cdaec22
---- /dev/null
-+++ b/buildroot/board/rockchip/en588/fs-overlay/lib/udev/rules.d/61-usbdevice.rules
-@@ -0,0 +1,2 @@
-+SUBSYSTEM=="android_usb",ACTION=="change",RUN+="/usr/bin/usbdevice update"
-+SUBSYSTEM=="udc",ACTION=="add",RUN+="/usr/bin/usbdevice update"
 diff --git a/buildroot/board/rockchip/en588/fs-overlay/usr/bin/usbdevice b/buildroot/board/rockchip/en588/fs-overlay/usr/bin/usbdevice
 new file mode 100755
 index 0000000..4f791fe
@@ -779,6 +770,14 @@ index 0000000..99ffebe
 +
 +[Install]
 +WantedBy=sysinit.target
+diff --git a/buildroot/board/rockchip/en588/fs-overlay/usr/lib/udev/rules.d/61-usbdevice.rules b/buildroot/board/rockchip/en588/fs-overlay/usr/lib/udev/rules.d/61-usbdevice.rules
+new file mode 100644
+index 0000000..cdaec22
+--- /dev/null
++++ b/buildroot/board/rockchip/en588/fs-overlay/usr/lib/udev/rules.d/61-usbdevice.rules
+@@ -0,0 +1,2 @@
++SUBSYSTEM=="android_usb",ACTION=="change",RUN+="/usr/bin/usbdevice update"
++SUBSYSTEM=="udc",ACTION=="add",RUN+="/usr/bin/usbdevice update"
 diff --git a/buildroot/configs/rockchip_rk3588_en588_defconfig b/buildroot/configs/rockchip_rk3588_en588_defconfig
 index 3575cd3..2742d6c 100644
 --- a/buildroot/configs/rockchip_rk3588_en588_defconfig
@@ -793,7 +792,7 @@ index 3575cd3..2742d6c 100644
 +# via usbdevice.service / S50usbdevice) ----
 +BR2_PACKAGE_ANDROID_ADBD=y
 diff --git a/kernel-6.1/arch/arm64/boot/dts/rockchip/ztl-rk3588-en.dts b/kernel-6.1/arch/arm64/boot/dts/rockchip/ztl-rk3588-en.dts
-index 28c37f9..0603a44 100755
+index 28c37f9..e438840 100755
 --- a/kernel-6.1/arch/arm64/boot/dts/rockchip/ztl-rk3588-en.dts
 +++ b/kernel-6.1/arch/arm64/boot/dts/rockchip/ztl-rk3588-en.dts
 @@ -115,6 +115,15 @@
@@ -807,13 +806,24 @@ index 28c37f9..0603a44 100755
 +	 * NOTE: keep &gmac1 disabled - it muxes the uart3 pins away.
 +	 */
 +	chosen {
-+		bootargs = "earlycon=uart8250,mmio32,0xfeb60000 console=ttyFIQ0 console=ttyS3,115200 irqchip.gicv3_pseudo_nmi=0 root=PARTUUID=614e0000-0000 rw rootwait rcupdate.rcu_expedited=1 rcu_nocbs=all";
++		bootargs = "storagemedia=emmc androidboot.storagemedia=emmc androidboot.mode=normal rw rootwait earlycon=uart8250,mmio32,0xfeb60000 console=ttyFIQ0 console=ttyS3,115200 net.ifnames=0 biosdevname=0 irqchip.gicv3_pseudo_nmi=0 root=PARTUUID=614e0000-0000 rcupdate.rcu_expedited=1 rcu_nocbs=all";
 +	};
  };
  //en588 soft wdt
  &wdt {
+diff --git a/kernel-6.1/arch/arm64/configs/ztl_rk3588.config b/kernel-6.1/arch/arm64/configs/ztl_rk3588.config
+index 11b6720..17dd42e 100644
+--- a/kernel-6.1/arch/arm64/configs/ztl_rk3588.config
++++ b/kernel-6.1/arch/arm64/configs/ztl_rk3588.config
+@@ -12,3 +12,6 @@ CONFIG_HUGETLBFS=y
+ CONFIG_DEBUG_INFO=y
+ CONFIG_DEBUG_INFO_BTF=y
+ # CONFIG_DEBUG_INFO_REDUCED is not set
++
++# en588: userspace USB gadget (adb via functionfs)
++CONFIG_USB_FUNCTIONFS=y
 diff --git a/u-boot/arch/arm/mach-rockchip/board.c b/u-boot/arch/arm/mach-rockchip/board.c
-index 8d33833..a3106ac 100644
+index 8d33833..6ea465d 100644
 --- a/u-boot/arch/arm/mach-rockchip/board.c
 +++ b/u-boot/arch/arm/mach-rockchip/board.c
 @@ -1488,6 +1488,17 @@ char *board_fdt_chosen_bootargs(void *fdt)
@@ -826,7 +836,7 @@ index 8d33833..a3106ac 100644
 +	 * console list here (ttyS3 last -> /dev/console).
 +	 */
 +	env_update("bootargs",
-+		   "console=ttyFIQ0 console=ttyS3,115200 earlycon=uart8250,mmio32,0xfeb60000");
++		   "storagemedia=emmc androidboot.storagemedia=emmc androidboot.mode=normal console=ttyFIQ0 console=ttyS3,115200 net.ifnames=0 biosdevname=0 earlycon=uart8250,mmio32,0xfeb60000");
 +
 +	/* env_update() may reallocate, refresh the pointer */
 +	bootargs = env_get("bootargs");

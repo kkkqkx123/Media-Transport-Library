@@ -174,8 +174,16 @@ static void* render_thread(void* arg) {
     int wait_ms = (int)(frame_period_ns / 2000000ULL);
     if (wait_ms < 2) wait_ms = 2;
     if (wait_ms > 20) wait_ms = 20;
+    av_sync_set_frame_period(&rp->sync, frame_period_ns);
 
     while (atomic_load(&rp->render_running)) {
+        int depth = playout_buffer_depth(&rp->pb);
+        if (!av_sync_startup_gate(&rp->sync, depth)) {
+            playout_buffer_wait_data(&rp->pb, wait_ms);
+            continue;
+        }
+        av_sync_track_occupancy(&rp->sync, depth);
+
         if (!playout_buffer_has_frames(&rp->pb)) {
             if (!playout_buffer_wait_data(&rp->pb, wait_ms))
                 rp->stat_pb_underrun++;
@@ -184,15 +192,16 @@ static void* render_thread(void* arg) {
 
         uint64_t target = av_sync_playout_target_ns(&rp->sync);
         uint64_t peek   = playout_buffer_peek_pts(&rp->pb);
-        uint64_t delay  = rp->sync.playout_delay_ns;
+        int64_t eff     = av_sync_effective_delay_ns(&rp->sync);
+        uint64_t wait_delay = eff > 0 ? (uint64_t)eff : 0;
 
-        /* Frame due when pts <= now - delay  <=>  now >= pts + delay */
+        /* Frame due when pts <= target  <=>  now >= pts + effective delay */
         if (peek > target) {
-            sleep_until_ns(rp, peek + delay);
+            sleep_until_ns(rp, peek + wait_delay);
             continue;
         }
 
-        /* P2-C: drain all due frames; render newest only; count skips. */
+        /* Drain all due frames; render newest only; count skips. */
         int fd = -1;
         uint32_t hs = 0, vs = 0;
         uint64_t capture_tai = 0;
@@ -451,6 +460,12 @@ void rx_pipeline_stop(rx_pipeline* rp) {
            (unsigned long long)rp->stat_pb_underrun,
            (unsigned long long)rp->stat_put_fail,
            (unsigned long long)rp->stat_prep_invalid);
+    {
+        int64_t eff = av_sync_effective_delay_ns(&rp->sync);
+        printf("rx_pipe: servo_jumps=%llu effective_delay_ms=%lld\n",
+               (unsigned long long)rp->sync.stat_servo_jumps,
+               (long long)(eff / 1000000LL));
+    }
     if (rp->alsa) av_sync_print_stats(&rp->sync);
 }
 
@@ -511,6 +526,13 @@ void rx_pipeline_report_stats(rx_pipeline* rp, const mtl_rx_mp4* mrx,
            (unsigned long long)rp->stat_rendered,
            (unsigned long long)rp->stat_pb_skip,
            (unsigned long long)rp->stat_pb_underrun);
+    {
+        int64_t eff = av_sync_effective_delay_ns(&rp->sync);
+        printf("  RX[%s] servo: jumps=%llu effective_delay_ms=%lld\n",
+               rp->stats_label,
+               (unsigned long long)rp->sync.stat_servo_jumps,
+               (long long)(eff / 1000000LL));
+    }
     if (bridge) {
         uint32_t work_ema = 0, wait_ema = 0, work_p50 = 0, work_p99 = 0;
         int ring_max = 0;

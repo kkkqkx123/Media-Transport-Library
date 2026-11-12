@@ -61,6 +61,9 @@ int playout_buffer_pop_newest(playout_buffer* pb, uint64_t target_pts_ns,
 /** Returns true if the queue has at least one decoded frame ready. */
 bool playout_buffer_has_frames(const playout_buffer* pb);
 
+/** Current queued frame count (0 when empty). */
+int playout_buffer_depth(const playout_buffer* pb);
+
 /** Peek at the PTS of the next queued frame (0 if empty). */
 uint64_t playout_buffer_peek_pts(const playout_buffer* pb);
 

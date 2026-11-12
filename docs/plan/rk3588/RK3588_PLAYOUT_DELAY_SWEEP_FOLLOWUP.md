@@ -14,9 +14,10 @@
 | `app/rk3588_playout_rx/tests/run_playout_delay_sweep.sh` | 执行器：逐档覆写 `playout_delay_ms`（默认 `80 20 8 2 0`），机器汇总 + 人眼见证同落 `OUT_DIR` |
 | `docs/tests/rk3588-capture-encode-decode-perf-design.md`（抖动缓冲段）、`codec-perf-test-logic.md`（`pb_underrun` 告警）、`rk3588-rx-verification-gap-analysis.md`（delay 曲线缺口） | 设计口径：欠载/跳帧的定义与门限来源 |
 | `tests/perf/common/thresholds.json` | 阈值唯一收敛点，不在脚本里硬编码 |
+| `RK3588_PLAYOUT_BUFFER_REDESIGN_PLAN.md` | 本方案的下游：固定偏移三缺陷分析与 P0~P3 改造，消费本轮数据 |
 
-默认值现状：`file_playout_config.c` 中 `playout_delay_ms=80`，`--config`
-只叠加该字段；CLI 保持现状，不为扫参加临时参数。
+默认值现状：`file_playout_config.c` 中 `playout_delay_ms=0`（实测 0ms 视觉不差后由 80 下调），`--config`
+只叠加该字段；CLI 保持现状，扫参脚本仍用显式覆写逐档对比，不依赖默认值。
 
 ## 2 扫参产出
 
@@ -30,8 +31,8 @@ HDMI 与文件源各跑一轮：前者代表生产链路，后者运动连续、
  取 HDMI 与文件源两轮下限的较大者，记为候选低延时档。
 2. 若候选档仍远高于个位数毫秒，说明抖动源不在播出缓冲，回查 MTL 调度与解码
  p99 尾部，不再继续压 delay。
-3. 落盘：候选档写入验证报告与 `thresholds.json` 收敛值；默认 `80ms` 是否同步下调、
- 是否增设低延时档配置，单独走评审，不在扫参轮内顺手改。
+3. 落盘：候选 0ms 已定为默认并随启动水位与水位伺服一起实施，无需另设低延时档；
+ `thresholds.json` 收敛口径保持不变（欠载仍按 WARN 提示抖动，不改门限）。
 4. 归档：三件套按日期归档到 `docs/archive/perf/`，并在 `rk3588-rx-verification-gap-analysis.md`
  的 delay 曲线缺口项下注销本轮结论。
 5. 预算表不因扫参改 verdict：playout 归零后的典型/最坏值仍以 T1/T2 实测为准，

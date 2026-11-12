@@ -151,6 +151,15 @@ bool playout_buffer_has_frames(const playout_buffer* pb) {
     return has;
 }
 
+int playout_buffer_depth(const playout_buffer* pb) {
+    if (!pb) return 0;
+    playout_buffer* mut = (playout_buffer*)pb;
+    pthread_mutex_lock(&mut->lock);
+    int n = mut->count;
+    pthread_mutex_unlock(&mut->lock);
+    return n;
+}
+
 uint64_t playout_buffer_peek_pts(const playout_buffer* pb) {
     if (!pb) return 0;
     playout_buffer* mut = (playout_buffer*)pb;

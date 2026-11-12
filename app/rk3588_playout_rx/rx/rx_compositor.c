@@ -269,23 +269,32 @@ static void* render_thread(void* arg) {
     int wait_ms = (int)(frame_period_ns / 2000000ULL);
     if (wait_ms < 2) wait_ms = 2;
     if (wait_ms > 20) wait_ms = 20;
+    av_sync_set_frame_period(&comp->sync, frame_period_ns);
 
     drm_layer_frame frames[MP4_PIP_V1_NV12_LANES];
     uint64_t        lane_capture[MP4_PIP_V1_NV12_LANES];
 
     while (atomic_load(&comp->render_running)) {
+        int main_depth = playout_buffer_depth(&main_lane->pb);
+        if (!av_sync_startup_gate(&comp->sync, main_depth)) {
+            playout_buffer_wait_data(&main_lane->pb, wait_ms);
+            continue;
+        }
+        av_sync_track_occupancy(&comp->sync, main_depth);
+
         if (!playout_buffer_has_frames(&main_lane->pb)) {
             if (!playout_buffer_wait_data(&main_lane->pb, wait_ms))
                 continue;
         }
 
         uint64_t target = av_sync_playout_target_ns(&comp->sync);
-        uint64_t delay  = comp->sync.playout_delay_ns;
+        int64_t eff     = av_sync_effective_delay_ns(&comp->sync);
+        uint64_t wait_delay = eff > 0 ? (uint64_t)eff : 0;
         uint64_t peek   = playout_buffer_peek_pts(&main_lane->pb);
 
-        /* Same gate as rx_pipeline: wait until main frame is due (pts + delay). */
+        /* Same gate as rx_pipeline: wait until main frame is due. */
         if (peek > target) {
-            sleep_until_ns(comp, peek + delay);
+            sleep_until_ns(comp, peek + wait_delay);
             continue;
         }
 
@@ -650,6 +659,12 @@ void rx_compositor_stop(rx_compositor* comp) {
 
     printf("rx_comp: composite=%llu frames\n",
            (unsigned long long)comp->stat_composite);
+    {
+        int64_t eff = av_sync_effective_delay_ns(&comp->sync);
+        printf("rx_comp: servo_jumps=%llu effective_delay_ms=%lld\n",
+               (unsigned long long)comp->sync.stat_servo_jumps,
+               (long long)(eff / 1000000LL));
+    }
     if (comp->alsa)
         av_sync_print_stats(&comp->sync);
 }
@@ -925,6 +940,12 @@ void rx_compositor_report_stats(rx_compositor* comp, int period_s, bool reset_pe
            (unsigned long long)d_skip_m, (unsigned long long)d_skip_s,
            (unsigned long long)comp->stat_skip_main,
            (unsigned long long)comp->stat_skip_sub);
+    {
+        int64_t eff = av_sync_effective_delay_ns(&comp->sync);
+        printf("  servo: jumps=%llu effective_delay_ms=%lld\n",
+               (unsigned long long)comp->sync.stat_servo_jumps,
+               (long long)(eff / 1000000LL));
+    }
     if (reset_period) {
         comp->snap_composite    = comp->stat_composite;
         comp->snap_render_sum   = comp->stat_render_ns_sum;

@@ -38,7 +38,7 @@ void file_playout_cfg_defaults(file_playout_cfg* cfg) {
     strcpy(cfg->drm_connector, "HDMI-A-1");
     strcpy(cfg->drm_mode,  "auto");
     cfg->drm_buf_count     = 5;
-    cfg->playout_delay_ms  = 80;
+    cfg->playout_delay_ms  = 0;
     strcpy(cfg->alsa_device, "default");
     /*
      * RK3588: CPU 0-3 = A55, 4-7 = A76. MTL prepends main_lcore 0 → -l 0,<workers>.

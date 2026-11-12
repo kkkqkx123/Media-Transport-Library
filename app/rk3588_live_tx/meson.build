@@ -45,6 +45,8 @@ live_ingest_hal_sources = files(
   '../rk3588_common/src/sei_timestamp.c',
   '../rk3588_common/src/au_trace.c',
   '../rk3588_common/src/tx_tai_ts.c',
+  '../rk3588_common/src/ptp_time.c',
+  '../rk3588_common/src/one_way_ptp.c',
   '../rk3588_common/src/extradata_handler.c',
 )
 

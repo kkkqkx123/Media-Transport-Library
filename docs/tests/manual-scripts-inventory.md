@@ -25,6 +25,8 @@
 | `debug/tests/display_compare.sh`（可执行副本进 `bin/`） | 编排 A（直通）→ B（完整链路 `run_tx_rx_e2e.sh`），看屏填结论 | 同上 A/B 方法 |
 | `debug/tests/alsa_tone.c` → `bin/alsa_tone` | 指定 PCM 设备播 1s 正弦，PASS/FAIL 即结论 | 音频设备可用性冒烟 |
 | `debug/tests/netem_inject.sh` | `tc netem` 丢包/时延/抖动/乱序注入与清除 | 弱网对照（`clear` 恢复） |
+| `debug/tests/ptp_sync_probe.c` → `bin/ptp_sync_probe` | PTP Sync/Follow_Up 到达性+correctionField 取证（`[master] [domain] [sec]`），不依赖应用/MTL | `rk3588-one-way-ptp-verification-design.md` L1；`run_ptp_sync_verify.sh` 编排 |
+| `debug/tests/ptp_sync_master.c` → `bin/ptp_sync_master` | lab mini master（`[group] [domain] [hz]`，用户态双步发送，纯双板验证专用） | 同上附录 B；runbook §9.2 |
 | `debug/tests/board_env.sh`（可执行副本进 `bin/`） | `status` 只读门禁（含 hugepages）；`prepare/run/release/restore/text/graphical` 以 isolate 整栈切文本/图形态、配 hugepages、管 MtlManager | 各 e2e 脚本的统一环境门禁（`run_tx_rx_e2e.sh` 等 preflight 均调它） |
 
 ## 3. 性能编排（`tests/perf/` → 板 `src/perf/`，输出进 `perf/`）

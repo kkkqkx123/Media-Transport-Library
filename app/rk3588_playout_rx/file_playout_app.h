@@ -12,7 +12,7 @@
 
 /** How MTL obtains PTP/TAI time. */
 typedef enum file_playout_ptp_mode {
-    FILE_PLAYOUT_PTP_EXTERNAL = 0, /**< linuxptp + ptp_get_time_fn → CLOCK_TAI (default) */
+    FILE_PLAYOUT_PTP_EXTERNAL = 0, /**< one-way slave + ptp_get_time_fn → virtual TAI (default) */
     FILE_PLAYOUT_PTP_BUILTIN,      /**< MTL_FLAG_PTP_ENABLE (needs HW timesync) */
     FILE_PLAYOUT_PTP_MONOTONIC,    /**< no PTP — relative monotonic anchor only */
 } file_playout_ptp_mode;
@@ -108,6 +108,11 @@ typedef struct file_playout_cfg {
     /* PTP / global time (P5) */
     file_playout_ptp_mode ptp_mode;
     int               ptp_utc_offset; /* subtract from TAI when GM uses UTC domain */
+    /* One-way PTP slave (external mode): empty master = PTP multicast group. */
+    char              ptp_master[FILE_PLAYOUT_MAX_IP_LEN];
+    char              ptp_ifname[16]; /* join/bind interface, empty = route choice */
+    int               ptp_domain;     /* PTP domain, ST 2059-2 uses 127 */
+    int64_t           ptp_nominal_delay_ns; /* one-way path delay constant */
 
     /** ST2110-21 TX pacing profile (see docs/plan/rk3588/RK3588_ST2110_PROTOCOL_GAP_REMEDIATION_PLAN.md) */
     file_playout_pacing st21_pacing;

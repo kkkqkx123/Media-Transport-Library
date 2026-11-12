@@ -14,9 +14,36 @@
 #include "live_tx_config.h"
 #include "mtl_tx.h"
 #include "mtl_tx_audio.h"
+#include "one_way_ptp.h"
 #include "pipeline/tx_pipeline.h"
+#include "ptp_time.h"
 #include "ring_buffer.h"
 #include "slab_pool.h"
+
+static mp4_ptp_time_ctx g_ptp_ctx;
+static struct one_way_ptp* g_ptp_slave;
+
+/* Best-effort one-way slave: failure keeps raw CLOCK_TAI behavior. */
+static void live_tx_ptp_slave_start(const struct live_ingest_cfg* cfg) {
+  if (g_ptp_slave) return;
+  struct one_way_ptp_cfg scfg;
+  one_way_ptp_cfg_defaults(&scfg);
+  if (cfg) {
+    if (cfg->ptp_master)
+      snprintf(scfg.master, sizeof(scfg.master), "%s", cfg->ptp_master);
+    if (cfg->ptp_ifname)
+      snprintf(scfg.ifname, sizeof(scfg.ifname), "%s", cfg->ptp_ifname);
+    scfg.domain = (uint8_t)cfg->ptp_domain;
+    scfg.nominal_delay_ns = cfg->ptp_nominal_delay_ns;
+  }
+  g_ptp_slave = one_way_ptp_create(&scfg, &g_ptp_ctx);
+  if (!g_ptp_slave) return;
+  if (one_way_ptp_start(g_ptp_slave) != 0) {
+    fprintf(stderr, "PTP: one-way slave start failed, raw TAI in use\n");
+    one_way_ptp_free(g_ptp_slave);
+    g_ptp_slave = NULL;
+  }
+}
 
 static atomic_bool g_run = true;
 static void sig_handler(int s) {
@@ -37,6 +64,9 @@ static void usage(const char* prog) {
   fprintf(stderr,
           "  (live source) [--audio-source alsa|none] [--audio-device DEV] [--audio-udp "
           "PORT]\n");
+  fprintf(stderr,
+          "  --use-tai [--ptp-master IP] [--ptp-ifname IF] [--ptp-domain N] "
+          "[--ptp-nominal-delay-ns NS]\n");
 }
 
 static int parse_args(int argc, char** argv, struct live_ingest_cfg* cfg) {
@@ -79,6 +109,14 @@ static int parse_args(int argc, char** argv, struct live_ingest_cfg* cfg) {
       cfg->loop = false;
     } else if (strcmp(argv[i], "--use-tai") == 0) {
       cfg->use_tai = true;
+    } else if (strcmp(argv[i], "--ptp-master") == 0 && i + 1 < argc) {
+      cfg->ptp_master = argv[++i];
+    } else if (strcmp(argv[i], "--ptp-ifname") == 0 && i + 1 < argc) {
+      cfg->ptp_ifname = argv[++i];
+    } else if (strcmp(argv[i], "--ptp-domain") == 0 && i + 1 < argc) {
+      cfg->ptp_domain = atoi(argv[++i]);
+    } else if (strcmp(argv[i], "--ptp-nominal-delay-ns") == 0 && i + 1 < argc) {
+      cfg->ptp_nominal_delay_ns = atoll(argv[++i]);
     } else if (strcmp(argv[i], "--audio-source") == 0 && i + 1 < argc) {
       const char* s = argv[++i];
       cfg->audio_source =
@@ -538,6 +576,14 @@ int main(int argc, char** argv) {
   mtp.flags |= MTL_FLAG_SHARED_RX_QUEUE;
   mtp.flags |= MTL_FLAG_SHARED_TX_QUEUE;
   mtp.pacing = parse_pacing(cfg.pacing);
+  if (cfg.use_tai) {
+    mp4_ptp_time_ctx_init(&g_ptp_ctx, 0);
+    mtp.ptp_get_time_fn = mp4_ptp_mtl_time_fn;
+    mtp.priv = &g_ptp_ctx;
+    live_tx_ptp_slave_start(&cfg);
+    printf("MTL: TAI from one-way PTP slave (virtual TAI)\n");
+    mp4_ptp_log_status(&g_ptp_ctx, cfg.tx_port);
+  }
 
   mtl_handle st = mtl_init(&mtp);
   if (!st) return 1;

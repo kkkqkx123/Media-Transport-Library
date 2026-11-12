@@ -12,6 +12,8 @@ struct live_ingest_cfg_strings {
   char tx_dip[32];
   char v4l2_device[64];
   char drm_device[64];
+  char ptp_master[64];
+  char ptp_ifname[16];
   char log_level[16];
   char pacing[16];
   char audio_device[64];
@@ -52,6 +54,10 @@ struct live_ingest_cfg live_ingest_cfg_defaults(void) {
       .seek_ms = 0,
       .codestream_size = 512 * 1024,
       .use_tai = false,
+      .ptp_master = NULL,
+      .ptp_ifname = NULL,
+      .ptp_domain = 0,
+      .ptp_nominal_delay_ns = 20000,
       .audio_source = AUDIO_SOURCE_NONE,
       .audio_sample_rate = 48000,
       .audio_channels = 2,
@@ -181,6 +187,16 @@ int live_ingest_config_load(const char* path, struct live_ingest_cfg* cfg) {
   struct json_object* tai = NULL;
   if (json_object_object_get_ex(root, "use_tai", &tai))
     cfg->use_tai = json_object_get_boolean(tai);
+  const char* pmaster = json_get_string(root, "ptp_master");
+  if (pmaster) dup_str(&cfg->ptp_master, g_str.ptp_master,
+                       sizeof(g_str.ptp_master), pmaster);
+  const char* pif = json_get_string(root, "ptp_ifname");
+  if (pif) dup_str(&cfg->ptp_ifname, g_str.ptp_ifname,
+                   sizeof(g_str.ptp_ifname), pif);
+  cfg->ptp_domain = json_get_int(root, "ptp_domain", cfg->ptp_domain);
+  struct json_object* pnd = NULL;
+  if (json_object_object_get_ex(root, "ptp_nominal_delay_ns", &pnd))
+    cfg->ptp_nominal_delay_ns = json_object_get_int64(pnd);
 
   /* real-time audio capture: streams[0].audio { source, device, ... } */
   if (streams && json_object_is_type(streams, json_type_array) &&

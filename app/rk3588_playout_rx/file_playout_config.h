@@ -33,4 +33,7 @@ const char* file_playout_pacing_str(file_playout_pacing pacing);
 /** Map to the MTL init pacing way (applied to mtl_init_params.pacing). */
 enum st21_tx_pacing_way file_playout_pacing_to_st21(file_playout_pacing pacing);
 
+/** Stop the one-way PTP slave started by the MTL init helpers (reconfigure). */
+void file_playout_ptp_slave_stop(void);
+
 #endif /* _FILE_PLAYOUT_CONFIG_H_ */

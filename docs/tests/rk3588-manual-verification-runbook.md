@@ -14,6 +14,8 @@
 ```bash
 # 1) 推脚本（按需取子集；board_env.sh 必推，它是所有 e2e 的门禁）
 scp debug/tests/board_env.sh board:~/code/mtl/src/debug/tests/
+scp debug/tests/ptp_sync_probe.c debug/tests/ptp_sync_master.c board:~/code/mtl/src/debug/tests/
+scp app/rk3588_playout_rx/tests/run_ptp_sync_verify.sh app/rk3588_playout_rx/tests/check_ptp_sync.py board:~/code/mtl/src/playout-tests/
 scp app/rk3588_playout_rx/tests/run_tx_rx_e2e.sh board:~/code/mtl/src/playout-tests/
 scp app/rk3588_playout_rx/tests/run_playout_delay_sweep.sh board:~/code/mtl/src/playout-tests/  # T4 扫参脚本（见 §3）
 # 2) 二进制若有 C 改动：在 devs 交叉重编后再推（板上不编译，见 §5；本地禁构建，见 AGENTS.md）
@@ -24,7 +26,7 @@ scp devs:/data/kkkqkx/mtl/app/dvs_agent/build-aarch64/dvs_agent /tmp/ && scp /tm
 scp debug/tests/dvs_node_smoke.sh debug/tests/dvs_agent_api_smoke.sh debug/tests/dvs_ipc_probe.py board:~/code/mtl/src/debug/tests/
 scp -r app/dvs_agent/web/src board:~/code/mtl/src/dvs-agent-web
 # 3) 板上拷可执行副本进 bin/ 并赋权
-ssh board "cp ~/code/mtl/src/debug/tests/board_env.sh ~/code/mtl/src/debug/tests/dvs_node_smoke.sh ~/code/mtl/src/debug/tests/dvs_agent_api_smoke.sh ~/code/mtl/src/debug/tests/dvs_ipc_probe.py ~/code/mtl/src/playout-tests/run_tx_rx_e2e.sh ~/code/mtl/src/playout-tests/run_playout_delay_sweep.sh ~/code/mtl/bin/ && chmod +x ~/code/mtl/bin/board_env.sh ~/code/mtl/bin/dvs_node_smoke.sh ~/code/mtl/bin/dvs_agent_api_smoke.sh ~/code/mtl/bin/dvs_ipc_probe.py ~/code/mtl/bin/dvs_media ~/code/mtl/bin/dvs_agent ~/code/mtl/bin/run_tx_rx_e2e.sh ~/code/mtl/bin/run_playout_delay_sweep.sh"
+ssh board "cp ~/code/mtl/src/debug/tests/board_env.sh ~/code/mtl/src/debug/tests/ptp_sync_probe.c ~/code/mtl/src/debug/tests/ptp_sync_master.c ~/code/mtl/src/debug/tests/dvs_node_smoke.sh ~/code/mtl/src/debug/tests/dvs_agent_api_smoke.sh ~/code/mtl/src/debug/tests/dvs_ipc_probe.py ~/code/mtl/src/playout-tests/run_tx_rx_e2e.sh ~/code/mtl/src/playout-tests/run_ptp_sync_verify.sh ~/code/mtl/src/playout-tests/check_ptp_sync.py ~/code/mtl/src/playout-tests/run_playout_delay_sweep.sh ~/code/mtl/bin/ && chmod +x ~/code/mtl/bin/board_env.sh ~/code/mtl/bin/dvs_node_smoke.sh ~/code/mtl/bin/dvs_agent_api_smoke.sh ~/code/mtl/bin/dvs_ipc_probe.py ~/code/mtl/bin/dvs_media ~/code/mtl/bin/dvs_agent ~/code/mtl/bin/run_tx_rx_e2e.sh ~/code/mtl/bin/run_ptp_sync_verify.sh ~/code/mtl/bin/run_playout_delay_sweep.sh"
 # 4) 抽查 md5，全 SAME 方为对齐
 ssh board "md5sum ~/code/mtl/src/debug/tests/board_env.sh ~/code/mtl/bin/board_env.sh"
 md5sum debug/tests/board_env.sh
@@ -90,7 +92,7 @@ TX_SRC=file ./board_env.sh run -- ./run_playout_delay_sweep.sh '80 20 8 2 0' 40 
 
 ## 5 二进制与环境恢复
 
-- C 改动只在 devs 交叉重编（`app/rk3588_live_tx`、`app/rk3588_playout_rx`、`app/dvs_media`、`app/dvs_agent` 各自 `ninja -C build-aarch64` 增量即可；devs 上 PATH 需含工具链 `bin` 与 buildroot `host/bin`，否则 meson 再生钩找不到 `ar`/python），推 `bin/` 后 `md5` 对齐；板上只 `gcc` 直编 `mpp_*_latency/drm_smoke/hdmi_passthrough/alsa_tone/v4l2_cap_latency` 类探针。本地禁构建，见 AGENTS.md。
+- C 改动只在 devs 交叉重编（`app/rk3588_live_tx`、`app/rk3588_playout_rx`、`app/dvs_media`、`app/dvs_agent` 各自 `ninja -C build-aarch64` 增量即可；devs 上 PATH 需含工具链 `bin` 与 `~/.local/bin` 的 meson 0.61（系统 meson 0.45 不认 `cc.links`；cross 模板已修 `pkgconfig` 键名与 `cpp_args` 内联，见验证设计附录 A），推 `bin/` 后 `md5` 对齐；板上只 `gcc` 直编 `mpp_*_latency/drm_smoke/hdmi_passthrough/alsa_tone/v4l2_cap_latency/ptp_sync_probe/ptp_sync_master` 类探针。本地禁构建，见 AGENTS.md。
 - `run --` 正常/中断都会 `restore`；若桌面没回来：`board_env.sh graphical` 重试一次，再 `pgrep Xorg` 确认。
 - 桌面启停是显示驱动最脆弱的操作（prepare 一度用 `stop lightdm`，实测可把 Xorg wedge 到 D 状态
  导致 card0 永久被占；现已改走 `isolate multi-user/graphical.target` 整栈切换，单停服务不再使用）。
@@ -116,6 +118,10 @@ TX_SRC=file ./board_env.sh run -- ./run_playout_delay_sweep.sh '80 20 8 2 0' 40 
 | `dvs_media` 杀不掉（pgrep 还在） | 忽略 SIGTERM（DPDK 阻塞） | 按 pid `kill -9`，不是 skill 问题 |
 | MTL `native_af_xdp` 初始化失败 | 硬件驱动约束，非问题 | 本板用 `kernel:` 后端（与 `run_tx_rx_e2e.sh` 默认一致）；enP3p49s0 无 IP 时先临时配测后删 |
 | MtlManager 突然没了 | XDP 挂载失败会拖死它 | 重拉即常驻（见 §5）；改走 `kernel:` 后不再触发 |
+| `ptp_sync_probe` FAIL/无 pair | master 没发、域不一致、组播不可达 | 先看 master 侧 ptp4l/master 进程在不在发（计数涨不涨），再对域（板与 master 一致），直连线只查 IP 同网段；组播被拦才加 `--ptp-master` 切单播 |
+| slave 从未 locked | nominal 待标定、域不对、CPU 争用致 rej 高 | 先把 `nominal` 置零看锁定均值再标定；`rej` 持续涨先清板上争用（`board_env.sh status` 看负载），不要调大阈值掩盖 |
+| 尾态 holdover（非 L5 专项） | master 中断 | 按 L5 处理：恢复 master 看自动重锁；保持超时的自由运行需重跑 |
+| offset 超带（有 TC 组网） | 交换机 TC 没对媒体 VLAN 生效 | 切回无 TC 带（5ms）确认 servo 本身正常，再查交换机 TC/BC 配置，不要动 slave 参数 |
 
 通用顺序仍是：参数对齐 → 单路冒烟 → 再怀疑网络或争用（见 README §5）。
 
@@ -211,3 +217,82 @@ rm -f /tmp/dvs-media.sock; ./board_env.sh status   # 回到全绿（含 MtlManag
 ```
 
 桌面没回来按 §5 处理；测试 IP 若配过必须删（`ip addr del`）。
+
+## 9 PTP 单向同步验证（无交换机先行，再上交换机）
+
+前置：master 与板直连网线（无交换机），静态同网段（例 master `192.168.80.10`，
+板 `192.168.80.202`）。设计口径见 `rk3588-one-way-ptp-verification-design.md`
+（先读附录 B 无交换机基线），判定阈值只在校验脚本里配，不进本节。
+
+### 9.1 编译两个小工具（板上执行）
+
+```bash
+cd ~/code/mtl/bin
+gcc -O2 -Wall -o ptp_sync_probe ~/code/mtl/src/debug/tests/ptp_sync_probe.c
+gcc -O2 -Wall -o ptp_sync_master ~/code/mtl/src/debug/tests/ptp_sync_master.c
+```
+
+无警告即过；有警告停下先对齐源码（板上只编探针类，应用二进制走 §1 推送）。
+
+### 9.2 起 master（二选一，常驻到验证结束）
+
+组合一（x86 做 master，推荐）：x86 上
+
+```bash
+sudo ptp4l -i <直连网卡> -m --masterOnly   # 默认 UDPv4 组播双步；1Hz 先行，8Hz 另加域/速率配置
+```
+
+master 时钟先用 chrony/NTP 稳住（slave 会跟随 master 漂，master 不稳污染本底）。
+
+组合二（纯双板）：其中一板跑 lab mini master（验证专用，生产仍用 x86 ptp4l）：
+
+```bash
+./ptp_sync_master 224.0.1.129 0 8 &
+```
+
+看到 `sending … pairs sent` 计数涨即正常；`Ctrl-C` 停（L5 专项故意停它）。
+
+### 9.3 L1 探针（从板执行）
+
+```bash
+./ptp_sync_probe 224.0.1.129 0 60
+```
+
+期望：`pair` 行稳定输出，`corr` 接近零（直连无交换机修正），尾行 `PASS`。
+`FAIL` 按 §6 PTP 行查：先看 master 计数涨不涨，再对域，最后查 IP 同网段。
+
+### 9.4 L2/L3 应用收敛（从板执行）
+
+用你已在 §3 跑通的媒体参数，只需加 PTP 环境变量（脚本自动透传 `--ptp-*`）：
+
+```bash
+MASTER=224.0.1.129 DOMAIN=0 SEC=600 \
+APP_ARGS="60 --port kernel:enP2p33s0 --lip 192.168.80.202 --sip 192.168.80.202 --udp 15000 --fps 60" \
+./run_ptp_sync_verify.sh
+```
+
+期望尾行 `PASS (L1-L3)`；日志在 `/tmp/ptp_app.log`。`APP_ARGS` 为空则只跑 L1。
+无 TC 组网脚本默认 1ms 带太严时置 `WITH_TC=0` 切 5ms 带（先确认 servo 本身正常）。
+
+### 9.5 标定循环（nominal）
+
+```bash
+grep 'one_way_ptp: locked offset' /tmp/ptp_app.log | tail -20   # 看锁定均值，即 bias
+NOMINAL=<均值> MASTER=... ./run_ptp_sync_verify.sh             # 同参数重跑
+```
+
+重跑后残差应回到零附近；回不来说明 bias 在漂，先查 master 时钟稳不稳。
+
+### 9.6 L5 保持与恢复
+
+master 侧停 ptp4l/master 进程 60 秒再恢复。从板期望：先出 `holdover` 行但播出不中断，
+恢复后出 `master back` 并重锁。用 `--expect-holdover` 验含保持段的日志：
+
+```bash
+python3 check_ptp_sync.py /tmp/ptp_app.log --expect-holdover
+```
+
+### 9.7 取证归档
+
+当轮 `ptp_probe.log`、`ptp_app.log` 按 §7 归档到 `docs/archive/`（按日期命名），
+报告里写清组网（直连/x86 master/纯双板）、域、同步率、nominal 值与残差带。

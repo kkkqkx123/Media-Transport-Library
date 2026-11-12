@@ -2,6 +2,7 @@
 #include "drm_mode.h"
 #include "display_layout.h"
 #include "ptp_time.h"
+#include "one_way_ptp.h"
 #include "shared/mp4_demux.h"
 #include <errno.h>
 #include <json-c/json.h>
@@ -60,6 +61,10 @@ void file_playout_cfg_defaults(file_playout_cfg* cfg) {
     cfg->mtl_log_level     = MTL_LOG_LEVEL_NOTICE;
     cfg->ptp_mode          = FILE_PLAYOUT_PTP_EXTERNAL;
     cfg->ptp_utc_offset    = 0;
+    cfg->ptp_master[0]     = '\0';
+    cfg->ptp_ifname[0]     = '\0';
+    cfg->ptp_domain        = 0;
+    cfg->ptp_nominal_delay_ns = 20000;
     cfg->st21_pacing       = FILE_PLAYOUT_PACING_TSC_NARROW;
     cfg->stats_report_interval_s = 10;
     cfg->e2e_report_interval_s   = 0;
@@ -200,6 +205,16 @@ int file_playout_config_load(const char* json_path, file_playout_cfg* cfg) {
     }
     if (json_object_object_get_ex(root, "ptp_utc_offset", &val))
         cfg->ptp_utc_offset = json_object_get_int(val);
+    if (json_object_object_get_ex(root, "ptp_master", &val))
+        snprintf(cfg->ptp_master, sizeof(cfg->ptp_master), "%s",
+                 json_object_get_string(val));
+    if (json_object_object_get_ex(root, "ptp_ifname", &val))
+        snprintf(cfg->ptp_ifname, sizeof(cfg->ptp_ifname), "%s",
+                 json_object_get_string(val));
+    if (json_object_object_get_ex(root, "ptp_domain", &val))
+        cfg->ptp_domain = json_object_get_int(val);
+    if (json_object_object_get_ex(root, "ptp_nominal_delay_ns", &val))
+        cfg->ptp_nominal_delay_ns = json_object_get_int64(val);
     if (json_object_object_get_ex(root, "stats_report_interval_s", &val))
         cfg->stats_report_interval_s = json_object_get_int(val);
     if (json_object_object_get_ex(root, "e2e_report_interval_s", &val))
@@ -277,7 +292,11 @@ void file_playout_rx_usage(const char* prog) {
         "  --fps must match TX (critical for ST22 slot assembly).\n"
         "  --mtl-log-level: debug|info|notice|warning|error (default: notice)\n"
         "  --ptp-mode: external|builtin|monotonic (default: external)\n"
-        "  --ptp-utc-offset: seconds subtracted from TAI (default: 0)\n",
+        "  --ptp-utc-offset: seconds subtracted from TAI (default: 0)\n"
+        "  --ptp-master: group or unicast master IP (default: 224.0.1.129)\n"
+        "  --ptp-ifname: PTP join interface (default: route choice)\n"
+        "  --ptp-domain: PTP domain, ST 2059-2 uses 127 (default: 0)\n"
+        "  --ptp-nominal-delay-ns: one-way path delay (default: 20000)\n",
         prog);
 }
 
@@ -537,6 +556,14 @@ static int file_playout_config_parse_args(file_playout_cfg* cfg, int argc, char*
             }
         } else if (strcmp(argv[i], "--ptp-utc-offset") == 0 && i + 1 < argc) {
             cfg->ptp_utc_offset = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--ptp-master") == 0 && i + 1 < argc) {
+            snprintf(cfg->ptp_master, sizeof(cfg->ptp_master), "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--ptp-ifname") == 0 && i + 1 < argc) {
+            snprintf(cfg->ptp_ifname, sizeof(cfg->ptp_ifname), "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--ptp-domain") == 0 && i + 1 < argc) {
+            cfg->ptp_domain = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--ptp-nominal-delay-ns") == 0 && i + 1 < argc) {
+            cfg->ptp_nominal_delay_ns = atoll(argv[++i]);
         } else if (strcmp(argv[i], "--stats-interval") == 0 && i + 1 < argc) {
             cfg->stats_report_interval_s = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--e2e-interval") == 0 && i + 1 < argc) {
@@ -652,6 +679,10 @@ void file_playout_config_print(const file_playout_cfg* cfg) {
     printf("  mtl_log_level:   %d\n", cfg->mtl_log_level);
     printf("  ptp_mode:        %s (utc_offset=%d)\n",
            file_playout_ptp_mode_str(cfg->ptp_mode), cfg->ptp_utc_offset);
+    printf("  ptp_one_way:     master=%s if=%s domain=%d nominal_delay=%lld ns\n",
+           cfg->ptp_master[0] ? cfg->ptp_master : ONE_WAY_PTP_GROUP_DEFAULT,
+           cfg->ptp_ifname[0] ? cfg->ptp_ifname : "(route)",
+           cfg->ptp_domain, (long long)cfg->ptp_nominal_delay_ns);
     printf("  st21_pacing:     %s\n", file_playout_pacing_str(cfg->st21_pacing));
     printf("  stats_report:    %d s (0=exit only)\n", cfg->stats_report_interval_s);
     if (cfg->e2e_report_interval_s > 0)
@@ -660,6 +691,36 @@ void file_playout_config_print(const file_playout_cfg* cfg) {
 
 /* ---- MTL init helper ---- */
 static mp4_ptp_time_ctx g_ptp_ctx;
+static struct one_way_ptp* g_ptp_slave;
+
+/* Best-effort one-way slave: failure keeps raw CLOCK_TAI behavior. */
+static void file_playout_ptp_slave_start(const file_playout_cfg* cfg) {
+    if (g_ptp_slave) return;
+    struct one_way_ptp_cfg scfg;
+    one_way_ptp_cfg_defaults(&scfg);
+    if (cfg) {
+        if (cfg->ptp_master[0])
+            snprintf(scfg.master, sizeof(scfg.master), "%s", cfg->ptp_master);
+        if (cfg->ptp_ifname[0])
+            snprintf(scfg.ifname, sizeof(scfg.ifname), "%s", cfg->ptp_ifname);
+        scfg.domain = (uint8_t)cfg->ptp_domain;
+        scfg.nominal_delay_ns = cfg->ptp_nominal_delay_ns;
+    }
+    g_ptp_slave = one_way_ptp_create(&scfg, &g_ptp_ctx);
+    if (!g_ptp_slave) return;
+    if (one_way_ptp_start(g_ptp_slave) != 0) {
+        fprintf(stderr, "PTP: one-way slave start failed, raw TAI in use\n");
+        one_way_ptp_free(g_ptp_slave);
+        g_ptp_slave = NULL;
+    }
+}
+
+void file_playout_ptp_slave_stop(void) {
+    if (!g_ptp_slave) return;
+    one_way_ptp_free(g_ptp_slave);
+    g_ptp_slave = NULL;
+}
+
 static enum mtl_pmd_type file_playout_pmd_from_port(const char* port_name) {
     if (!port_name || !port_name[0])
         return MTL_PMD_NATIVE_AF_XDP;
@@ -772,7 +833,8 @@ mtl_handle file_playout_mtl_init(const file_playout_cfg* cfg,
         mp4_ptp_time_ctx_init(&g_ptp_ctx, utc_offset);
         mtp.ptp_get_time_fn = mp4_ptp_mtl_time_fn;
         mtp.priv            = &g_ptp_ctx;
-        printf("MTL: PTP mode=external (linuxptp → CLOCK_TAI via ptp_get_time_fn)\n");
+        file_playout_ptp_slave_start(cfg);
+        printf("MTL: PTP mode=external (one-way slave → virtual TAI)\n");
         break;
     }
     if (tx_q > 0)
@@ -916,7 +978,8 @@ mtl_handle file_playout_mtl_init_dual(const file_playout_cfg* cfg,
         mp4_ptp_time_ctx_init(&g_ptp_ctx, utc_offset);
         mtp.ptp_get_time_fn = mp4_ptp_mtl_time_fn;
         mtp.priv            = &g_ptp_ctx;
-        printf("MTL: PTP mode=external (linuxptp \u2192 CLOCK_TAI via ptp_get_time_fn)\n");
+        file_playout_ptp_slave_start(cfg);
+        printf("MTL: PTP mode=external (one-way slave → virtual TAI)\n");
         break;
     }
 

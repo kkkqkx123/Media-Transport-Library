@@ -42,6 +42,11 @@ struct live_ingest_cfg {
   int64_t seek_ms;
   size_t codestream_size;
   bool use_tai;
+  /* One-way PTP slave (use_tai): NULL master = PTP multicast group. */
+  const char* ptp_master;
+  const char* ptp_ifname;
+  int ptp_domain;
+  int64_t ptp_nominal_delay_ns;
   /* real-time audio capture (live source path) */
   enum live_ingest_audio_source audio_source;
   const char* audio_device; /* ALSA device, e.g. "hw:0,0" */

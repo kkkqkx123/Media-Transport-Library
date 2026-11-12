@@ -1,6 +1,6 @@
-From 6e72362dba10f5e53721e928baabe90a250acfaf Mon Sep 17 00:00:00 2001
+From db20dd87b9a2a11c1eef502af7fdcdf5ff814150 Mon Sep 17 00:00:00 2001
 From: zhanglei <596504085@qq.com>
-Date: Thu, 12 Nov 2026 12:00:00 +0800
+Date: Thu, 12 Nov 2026 09:45:19 +0800
 Subject: [PATCH 4/4] en588: ttyS3 console + adb over USB-OTG
 
 ---
@@ -792,7 +792,7 @@ index 3575cd3..2742d6c 100644
 +# via usbdevice.service / S50usbdevice) ----
 +BR2_PACKAGE_ANDROID_ADBD=y
 diff --git a/kernel-6.1/arch/arm64/boot/dts/rockchip/ztl-rk3588-en.dts b/kernel-6.1/arch/arm64/boot/dts/rockchip/ztl-rk3588-en.dts
-index 28c37f9..e438840 100755
+index 28c37f9..bf090fa 100755
 --- a/kernel-6.1/arch/arm64/boot/dts/rockchip/ztl-rk3588-en.dts
 +++ b/kernel-6.1/arch/arm64/boot/dts/rockchip/ztl-rk3588-en.dts
 @@ -115,6 +115,15 @@
@@ -806,7 +806,7 @@ index 28c37f9..e438840 100755
 +	 * NOTE: keep &gmac1 disabled - it muxes the uart3 pins away.
 +	 */
 +	chosen {
-+		bootargs = "storagemedia=emmc androidboot.storagemedia=emmc androidboot.mode=normal rw rootwait earlycon=uart8250,mmio32,0xfeb60000 console=ttyFIQ0 console=ttyS3,115200 net.ifnames=0 biosdevname=0 irqchip.gicv3_pseudo_nmi=0 root=PARTUUID=614e0000-0000 rcupdate.rcu_expedited=1 rcu_nocbs=all";
++		bootargs = "storagemedia=emmc androidboot.storagemedia=emmc androidboot.mode=normal rw rootwait earlycon=uart8250,mmio32,0xfeb50000 console=ttyFIQ0 console=ttyS3,115200 net.ifnames=0 biosdevname=0 irqchip.gicv3_pseudo_nmi=0 root=PARTUUID=614e0000-0000 rcupdate.rcu_expedited=1 rcu_nocbs=all";
 +	};
  };
  //en588 soft wdt
@@ -823,7 +823,7 @@ index 11b6720..17dd42e 100644
 +# en588: userspace USB gadget (adb via functionfs)
 +CONFIG_USB_FUNCTIONFS=y
 diff --git a/u-boot/arch/arm/mach-rockchip/board.c b/u-boot/arch/arm/mach-rockchip/board.c
-index 8d33833..6ea465d 100644
+index 8d33833..b17f088 100644
 --- a/u-boot/arch/arm/mach-rockchip/board.c
 +++ b/u-boot/arch/arm/mach-rockchip/board.c
 @@ -1488,6 +1488,17 @@ char *board_fdt_chosen_bootargs(void *fdt)
@@ -836,7 +836,7 @@ index 8d33833..6ea465d 100644
 +	 * console list here (ttyS3 last -> /dev/console).
 +	 */
 +	env_update("bootargs",
-+		   "storagemedia=emmc androidboot.storagemedia=emmc androidboot.mode=normal console=ttyFIQ0 console=ttyS3,115200 net.ifnames=0 biosdevname=0 earlycon=uart8250,mmio32,0xfeb60000");
++		   "storagemedia=emmc androidboot.storagemedia=emmc androidboot.mode=normal console=ttyFIQ0 console=ttyS3,115200 net.ifnames=0 biosdevname=0 earlycon=uart8250,mmio32,0xfeb50000");
 +
 +	/* env_update() may reallocate, refresh the pointer */
 +	bootargs = env_get("bootargs");

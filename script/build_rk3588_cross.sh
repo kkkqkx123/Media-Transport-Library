@@ -175,7 +175,7 @@ c = '$CC_WRAP'
 cpp = '$CXX_WRAP'
 ar = '$AR'
 strip = '$STRIP'
-pkg-config = '$PKG_WRAP'
+pkgconfig = '$PKG_WRAP'
 
 [host_machine]
 system = 'linux'
@@ -187,8 +187,8 @@ endian = 'little'
 platform = 'generic'
 c_args = ['--sysroot=$SYSROOT', '-isystem$SYSROOT/usr/include/aarch64-linux-gnu']
 c_link_args = ['--sysroot=$SYSROOT', '-B$SYSROOT/usr/lib/aarch64-linux-gnu', '-L$SYSROOT/usr/lib/aarch64-linux-gnu', '-L$SYSROOT/lib/aarch64-linux-gnu']
-cpp_args = c_args
-cpp_link_args = c_link_args
+cpp_args = ['--sysroot=$SYSROOT', '-isystem$SYSROOT/usr/include/aarch64-linux-gnu']
+cpp_link_args = ['--sysroot=$SYSROOT', '-B$SYSROOT/usr/lib/aarch64-linux-gnu', '-L$SYSROOT/usr/lib/aarch64-linux-gnu', '-L$SYSROOT/lib/aarch64-linux-gnu']
 EOF
 
 # ---------- env for pkg-config ----------

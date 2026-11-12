@@ -4,8 +4,9 @@
 # 效仿 run_tx_rx_e2e.sh（单板回环判定）+ manual_check_visual.sh（逐项 y/n/s + 见证文件）。
 # 不依赖仓库路径，只依赖板端二进制与标准工具（bash/python3）。
 #
-# 用法：run_playout_delay_sweep.sh ["80 20 8 2 0"] [每档秒数]
+# 用法：run_playout_delay_sweep.sh ["80 20 8 2 0"] [每档秒数] [hdmi|file]
 # 环境覆盖：SEC PORT IP UDP W H FPS CODEC TX_SRC FILE_MP4 OUT_DIR BIN_DIR OBSERVE
+# 注：TX 源以 $3 为准（$3 未给才看 TX_SRC 环境），避免经 run -- 包裹时环境未透传导致静默跑错源。
 #   TX_SRC=hdmi|file（默认 hdmi；file 用 testsrc 有声片源，运动连续更适合看抖动）
 #   FILE_MP4 默认同 manual_check_visual.sh（streams/ 受管有声片源）
 #   OBSERVE 为每档起播后进入提问前的观察秒数（默认 15，需 < SEC）
@@ -16,11 +17,11 @@ set -euo pipefail
 
 DELAYS="${1:-${DELAYS:-80 20 8 2 0}}"
 SEC="${2:-${SEC:-40}}"
+TX_SRC="${3:-${TX_SRC:-hdmi}}"
 PORT="${PORT:-kernel:enP2p33s0}"
 IP="${IP:-192.168.80.202}"
 UDP="${UDP:-15000}"
 W="${W:-1920}"; H="${H:-1080}"
-TX_SRC="${TX_SRC:-hdmi}"
 if [ "$TX_SRC" = "file" ]; then FPS_DEFAULT=30; else FPS_DEFAULT=60; fi
 FPS="${FPS:-$FPS_DEFAULT}"
 CODEC="${CODEC:-h264}"
@@ -28,7 +29,7 @@ case "$CODEC" in h264|h265) ;; *) echo "FAIL: bad CODEC=$CODEC"; exit 1 ;; esac
 case "$TX_SRC" in hdmi|file) ;; *) echo "FAIL: bad TX_SRC=$TX_SRC (hdmi|file)"; exit 1 ;; esac
 FILE_MP4="${FILE_MP4:-$HOME/code/mtl/streams/multinode_av_1080p30.mp4}"
 BIN_DIR="${BIN_DIR:-$HOME/code/mtl/bin}"
-OUT_DIR="${OUT_DIR:-/tmp/playout_sweep}"
+OUT_DIR="${OUT_DIR:-/tmp/playout_sweep_${TX_SRC}}"
 OBSERVE="${OBSERVE:-15}"
 RX_BIN="$BIN_DIR/file_playout_rx"
 TX_BIN="$BIN_DIR/live_ingest"
@@ -114,7 +115,11 @@ ugrow = f"{totals[0]}->{totals[-1]}" if len(totals) >= 2 else str(under)
 skipr = skip / max(dec, 1) * 100
 renr = render / max(dec, 1) * 100
 mm = re.search(r"(\d+) captured, (\d+) encoded", tx_log)
-txs = f"{mm.group(2)}/{mm.group(1)}" if mm else "n/a"
+if mm:
+    txs = f"{mm.group(2)}/{mm.group(1)}"
+else:
+    mf = re.search(r"video exit \((\d+) frames", tx_log)
+    txs = f"file:{mf.group(1)}f" if mf else "n/a"
 em = re.search(r"e2e total n=\d+ min=(\d+) avg=(\d+) max=(\d+) us", rx_log)
 e2e = f"{em.group(2)}us(avg)" if em else "n/a"
 verdict = "OK" if (pkt > 0 and dec / pkt >= 0.99 and putfail == 0 and overrun == 0) else "CHECK"
@@ -147,9 +152,9 @@ for D in $DELAYS; do
   rm -f "$RX_LOG" "$TX_LOG"
 
   echo ""
-  echo "=== 档位 delay=${D}ms（RX --config 只覆写 playout_delay_ms，其余走 CLI）==="
+  echo "=== 档位 delay=${D}ms TX_SRC=${TX_SRC}（RX --config 只覆写 playout_delay_ms，其余走 CLI）==="
   # shellcheck disable=SC2086
-  nohup "$RX_BIN" "$SEC" --config "$CFG_JSON" --port "$PORT" --lip "$IP" --sip "$IP" \
+  nohup stdbuf -oL -eL "$RX_BIN" "$SEC" --config "$CFG_JSON" --port "$PORT" --lip "$IP" --sip "$IP" \
     --udp "$UDP" --width "$W" --height "$H" --fps "$FPS" --codec "$CODEC" \
     --ptp-mode monotonic --stats-interval 10 >"$RX_LOG" 2>&1 &
   RX_PID=$!
@@ -162,15 +167,27 @@ for D in $DELAYS; do
 
   if [ "$TX_SRC" = "file" ]; then
     # shellcheck disable=SC2086
-    timeout -s INT $((SEC + 60)) "$TX_BIN" "$SEC" --source file --mp4 "$FILE_MP4" \
+    timeout -s INT $((SEC + 60)) stdbuf -oL -eL "$TX_BIN" "$SEC" --source file --mp4 "$FILE_MP4" \
       --port "$PORT" --lip "$IP" --dip "$IP" --udp "$UDP" \
       --codec "$CODEC" --pacing tsc_narrow --log-level warning >"$TX_LOG" 2>&1 &
   else
     # shellcheck disable=SC2086
-    timeout -s INT $((SEC + 60)) "$TX_BIN" "$SEC" --port "$PORT" --lip "$IP" --dip "$IP" --udp "$UDP" \
+    timeout -s INT $((SEC + 60)) stdbuf -oL -eL "$TX_BIN" "$SEC" --port "$PORT" --lip "$IP" --dip "$IP" --udp "$UDP" \
       --codec "$CODEC" --pacing tsc_narrow --log-level warning >"$TX_LOG" 2>&1 &
   fi
   TX_PID=$!
+
+  # 防呆：轮询等待 TX 源标记（MTL 初始化加 probe 要十几秒），超时或 TX 退出仍无标记才跳过本档。
+  if [ "$TX_SRC" = "file" ]; then want_src="file_source:"; else want_src="v4l2_capturer"; fi
+  for _ in $(seq 1 20); do
+    grep -qa "$want_src" "$TX_LOG" 2>/dev/null && break
+    kill -0 "$TX_PID" 2>/dev/null || break
+    sleep 1
+  done
+  if ! grep -qa "$want_src" "$TX_LOG" 2>/dev/null; then
+    echo "档位 ${D}ms: TX 源断言失败（want $want_src），跳过（见 $TX_LOG）" | tee -a "$WITNESS"
+    cleanup_pair; sleep 1; rm -f "$CFG_JSON"; continue
+  fi
 
   if [ "$TTY" -eq 1 ]; then
     echo "看屏 ${OBSERVE}s 后逐项确认（流仍在跑，显示器接板载 HDMI 输出）…"

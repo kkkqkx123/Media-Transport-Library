@@ -56,6 +56,11 @@ cd ~/code/mtl/bin
 ./board_env.sh run -- ./manual_check_visual.sh T2 120    # 看屏见证：逐项 y/n，结论进见证文件
 ./board_env.sh run -- ./run_playout_delay_sweep.sh '80 20 8 2 0' 40        # playout 扫参（T4）：逐档看屏 + 见证
 TX_SRC=file ./board_env.sh run -- ./run_playout_delay_sweep.sh '80 20 8 2 0' 40  # 文件源对照（运动连续，更适合看抖动）
+# 批量扫参/长稳会话：先一次性切文本态，会话内直跑脚本（prepare/restore 检测到文本态自动
+# no-op，不再反复启停桌面；$3 显式指定源，OUT_DIR 按源隔离防覆盖）
+sudo systemctl isolate multi-user.target
+./run_playout_delay_sweep.sh '80 20 8 2 0' 40 file
+sudo systemctl isolate graphical.target  # 会话结束恢复桌面（若起不来则重启板子，见 §5）
 ```
 
 期望输出：机器部分以 `OVERALL: PASS`（单路）或各 `PASS: T*` 行收尾，末尾汇总行引用的是末值窗口
@@ -86,6 +91,8 @@ TX_SRC=file ./board_env.sh run -- ./run_playout_delay_sweep.sh '80 20 8 2 0' 40 
 
 - C 改动只在 devs 交叉重编（`app/rk3588_live_tx`、`app/rk3588_playout_rx`、`app/dvs_media`、`app/dvs_agent` 各自 `ninja -C build-aarch64` 增量即可；devs 上 PATH 需含工具链 `bin` 与 buildroot `host/bin`，否则 meson 再生钩找不到 `ar`/python），推 `bin/` 后 `md5` 对齐；板上只 `gcc` 直编 `mpp_*_latency/drm_smoke/hdmi_passthrough/alsa_tone/v4l2_cap_latency` 类探针。本地禁构建，见 AGENTS.md。
 - `run --` 正常/中断都会 `restore`；若桌面没回来：`systemctl start lightdm`，再 `pgrep Xorg` 确认。
+- 桌面启停是显示驱动最脆弱的操作（实测 restart 可 wedge Xorg 到 D 状态，只能重启板子）；
+ 批量会话优先用 §3 的 isolate 会话模式，把全会话的启停次数降到两次。
 - `/tmp/board_env.state` 是准备记录（重启即失，默认即桌面态）；`release` 不动桌面，可随时单独用。
 - DVS 清场专用：`dvs_media` 忽略 SIGTERM，必须按 pid `kill -9`；再删测试 socket（`/tmp/dvs-media.sock`）与临时测试 IP；最后 `board_env.sh status` 确认 DRM/UDP/声卡释放。MtlManager 若因 XDP 挂载失败退出，重拉即可（`nohup /usr/local/bin/MtlManager >/tmp/mtlmanager2.log 2>&1 &`），空载常驻。
 

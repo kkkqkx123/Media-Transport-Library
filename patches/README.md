@@ -3,6 +3,19 @@
 本目录下的 patch 是内核/驱动代码的真相源（rk3588 系列仓库不使用 git 全量同步）。
 每个 patch 集合按编号顺序应用；一套 patch 可一起应用。
 
+## en588 (EN588-linux-6.1，当前主线)
+目录：`patches/en588/`，基线 `de7b21fb0`，详见
+`docs/dev/kernel/EN588_SDK_BASE.md`、
+`docs/dev/kernel/EN588_PATCH_APPLICABILITY.md`、
+`docs/dev/kernel/EN588_BUILDROOT_PATCHES.md`。
+
+| 文件 | 内容 | 前置 |
+|---|---|---|
+| 0001-en588-kernel-xdp-and-preferred-6.1.patch | 定内核 6.1 树 + AF_XDP/eBPF fragment | base |
+| 0002-en588-buildroot-network-dual-ip-dns.patch | buildroot 双 IP（静态 .202 + DHCP）+ DNS | 0001 |
+| 0003-en588-buildroot-systemd-ssh.patch | buildroot systemd + dropbear + root 密码 | 0002 |
+| 0004-en588-ttys3-console-adb.patch | ttyS3 控制台 + adb（USB-OTG） | 0003 |
+
 ## rk3588 (kernel 6.1)
 目录：`patches/rk3588/`
 

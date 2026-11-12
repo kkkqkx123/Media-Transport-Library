@@ -32,7 +32,7 @@
   `gen_av_file_source.sh`、
   `run_dualboard_interop.sh`、`run_dualoutput_sameframe.sh`、
   `manual_check_visual.sh`、`verify_phase.sh`、`plan_a_verify.sh`、
-  `run_single_board_plan_a.sh`、`check_drm_log.py`、`check_playout_log.py`、
+  `run_single_board_plan_a.sh`、`run_playout_delay_sweep.sh`、`check_drm_log.py`、`check_playout_log.py`,
   `check_pts_idx.py`、`compare_au_trace.py`、`verify_vrx_margin.py`、
   `rx_minimal.c`。该目录下 meson 单元测试（`test_*.c`、`meson.build`）
   不同步。运行时把要跑的 `.sh` 拷一份到 `bin/` 后执行，

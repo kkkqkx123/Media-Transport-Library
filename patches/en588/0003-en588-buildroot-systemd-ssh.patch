@@ -1,0 +1,38 @@
+From a257ce1ef511c0a79ad91423099fa21d0a822267 Mon Sep 17 00:00:00 2001
+From: zhanglei <596504085@qq.com>
+Date: Thu, 12 Nov 2026 12:00:00 +0800
+Subject: [PATCH 3/4] en588: buildroot systemd init + dropbear SSH
+
+Neither is on by default for rk3588 buildroot (default init is
+busybox; dropbear lives in network.config which rockchip_rk3588
+does not include; root password would be rockchip). Follows the
+rk3568 qt_runtime.config precedent.
+Interaction with 0002: under systemd the interfaces file is inert
+(no S40network) and eth0 comes from networkd + 10-eth0.network;
+without this patch the interfaces + udhcpc path applies instead.
+
+---
+ buildroot/configs/rockchip_rk3588_en588_defconfig | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/buildroot/configs/rockchip_rk3588_en588_defconfig b/buildroot/configs/rockchip_rk3588_en588_defconfig
+index f7a8ebe..3575cd3 100644
+--- a/buildroot/configs/rockchip_rk3588_en588_defconfig
++++ b/buildroot/configs/rockchip_rk3588_en588_defconfig
+@@ -3,3 +3,13 @@
+ # en588 board overlay: static/DHCP dual-IP + DNS (ifupdown and
+ # systemd-networkd profiles; see 0003 for which one is live).
+ BR2_ROOTFS_OVERLAY+="board/rockchip/en588/fs-overlay"
++
++# ---- systemd (default init for en588; eth0 is managed by
++# systemd-networkd via fs-overlay/etc/systemd/network/10-eth0.network,
++# NOT via /etc/network/interfaces) ----
++BR2_INIT_SYSTEMD=y
++
++# ---- SSH (dropbear) ----
++BR2_PACKAGE_DROPBEAR=y
++BR2_PACKAGE_DROPBEAR_DISABLE_REVERSEDNS=y
++BR2_TARGET_GENERIC_ROOT_PASSWD="root"
+-- 
+2.56.0
+

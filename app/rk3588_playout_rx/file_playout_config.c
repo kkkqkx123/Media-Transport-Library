@@ -63,7 +63,7 @@ void file_playout_cfg_defaults(file_playout_cfg* cfg) {
     cfg->ptp_utc_offset    = 0;
     cfg->ptp_master[0]     = '\0';
     cfg->ptp_ifname[0]     = '\0';
-    cfg->ptp_domain        = 0;
+    cfg->ptp_domain        = 127;
     cfg->ptp_nominal_delay_ns = 20000;
     cfg->st21_pacing       = FILE_PLAYOUT_PACING_TSC_NARROW;
     cfg->stats_report_interval_s = 10;
@@ -295,7 +295,7 @@ void file_playout_rx_usage(const char* prog) {
         "  --ptp-utc-offset: seconds subtracted from TAI (default: 0)\n"
         "  --ptp-master: group or unicast master IP (default: 224.0.1.129)\n"
         "  --ptp-ifname: PTP join interface (default: route choice)\n"
-        "  --ptp-domain: PTP domain, ST 2059-2 uses 127 (default: 0)\n"
+        "  --ptp-domain: PTP domain, ST 2059-2 uses 127 (default: 127)\n"
         "  --ptp-nominal-delay-ns: one-way path delay (default: 20000)\n",
         prog);
 }
@@ -719,6 +719,11 @@ void file_playout_ptp_slave_stop(void) {
     if (!g_ptp_slave) return;
     one_way_ptp_free(g_ptp_slave);
     g_ptp_slave = NULL;
+}
+
+int file_playout_ptp_status(struct one_way_ptp_status* out) {
+    if (!out || !g_ptp_slave) return -1;
+    return one_way_ptp_status(g_ptp_slave, out);
 }
 
 static enum mtl_pmd_type file_playout_pmd_from_port(const char* port_name) {

@@ -84,7 +84,7 @@ int64_t one_way_ptp_median_ns(const int64_t* samples, int n) {
 void one_way_ptp_cfg_defaults(struct one_way_ptp_cfg* cfg) {
   if (!cfg) return;
   memset(cfg, 0, sizeof(*cfg));
-  cfg->domain = 0;
+  cfg->domain = 127;
   cfg->nominal_delay_ns = 20000;
   cfg->holdover_enter_ms = 3000;
   cfg->holdover_exit_ms = 300000;
@@ -104,6 +104,7 @@ struct one_way_ptp {
   uint8_t master_id[8];
   bool pending;
   uint16_t pending_seq;
+  uint64_t pending_mono_ns;
   uint64_t pending_t1_ns;
   int64_t pending_corr_ns;
   uint64_t pending_t2_ns;
@@ -194,6 +195,7 @@ static void slave_reanchor(struct one_way_ptp* s, int64_t raw) {
   s->filt_ns = raw;
   s->consec_reject = 0;
   s->applied_ns = raw;
+  printf("one_way_ptp: re-anchor (offset %lld ns)\n", (long long)raw);
 }
 
 static void slave_drift_track(struct one_way_ptp* s, int64_t raw,
@@ -309,6 +311,8 @@ static bool slave_check_master(struct one_way_ptp* s, const uint8_t* id) {
   if (!s->have_master) {
     memcpy(s->master_id, id, sizeof(s->master_id));
     s->have_master = true;
+    printf("one_way_ptp: master %02x-%02x-%02x-%02x-%02x-%02x-%02x-%02x\n",
+           id[0], id[1], id[2], id[3], id[4], id[5], id[6], id[7]);
     return true;
   }
   return memcmp(s->master_id, id, sizeof(s->master_id)) == 0;
@@ -327,17 +331,21 @@ static void slave_on_sync(struct one_way_ptp* s, const uint8_t* msg, int len,
   int64_t corr = one_way_ptp_correction_to_ns(be64s(msg + 8));
   uint64_t t1 = be48(msg + PTP_HDR_LEN) * 1000000000ULL +
                 be32(msg + PTP_HDR_LEN + 6);
+  int utc_off = (s->tctx) ? s->tctx->utc_offset_sec : 0;
+  int64_t utc_ns = (int64_t)utc_off * 1000000000LL;
+  uint64_t t2_gm = (uint64_t)((int64_t)t2_ns - utc_ns);
   if (twostep) {
     s->pending = true;
     s->pending_seq = seq;
+    s->pending_mono_ns = mono_ns();
     s->pending_t1_ns = t1;
     s->pending_corr_ns = corr;
-    s->pending_t2_ns = t2_ns;
+    s->pending_t2_ns = t2_gm;
     pthread_mutex_unlock(&s->lock);
     return;
   }
   int64_t raw =
-      one_way_ptp_sample_offset_ns(t1, corr, t2_ns, s->cfg.nominal_delay_ns);
+      one_way_ptp_sample_offset_ns(t1, corr, t2_gm, s->cfg.nominal_delay_ns);
   slave_accept(s, raw, mono_ns());
   pthread_mutex_unlock(&s->lock);
 }
@@ -347,6 +355,12 @@ static void slave_on_follow_up(struct one_way_ptp* s, const uint8_t* msg,
   if (len < PTP_HDR_LEN + PTP_TS_LEN) return;
   pthread_mutex_lock(&s->lock);
   if (!s->pending || !slave_check_master(s, msg + 18)) {
+    pthread_mutex_unlock(&s->lock);
+    return;
+  }
+  uint64_t now = mono_ns();
+  if (now - s->pending_mono_ns > 2000000000ULL) {
+    s->pending = false;
     pthread_mutex_unlock(&s->lock);
     return;
   }

@@ -56,7 +56,7 @@ struct live_ingest_cfg live_ingest_cfg_defaults(void) {
       .use_tai = false,
       .ptp_master = NULL,
       .ptp_ifname = NULL,
-      .ptp_domain = 0,
+      .ptp_domain = 127,
       .ptp_nominal_delay_ns = 20000,
       .audio_source = AUDIO_SOURCE_NONE,
       .audio_sample_rate = 48000,

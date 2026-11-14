@@ -11,7 +11,7 @@
 #define ONE_WAY_PTP_EVENT_PORT    319
 #define ONE_WAY_PTP_GENERAL_PORT  320
 
-/** Slave configuration. Unicast master skips the multicast join. */
+/** Slave configuration. Unicast master means static pre-configured destination without negotiation. */
 struct one_way_ptp_cfg {
   char master[64]; /* group or unicast master IP, empty = default group */
   char ifname[16]; /* bind/join interface, empty = kernel route choice */
@@ -24,8 +24,8 @@ struct one_way_ptp_cfg {
 
 /** Snapshot for monitoring (dvs_platform query_state). */
 struct one_way_ptp_status {
-  int64_t offset_ns;    /* last raw offset sample (t2 - corrected t1) */
-  int64_t filtered_ns;  /* servo output currently applied to the time ctx */
+  int64_t offset_ns;    /* filtered raw offset (local minus master) */
+  int64_t filtered_ns;  /* filtered raw offset applied, ctx holds negation */
   int64_t drift_ppb;    /* frequency estimate, positive = local clock fast */
   bool locked;
   bool holdover;
@@ -37,7 +37,7 @@ struct one_way_ptp_status {
 
 struct one_way_ptp;
 
-/** Fill defaults (group join, domain 0, 20us nominal delay, 3s/300s holdover). */
+/** Fill defaults (group join, domain 127, 20us nominal delay, 3s/300s holdover). */
 void one_way_ptp_cfg_defaults(struct one_way_ptp_cfg* cfg);
 
 /**

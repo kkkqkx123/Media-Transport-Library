@@ -9,9 +9,9 @@
 
 /** Runtime PTP settings (shared by MTL ptp_get_time_fn). */
 typedef struct mp4_ptp_time_ctx {
-    int utc_offset_sec; /* subtract from CLOCK_TAI when GM reports UTC (RxTxApp compat) */
+    int utc_offset_sec; /* subtract from CLOCK_TAI to match GM domain */
     /* Virtual TAI correction from the one-way PTP slave (lock-free). */
-    atomic_int_least64_t corr_offset_ns; /* added to raw TAI on every read */
+    atomic_int_least64_t corr_offset_ns; /* added to raw TAI on every read, negation of filtered raw offset */
     atomic_int_least64_t drift_ppb;      /* frequency estimate, info only */
     atomic_bool locked;                  /* servo converged on master */
     atomic_bool holdover;                /* master lost, extrapolating */
@@ -27,7 +27,7 @@ int mp4_ptp_tai_offset_sec(void);
 /** Read TAI nanoseconds (CLOCK_TAI, fallback REALTIME + kernel TAI offset). */
 uint64_t mp4_ptp_read_tai_ns(const mp4_ptp_time_ctx* ctx);
 
-/** Slave actuator: publish filtered offset (ns), drift (ppb), lock state. */
+/** Slave actuator: publish raw filtered offset (local minus master, ns), drift (ppb, positive when local runs fast), lock state. Stored correction is the negation. */
 void mp4_ptp_apply_correction(mp4_ptp_time_ctx* ctx, int64_t offset_ns,
                                int64_t drift_ppb, bool locked, bool holdover);
 

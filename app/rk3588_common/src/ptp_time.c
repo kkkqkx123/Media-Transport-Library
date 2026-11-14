@@ -41,8 +41,9 @@ uint64_t mp4_ptp_read_tai_ns(const mp4_ptp_time_ctx* ctx) {
     int off = ctx ? ctx->utc_offset_sec : 0;
     int64_t corr = ctx ? atomic_load(&ctx->corr_offset_ns) : 0;
     uint64_t raw;
+    int tai_ready = (kernel_tai_offset_raw() > 0) && (clock_gettime(CLOCK_TAI, &ts) == 0);
 
-    if (clock_gettime(CLOCK_TAI, &ts) == 0) {
+    if (tai_ready) {
         if (off)
             ts.tv_sec -= off;
         raw = (uint64_t)ts.tv_sec * MP4_NS_PER_S + (uint64_t)ts.tv_nsec;
@@ -60,7 +61,7 @@ uint64_t mp4_ptp_read_tai_ns(const mp4_ptp_time_ctx* ctx) {
 void mp4_ptp_apply_correction(mp4_ptp_time_ctx* ctx, int64_t offset_ns,
                                int64_t drift_ppb, bool locked, bool holdover) {
     if (!ctx) return;
-    atomic_store(&ctx->corr_offset_ns, offset_ns);
+    atomic_store(&ctx->corr_offset_ns, -offset_ns);
     atomic_store(&ctx->drift_ppb, drift_ppb);
     atomic_store(&ctx->locked, locked);
     atomic_store(&ctx->holdover, holdover);

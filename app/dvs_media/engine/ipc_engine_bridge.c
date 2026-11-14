@@ -408,6 +408,24 @@ static void hook_ptp_state(char* state, size_t n, int* offset_us) {
         if (offset_us) *offset_us = 0;
         return;
     }
+    struct one_way_ptp_status pst;
+    if (file_playout_ptp_status(&pst) == 0) {
+        long long v = pst.filtered_ns / 1000;
+        if (v > 2147483647LL) v = 2147483647LL;
+        if (v < -2147483648LL) v = -2147483648LL;
+        if (pst.holdover) {
+            if (state && n > 0) snprintf(state, n, "holdover");
+            if (offset_us) *offset_us = (int)v;
+            return;
+        }
+        if (pst.locked) {
+            dvs_ptp_state_from_delta(state, n, offset_us, 1, (long long)pst.filtered_ns);
+            return;
+        }
+        if (state && n > 0) snprintf(state, n, "unknown");
+        if (offset_us) *offset_us = (int)v;
+        return;
+    }
     uint64_t t = mtl_ptp_read_time(s_eng->st);
     if (t == 0) {
         dvs_ptp_state_from_delta(state, n, offset_us, 0, 0);

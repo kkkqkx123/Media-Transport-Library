@@ -15,86 +15,103 @@ static inline struct mt_mcast_impl* get_mcast(struct mtl_main_impl* impl,
   return impl->mcast[port];
 }
 
-/* Computing the Internet Checksum based on rfc1071 */
-static uint16_t mcast_msg_checksum(enum mcast_msg_type type, void* msg,
-                                   size_t mb_report_len) {
-  size_t size = 0;
+/* A group with any-source members or without source filters is EXCLUDE. */
+static inline bool mcast_group_any_source(struct mt_mcast_group_entry* group) {
+  return group->any_src_ref_cnt > 0 || group->src_num == 0;
+}
 
-  switch (type) {
-    case MEMBERSHIP_QUERY:
-      size = sizeof(struct mcast_mb_query_v3);
-      break;
-    case MEMBERSHIP_REPORT_V3:
-      size = mb_report_len;
-      break;
-    default:
-      err("%s, wrong mcast msg type: %d\n", __func__, type);
-      break;
+static bool mcast_group_has_src(struct mt_mcast_group_entry* group, uint32_t src_addr) {
+  struct mt_mcast_src_entry* src;
+
+  TAILQ_FOREACH(src, &group->src_list, entries) {
+    if (src->src_ip == src_addr) return true;
+  }
+
+  return false;
+}
+
+static void mcast_group_free(struct mt_mcast_group_entry* group) {
+  struct mt_mcast_src_entry *src, *temp_src;
+
+  src = TAILQ_FIRST(&group->src_list);
+  while (src) {
+    temp_src = TAILQ_NEXT(src, entries);
+    TAILQ_REMOVE(&group->src_list, src, entries);
+    mt_rte_free(src);
+    src = temp_src;
+  }
+
+  mt_rte_free(group);
+}
+
+/* a queryer counts as active for three join periods after its last query */
+static inline bool mcast_has_external_query(struct mtl_main_impl* impl,
+                                            struct mt_mcast_impl* mcast) {
+  if (!mcast->last_query_tsc) return false;
+  return (mt_get_tsc(impl) - mcast->last_query_tsc) <
+         ((uint64_t)IGMP_QUERY_ACTIVE_PERIOD_US * NS_PER_US);
+}
+
+/* Computing the Internet Checksum based on rfc1071 */
+static uint16_t mcast_msg_checksum(enum mcast_msg_type type, void* msg, size_t msg_len) {
+  size_t size = msg_len;
+
+  if (type != MEMBERSHIP_QUERY && type != MEMBERSHIP_REPORT_V3) {
+    err("%s, wrong mcast msg type: %d\n", __func__, type);
+    return 0;
   }
 
   return mt_rf1071_check_sum(msg, size, true);
 }
 
 /* group record shaping, return record length, refer to RFC3376 - 4.2.4 */
-static inline size_t mcast_create_group_record_on_query(
-    uint32_t group_addr, struct mt_mcast_src_list* src_list,
-    struct mcast_group_record* group_record) {
-  uint16_t num_sources = 0;
-  struct mt_mcast_src_entry* src;
-  TAILQ_FOREACH(src, src_list, entries) {
-    group_record->source_addr[num_sources++] = src->src_ip;
-  }
+static inline size_t mcast_fill_group_record(uint8_t record_type, uint32_t group_addr,
+                                             uint16_t num_sources,
+                                             struct mcast_group_record* record) {
+  record->record_type = record_type;
+  record->aux_data_len = 0;
+  record->num_sources = htons(num_sources);
+  record->multicast_addr = group_addr;
 
-  if (num_sources == 0)
-    group_record->record_type = MCAST_MODE_IS_EXCLUDE;
-  else
-    group_record->record_type = MCAST_MODE_IS_INCLUDE;
-
-  group_record->aux_data_len = 0;
-  group_record->num_sources = htons(num_sources);
-  group_record->multicast_addr = group_addr;
-
-  size_t record_len = sizeof(struct mcast_group_record) + num_sources * sizeof(uint32_t);
-
-  return record_len;
+  return sizeof(*record) + num_sources * sizeof(uint32_t);
 }
 
-static inline size_t mcast_create_group_record_join(
-    uint32_t group_addr, uint32_t src_addr, struct mcast_group_record* group_record) {
+static size_t mcast_create_group_record_on_query(struct mt_mcast_group_entry* group,
+                                                 struct mcast_group_record* record) {
   uint16_t num_sources = 0;
-  group_record->aux_data_len = 0;
-  group_record->multicast_addr = group_addr;
-  if (src_addr == 0) {
-    num_sources = 0;
-    group_record->record_type = MCAST_CHANGE_TO_EXCLUDE_MODE;
-  } else {
-    num_sources = 1;
-    group_record->record_type = MCAST_ALLOW_NEW_SOURCES;
-    group_record->source_addr[0] = src_addr;
-  }
-  group_record->num_sources = htons(num_sources);
 
-  size_t record_len = sizeof(struct mcast_group_record) + num_sources * sizeof(uint32_t);
-  return record_len;
+  if (!mcast_group_any_source(group)) {
+    struct mt_mcast_src_entry* src;
+    TAILQ_FOREACH(src, &group->src_list, entries) {
+      record->source_addr[num_sources++] = src->src_ip;
+    }
+  }
+
+  uint8_t type = num_sources ? MCAST_MODE_IS_INCLUDE : MCAST_MODE_IS_EXCLUDE;
+  return mcast_fill_group_record(type, group->group_ip, num_sources, record);
 }
 
-static inline size_t mcast_create_group_record_leave(
-    uint32_t group_addr, uint32_t src_addr, struct mcast_group_record* group_record) {
+/* A change-to-include record carries the remaining source list, if any. */
+static size_t mcast_create_group_record_on_action(uint32_t group_addr,
+                                                  uint8_t record_type, uint32_t src_addr,
+                                                  uint16_t src_num, uint32_t* src_addrs,
+                                                  struct mcast_group_record* record) {
   uint16_t num_sources = 0;
-  group_record->aux_data_len = 0;
-  group_record->multicast_addr = group_addr;
-  if (src_addr == 0) {
-    num_sources = 0;
-    group_record->record_type = MCAST_CHANGE_TO_INCLUDE_MODE;
-  } else {
-    num_sources = 1;
-    group_record->record_type = MCAST_BLOCK_OLD_SOURCES;
-    group_record->source_addr[0] = src_addr;
-  }
-  group_record->num_sources = htons(num_sources);
 
-  size_t record_len = sizeof(struct mcast_group_record) + num_sources * sizeof(uint32_t);
-  return record_len;
+  if (record_type == MCAST_ALLOW_NEW_SOURCES || record_type == MCAST_BLOCK_OLD_SOURCES) {
+    record->source_addr[0] = src_addr;
+    num_sources = 1;
+  } else if (record_type == MCAST_CHANGE_TO_INCLUDE_MODE) {
+    if (src_addrs) {
+      for (uint16_t i = 0; i < src_num; i++) record->source_addr[i] = src_addrs[i];
+      num_sources = src_num;
+    } else if (src_addr) {
+      record->source_addr[0] = src_addr;
+      num_sources = 1;
+    }
+  }
+
+  return mcast_fill_group_record(record_type, group_addr, num_sources, record);
 }
 
 /* 224.0.0.22 */
@@ -156,9 +173,10 @@ int mcast_membership_general_query(struct mtl_main_impl* impl, enum mtl_port por
   mb_query->group_addr = 0;
   mb_query->num_sources = 0;
 
-  uint16_t checksum = mcast_msg_checksum(MEMBERSHIP_QUERY, mb_query, 0);
-  if (checksum <= 0) {
+  uint16_t checksum = mcast_msg_checksum(MEMBERSHIP_QUERY, mb_query, mb_query_len);
+  if (!checksum) {
     err("%s(%d), err checksum %d\n", __func__, checksum, port);
+    rte_pktmbuf_free(pkt);
     return -EIO;
   }
   mb_query->checksum = htons(checksum);
@@ -181,25 +199,24 @@ int mcast_membership_general_query(struct mtl_main_impl* impl, enum mtl_port por
 
 /* membership report shaping, refer to RFC3376 - 4.2 */
 static int mcast_membership_report_on_query(struct mtl_main_impl* impl,
-                                            enum mtl_port port) {
+                                            enum mtl_port port, uint32_t group_filter,
+                                            uint32_t src_filter) {
   struct mt_mcast_impl* mcast = get_mcast(impl, port);
-  uint16_t group_num;
   struct rte_mbuf* pkt;
   struct rte_ipv4_hdr* ip_hdr;
   struct mcast_mb_report_v3* mb_report;
   size_t hdr_offset = 0;
   size_t mb_report_len = sizeof(struct mcast_mb_report_v3);
+  uint16_t record_num = 0;
+
+  if (!mcast) return 0;
 
   mt_pthread_mutex_lock(&mcast->group_mutex);
-  group_num = mcast->group_num;
-
-  if (group_num <= 0) {
+  if (mcast->group_num == 0) {
     mt_pthread_mutex_unlock(&mcast->group_mutex);
-    dbg("%s(%d), no group to join\n", __func__, port);
+    dbg("%s(%d), no group to report\n", __func__, port);
     return 0;
   }
-
-  dbg("%s(%d), group_num: %d\n", __func__, port, group_num);
 
   pkt = rte_pktmbuf_alloc(mt_sys_tx_mempool(impl, port));
   if (!pkt) {
@@ -216,26 +233,34 @@ static int mcast_membership_report_on_query(struct mtl_main_impl* impl,
   mb_report->reserved_1 = 0x00;
   mb_report->checksum = 0x00;
   mb_report->reserved_2 = 0x00;
-  mb_report->num_group_records = htons(group_num);
   hdr_offset += sizeof(struct mcast_mb_report_v3);
   uint8_t* group_record_addr = rte_pktmbuf_mtod_offset(pkt, uint8_t*, hdr_offset);
 
   struct mt_mcast_group_entry* group;
   TAILQ_FOREACH(group, &mcast->group_list, entries) {
+    if (group_filter && group->group_ip != group_filter) continue;
+    if (src_filter && !mcast_group_has_src(group, src_filter)) continue;
+
     size_t record_len = mcast_create_group_record_on_query(
-        group->group_ip, &group->src_list, (struct mcast_group_record*)group_record_addr);
+        group, (struct mcast_group_record*)group_record_addr);
     group_record_addr += record_len;
     mb_report_len += record_len;
+    record_num++;
   }
-
   mt_pthread_mutex_unlock(&mcast->group_mutex);
 
+  if (!record_num) {
+    rte_pktmbuf_free(pkt);
+    return 0;
+  }
+  mb_report->num_group_records = htons(record_num);
+
   uint16_t checksum = mcast_msg_checksum(MEMBERSHIP_REPORT_V3, mb_report, mb_report_len);
-  if (checksum <= 0) {
+  if (!checksum) {
     err("%s(%d), err checksum %d\n", __func__, port, checksum);
+    rte_pktmbuf_free(pkt);
     return -EIO;
   }
-  dbg("%s(%d), checksum %d\n", __func__, port, checksum);
   mb_report->checksum = htons(checksum);
 
   ip_hdr->total_length = htons(sizeof(struct rte_ipv4_hdr) + mb_report_len);
@@ -247,7 +272,7 @@ static int mcast_membership_report_on_query(struct mtl_main_impl* impl,
   /* send packet to kernel for capturing */
   if (mt_has_virtio_user(impl, port)) {
     struct mt_interface* inf = mt_if(impl, port);
-    rte_eth_tx_burst(inf->virtio_port_id, 0, (struct rte_mbuf**)&report_pkt, 1);
+    rte_eth_tx_burst(inf->virtio_port_id, 0, &pkt, 1);
   }
 #endif
 
@@ -258,15 +283,16 @@ static int mcast_membership_report_on_query(struct mtl_main_impl* impl,
     return -EIO;
   }
 
-  dbg("%s(%d), send pkt, mb_report_len %" PRIu64 "\n", __func__, port, mb_report_len);
+  dbg("%s(%d), send pkt, records %d len %" PRIu64 "\n", __func__, port, record_num,
+      mb_report_len);
 
   return 0;
 }
 
 static int mcast_membership_report_on_action(struct mtl_main_impl* impl,
                                              enum mtl_port port, uint32_t group_addr,
-                                             uint32_t src_addr,
-                                             enum mcast_action_type action) {
+                                             uint8_t record_type, uint32_t src_addr,
+                                             uint16_t src_num, uint32_t* src_addrs) {
   struct rte_mbuf* pkt;
   struct rte_ipv4_hdr* ip_hdr;
   struct mcast_mb_report_v3* mb_report;
@@ -291,17 +317,15 @@ static int mcast_membership_report_on_action(struct mtl_main_impl* impl,
   mb_report->num_group_records = htons(1);
   hdr_offset += sizeof(struct mcast_mb_report_v3);
   group_record = rte_pktmbuf_mtod_offset(pkt, struct mcast_group_record*, hdr_offset);
-  if (action == MCAST_JOIN)
-    mb_report_len += mcast_create_group_record_join(group_addr, src_addr, group_record);
-  else
-    mb_report_len += mcast_create_group_record_leave(group_addr, src_addr, group_record);
+  mb_report_len += mcast_create_group_record_on_action(group_addr, record_type, src_addr,
+                                                       src_num, src_addrs, group_record);
 
   uint16_t checksum = mcast_msg_checksum(MEMBERSHIP_REPORT_V3, mb_report, mb_report_len);
-  if (checksum <= 0) {
+  if (!checksum) {
     err("%s(%d), err checksum %d\n", __func__, checksum, port);
+    rte_pktmbuf_free(pkt);
     return -EIO;
   }
-  dbg("%s(%d), checksum %d\n", __func__, checksum, port);
   mb_report->checksum = htons(checksum);
 
   ip_hdr->total_length = htons(sizeof(struct rte_ipv4_hdr) + mb_report_len);
@@ -313,16 +337,22 @@ static int mcast_membership_report_on_action(struct mtl_main_impl* impl,
   /* send packet to kernel for capturing */
   if (mt_has_virtio_user(impl, port)) {
     struct mt_interface* inf = mt_if(impl, port);
-    rte_eth_tx_burst(inf->virtio_port_id, 0, (struct rte_mbuf**)&report_pkt, 1);
+    rte_eth_tx_burst(inf->virtio_port_id, 0, &pkt, 1);
   }
 #endif
   /* send membership report twice */
   struct rte_mbuf* pkt_copy = rte_pktmbuf_copy(pkt, pkt->pool, 0, UINT32_MAX);
+  if (!pkt_copy) {
+    err("%s(%d), report copy alloc failed\n", __func__, port);
+    rte_pktmbuf_free(pkt);
+    return -ENOMEM;
+  }
 
   uint16_t tx = mt_sys_queue_tx_burst(impl, port, &pkt, 1);
   if (tx < 1) {
     err("%s(%d), send pkt fail\n", __func__, port);
     rte_pktmbuf_free(pkt);
+    rte_pktmbuf_free(pkt_copy);
     return -EIO;
   }
 
@@ -333,8 +363,8 @@ static int mcast_membership_report_on_action(struct mtl_main_impl* impl,
     return -EIO;
   }
 
-  info("%s(%d), send %s pkt, mb_report_len %" PRIu64 "\n", __func__, port,
-       action == MCAST_JOIN ? "join" : "leave", mb_report_len);
+  info("%s(%d), send record %u pkt, mb_report_len %" PRIu64 "\n", __func__, port,
+       record_type, mb_report_len);
 
   return 0;
 }
@@ -348,8 +378,8 @@ static void mcast_membership_report_cb(void* param) {
   for (int port = 0; port < num_ports; port++) {
     struct mt_mcast_impl* mcast = get_mcast(impl, port);
     if (!mcast) continue;
-    if (!mcast->has_external_query) {
-      ret = mcast_membership_report_on_query(impl, port);
+    if (!mcast_has_external_query(impl, mcast)) {
+      ret = mcast_membership_report_on_query(impl, port, 0, 0);
       if (ret < 0) {
         err("%s(%d), mcast_membership_report fail %d\n", __func__, port, ret);
       }
@@ -475,13 +505,19 @@ int mt_mcast_init(struct mtl_main_impl* impl) {
     mt_pthread_mutex_init(&mcast->group_mutex, NULL);
 
     TAILQ_INIT(&mcast->group_list);
-    mcast->has_external_query = false;
+    mcast->last_query_tsc = 0;
 
     /* assign mcast instance */
     impl->mcast[i] = mcast;
 
-    if (!mt_drv_use_kernel_ctl(impl, i))
-      mcast_inf_add_mac(mt_if(impl, i), &mcast_mac_all);
+    if (!mt_drv_use_kernel_ctl(impl, i)) {
+      int ret = mcast_inf_add_mac(mt_if(impl, i), &mcast_mac_all);
+      if (ret < 0) {
+        err("%s(%d), add allsystems mac fail %d\n", __func__, i, ret);
+        mt_mcast_uinit(impl);
+        return ret;
+      }
+    }
 
     has_mcast = true;
   }
@@ -501,25 +537,13 @@ int mt_mcast_init(struct mtl_main_impl* impl) {
 
 static void mcast_group_clear(struct mt_mcast_group_list* group_list) {
   struct mt_mcast_group_entry *group, *temp_group;
-  struct mt_mcast_src_entry *src, *temp_src;
 
   group = TAILQ_FIRST(group_list);
   while (group != NULL) {
     temp_group = TAILQ_NEXT(group, entries);
 
-    src = TAILQ_FIRST(&group->src_list);
-    while (src != NULL) {
-      temp_src = TAILQ_NEXT(src, entries);
-
-      TAILQ_REMOVE(&group->src_list, src, entries);
-      mt_rte_free(src);
-
-      src = temp_src;
-    }
-
     TAILQ_REMOVE(group_list, group, entries);
-    mt_rte_free(group);
-
+    mcast_group_free(group);
     group = temp_group;
   }
 }
@@ -561,15 +585,12 @@ int mt_mcast_uinit(struct mtl_main_impl* impl) {
 int mt_mcast_join(struct mtl_main_impl* impl, uint32_t group_addr, uint32_t source_addr,
                   enum mtl_port port) {
   struct mt_mcast_impl* mcast = get_mcast(impl, port);
-  struct rte_ether_addr mcast_mac;
   struct mt_interface* inf = mt_if(impl, port);
   uint8_t* ip = (uint8_t*)&group_addr;
+  struct rte_ether_addr mcast_mac;
 
-  if (mt_user_no_multicast(impl)) {
-    return 0;
-  }
-
-  if (mt_drv_mcast_in_dp(impl, port)) return 0;
+  if (mt_user_no_multicast(impl) || mt_drv_mcast_in_dp(impl, port)) return 0;
+  if (!mcast) return -EIO;
 
   mt_pthread_mutex_lock(&mcast->group_mutex);
 
@@ -579,85 +600,103 @@ int mt_mcast_join(struct mtl_main_impl* impl, uint32_t group_addr, uint32_t sour
     return -EIO;
   }
 
-  /* find existing group */
-  bool found = false;
-  struct mt_mcast_group_entry* group;
+  struct mt_mcast_group_entry* group = NULL;
   TAILQ_FOREACH(group, &mcast->group_list, entries) {
-    if (group->group_ip == group_addr) {
-      group->group_ref_cnt++;
-      found = true;
-      break;
-    }
+    if (group->group_ip == group_addr) break;
   }
 
-  /* add new group to the group list */
-  if (!found) {
-    if (!mt_drv_use_kernel_ctl(impl, port)) {
-      /* add mcast mac to dpdk interface */
-      mt_mcast_ip_to_mac(ip, &mcast_mac);
-      mcast_inf_add_mac(inf, &mcast_mac);
-    }
-
-    group = mt_rte_zmalloc_socket(sizeof(struct mt_mcast_group_entry),
-                                  mt_socket_id(impl, port));
-    if (group == NULL) {
+  bool group_new = false;
+  uint16_t src_num_before = 0;
+  if (group) {
+    group->group_ref_cnt++;
+    src_num_before = group->src_num;
+  } else {
+    group = mt_rte_zmalloc_socket(sizeof(*group), mt_socket_id(impl, port));
+    if (!group) {
       err("%s(%d), malloc group fail\n", __func__, port);
       mt_pthread_mutex_unlock(&mcast->group_mutex);
       return -ENOMEM;
     }
     group->group_ip = group_addr;
     group->group_ref_cnt = 1;
+    group->any_src_ref_cnt = 0;
+    group->src_num = 0;
     TAILQ_INIT(&group->src_list);
+
+    if (!mt_drv_use_kernel_ctl(impl, port)) {
+      mt_mcast_ip_to_mac(ip, &mcast_mac);
+      int ret = mcast_inf_add_mac(inf, &mcast_mac);
+      if (ret < 0) {
+        err("%s(%d), add mcast mac fail %d\n", __func__, port, ret);
+        mt_rte_free(group);
+        mt_pthread_mutex_unlock(&mcast->group_mutex);
+        return ret;
+      }
+    }
+
     TAILQ_INSERT_TAIL(&mcast->group_list, group, entries);
     mcast->group_num++;
+    group_new = true;
   }
 
-  /* add source address to group's source list */
-  if (source_addr != 0) {
-    found = false;
+  bool source_new = false;
+  if (!source_addr) {
+    group->any_src_ref_cnt++;
+  } else {
     struct mt_mcast_src_entry* src;
     TAILQ_FOREACH(src, &group->src_list, entries) {
       if (src->src_ip == source_addr) {
-        dbg("%s(%d), already has source ip in the source list\n", __func__, port);
         src->src_ref_cnt++;
-        found = true;
         break;
       }
     }
-    if (!found) {
-      src = mt_rte_zmalloc_socket(sizeof(struct mt_mcast_src_entry),
-                                  mt_socket_id(impl, port));
-      if (src == NULL) {
+    if (!src) {
+      src = mt_rte_zmalloc_socket(sizeof(*src), mt_socket_id(impl, port));
+      if (!src) {
         err("%s(%d), mt_mcast_src malloc fail\n", __func__, port);
+        if (group_new) {
+          TAILQ_REMOVE(&mcast->group_list, group, entries);
+          mcast->group_num--;
+          if (!mt_drv_use_kernel_ctl(impl, port)) {
+            mt_mcast_ip_to_mac(ip, &mcast_mac);
+            mcast_inf_remove_mac(inf, &mcast_mac);
+          }
+          mcast_group_free(group);
+        } else if (group->group_ref_cnt) {
+          group->group_ref_cnt--;
+        }
         mt_pthread_mutex_unlock(&mcast->group_mutex);
         return -ENOMEM;
       }
       src->src_ip = source_addr;
       src->src_ref_cnt = 1;
       TAILQ_INSERT_TAIL(&group->src_list, src, entries);
+      group->src_num++;
+      source_new = true;
     }
   }
 
+  uint8_t record_type = 0;
+  if (group_new && !source_addr) {
+    record_type = MCAST_CHANGE_TO_EXCLUDE_MODE;
+  } else if (source_new && group->any_src_ref_cnt == 0) {
+    record_type = src_num_before ? MCAST_ALLOW_NEW_SOURCES : MCAST_CHANGE_TO_INCLUDE_MODE;
+  }
   mt_pthread_mutex_unlock(&mcast->group_mutex);
 
-  /*
-   * send mcast report msg if joined new group/source and dpdk based.
-   * one thing should notice is that if we have joined a group with source specified,
-   * then join it again with any source is not allowed.
-   */
-  if (!found) {
-    int ret = mcast_membership_report_on_action(impl, port, group_addr, source_addr,
-                                                MCAST_JOIN);
+  if (record_type) {
+    int ret = mcast_membership_report_on_action(impl, port, group_addr, record_type,
+                                                source_addr, 0, NULL);
     if (ret < 0) {
       err("%s(%d), send membership report fail\n", __func__, port);
       return ret;
     }
-    info("%s(%d), join group %d.%d.%d.%d\n", __func__, port, ip[0], ip[1], ip[2], ip[3]);
-    if (source_addr != 0) {
-      ip = (uint8_t*)&source_addr;
-      info("%s(%d), with source %d.%d.%d.%d\n", __func__, port, ip[0], ip[1], ip[2],
-           ip[3]);
-    }
+  }
+
+  info("%s(%d), join group %d.%d.%d.%d\n", __func__, port, ip[0], ip[1], ip[2], ip[3]);
+  if (source_addr) {
+    ip = (uint8_t*)&source_addr;
+    info("%s(%d), with source %d.%d.%d.%d\n", __func__, port, ip[0], ip[1], ip[2], ip[3]);
   }
 
   return 0;
@@ -666,16 +705,17 @@ int mt_mcast_join(struct mtl_main_impl* impl, uint32_t group_addr, uint32_t sour
 /* delete a group address with/without source address from the group ip list */
 int mt_mcast_leave(struct mtl_main_impl* impl, uint32_t group_addr, uint32_t source_addr,
                    enum mtl_port port) {
-  if (mt_user_no_multicast(impl) || mt_drv_mcast_in_dp(impl, port)) {
-    return 0;
-  }
+  if (mt_user_no_multicast(impl) || mt_drv_mcast_in_dp(impl, port)) return 0;
 
   struct mt_mcast_impl* mcast = get_mcast(impl, port);
   struct mt_interface* inf = mt_if(impl, port);
   uint8_t* ip = (uint8_t*)&group_addr;
   struct rte_ether_addr mcast_mac;
+  uint32_t* src_addrs = NULL;
+  uint16_t src_num = 0;
 
-  /* Lock the multicast group list to ensure thread safety*/
+  if (!mcast) return -EIO;
+
   mt_pthread_mutex_lock(&mcast->group_mutex);
   /* No groups to proceed*/
   if (mcast->group_num == 0) {
@@ -685,9 +725,7 @@ int mt_mcast_leave(struct mtl_main_impl* impl, uint32_t group_addr, uint32_t sou
   /* find existing group */
   struct mt_mcast_group_entry* group = NULL;
   TAILQ_FOREACH(group, &mcast->group_list, entries) {
-    if (group->group_ip == group_addr) {
-      break;
-    }
+    if (group->group_ip == group_addr) break;
   }
 
   if (!group) {
@@ -696,57 +734,75 @@ int mt_mcast_leave(struct mtl_main_impl* impl, uint32_t group_addr, uint32_t sou
     return 0;
   }
 
-  /* delete source */
+  uint16_t old_any_ref = group->any_src_ref_cnt;
   bool source_deleted = false;
-  if (source_addr != 0) {
-    struct mt_mcast_src_entry* src = NULL;
+  if (source_addr) {
+    struct mt_mcast_src_entry* src;
     TAILQ_FOREACH(src, &group->src_list, entries) {
-      if (src->src_ip == source_addr) {
-        // Decrement the source reference count atomically
-        if (__sync_sub_and_fetch(&src->src_ref_cnt, 1) == 0) {
-          info("%s(%d), delete source %x\n", __func__, port, source_addr);
-          TAILQ_REMOVE(&group->src_list, src, entries);
-          mt_rte_free(src);
-          source_deleted = true;
-        }
-        break;
+      if (src->src_ip != source_addr) continue;
+      if (src->src_ref_cnt && --src->src_ref_cnt == 0) {
+        TAILQ_REMOVE(&group->src_list, src, entries);
+        mt_rte_free(src);
+        group->src_num--;
+        source_deleted = true;
       }
+      break;
     }
+  } else if (group->any_src_ref_cnt) {
+    group->any_src_ref_cnt--;
   }
 
-  /* Decrement group reference count atomically and possibly delete the group */
   bool group_deleted = false;
-  if (__sync_sub_and_fetch(&group->group_ref_cnt, 1) == 0) {
-    info("%s(%d), delete group %x\n", __func__, port, group_addr);
+  if (group->group_ref_cnt && --group->group_ref_cnt == 0) {
     TAILQ_REMOVE(&mcast->group_list, group, entries);
-    group_deleted = true;
-    mt_rte_free(group);
-
     mcast->group_num--;
+    group_deleted = true;
+
     // If we are not using kernel control, remove multicast MAC from interface
     if (!mt_drv_use_kernel_ctl(impl, port)) {
       mt_mcast_ip_to_mac(ip, &mcast_mac);
-      mcast_inf_remove_mac(inf, &mcast_mac);
+      int ret = mcast_inf_remove_mac(inf, &mcast_mac);
+      if (ret < 0) err("%s(%d), remove mcast mac fail %d\n", __func__, port, ret);
     }
   }
-  /* Unlock the mutex after all operations */
+
+  uint8_t record_type = 0;
+  uint32_t report_src = source_addr;
+  if (group_deleted) {
+    record_type = MCAST_CHANGE_TO_INCLUDE_MODE;
+    report_src = 0;
+  } else if (source_deleted && group->any_src_ref_cnt == 0) {
+    record_type = group->src_num ? MCAST_BLOCK_OLD_SOURCES : MCAST_CHANGE_TO_INCLUDE_MODE;
+    if (!group->src_num) report_src = 0;
+  } else if (!source_addr && old_any_ref && group->any_src_ref_cnt == 0 &&
+             group->src_num) {
+    record_type = MCAST_CHANGE_TO_INCLUDE_MODE;
+    report_src = 0;
+  }
+
+  if (record_type == MCAST_CHANGE_TO_INCLUDE_MODE && !group_deleted && group->src_num) {
+    src_addrs = mt_rte_zmalloc_socket(sizeof(*src_addrs) * group->src_num,
+                                      mt_socket_id(impl, port));
+    if (!src_addrs) {
+      err("%s(%d), source snapshot malloc fail\n", __func__, port);
+    } else {
+      struct mt_mcast_src_entry* src;
+      TAILQ_FOREACH(src, &group->src_list, entries) {
+        src_addrs[src_num++] = src->src_ip;
+      }
+    }
+  }
   mt_pthread_mutex_unlock(&mcast->group_mutex);
 
-  /* send leave report */
-  if (group_deleted || source_deleted) {
-    int ret = mcast_membership_report_on_action(impl, port, group_addr, source_addr,
-                                                MCAST_LEAVE);
-    if (ret < 0) {
-      err("%s(%d), send leave report failed\n", __func__, port);
-      return ret;
-    }
-    info("%s(%d), leave group %d.%d.%d.%d\n", __func__, port, ip[0], ip[1], ip[2], ip[3]);
-    if (source_addr != 0) {
-      ip = (uint8_t*)&source_addr;
-      info("%s(%d), with source %d.%d.%d.%d\n", __func__, port, ip[0], ip[1], ip[2],
-           ip[3]);
-    }
+  if (record_type) {
+    int ret = mcast_membership_report_on_action(impl, port, group_addr, record_type,
+                                                report_src, src_num, src_addrs);
+    if (ret < 0) err("%s(%d), send leave report failed\n", __func__, port);
   }
+
+  info("%s(%d), leave group %d.%d.%d.%d\n", __func__, port, ip[0], ip[1], ip[2], ip[3]);
+  if (src_addrs) mt_rte_free(src_addrs);
+  if (group_deleted) mcast_group_free(group);
 
   return 0;
 }
@@ -775,32 +831,44 @@ int mt_mcast_restore(struct mtl_main_impl* impl, enum mtl_port port) {
     for (uint32_t i = 0; i < inf->mcast_nb; i++)
       rte_eth_dev_mac_addr_add(port_id, &inf->mcast_mac_lists[i], 0);
   }
-  mcast_membership_report_on_query(impl, port);
+  mcast_membership_report_on_query(impl, port, 0, 0);
   return 0;
 }
 
 int mt_mcast_parse(struct mtl_main_impl* impl, struct mcast_mb_query_v3* query,
-                   enum mtl_port port) {
-  if (query->type != MEMBERSHIP_QUERY) {
-    err("%s(%d), invalid type %u, only allow igmp query packet\n", __func__, port,
-        query->type);
+                   size_t query_len, enum mtl_port port) {
+  if (query_len < sizeof(*query)) {
+    err("%s(%d), short igmp query %zu\n", __func__, port, query_len);
+    return -EIO;
+  }
+
+  if (query->type != MEMBERSHIP_QUERY) return 0;
+
+  size_t src_bytes = (size_t)ntohs(query->num_sources) * sizeof(uint32_t);
+  if (src_bytes > query_len - sizeof(*query)) {
+    err("%s(%d), short igmp source list\n", __func__, port);
     return -EIO;
   }
 
   uint16_t query_checksum = ntohs(query->checksum);
   query->checksum = 0;
-  uint16_t checksum = mcast_msg_checksum(MEMBERSHIP_QUERY, query, 0);
+  uint16_t checksum = mcast_msg_checksum(MEMBERSHIP_QUERY, query, query_len);
+  query->checksum = query_checksum;
   if (checksum != query_checksum) {
     err("%s(%d), err checksum %d:%d\n", __func__, port, query_checksum, checksum);
     return -EIO;
   }
 
   struct mt_mcast_impl* mcast = get_mcast(impl, port);
-  if (!mcast->has_external_query) {
-    info("%s(%d), received igmp query, stop auto-join\n", __func__, port);
-    mcast->has_external_query = true;
-  }
+  if (!mcast) return 0;
 
-  mcast_membership_report_on_query(impl, port);
-  return 0;
+  if (!mcast_has_external_query(impl, mcast))
+    info("%s(%d), received igmp query, stop auto-join\n", __func__, port);
+  mcast->last_query_tsc = mt_get_tsc(impl);
+
+  uint32_t group_filter = query->group_addr;
+  uint32_t src_filter = 0;
+  if (query->s && ntohs(query->num_sources)) src_filter = query->source_addr[0];
+
+  return mcast_membership_report_on_query(impl, port, group_filter, src_filter);
 }

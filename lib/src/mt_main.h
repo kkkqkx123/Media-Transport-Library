@@ -429,6 +429,7 @@ TAILQ_HEAD(mt_mcast_src_list, mt_mcast_src_entry);
 struct mt_mcast_group_entry {
   uint32_t group_ip;
   uint16_t group_ref_cnt;
+  uint16_t any_src_ref_cnt;
   struct mt_mcast_src_list src_list;
   uint16_t src_num;
   TAILQ_ENTRY(mt_mcast_group_entry) entries;
@@ -440,7 +441,7 @@ struct mt_mcast_impl {
   pthread_mutex_t group_mutex;
   struct mt_mcast_group_list group_list;
   uint16_t group_num;
-  bool has_external_query;
+  uint64_t last_query_tsc;
 };
 
 enum mt_dhcp_status {

@@ -13,6 +13,7 @@
 #define IGMP_QUERY_IP "224.0.0.1"
 #define IGMP_JOIN_GROUP_PERIOD_S (10)
 #define IGMP_JOIN_GROUP_PERIOD_US (IGMP_JOIN_GROUP_PERIOD_S * US_PER_S)
+#define IGMP_QUERY_ACTIVE_PERIOD_US (IGMP_JOIN_GROUP_PERIOD_US * 3)
 
 enum mcast_msg_type {
   MEMBERSHIP_QUERY = 0x11,
@@ -26,11 +27,6 @@ enum mcast_group_record_type {
   MCAST_CHANGE_TO_EXCLUDE_MODE = 0x04,
   MCAST_ALLOW_NEW_SOURCES = 0x05,
   MCAST_BLOCK_OLD_SOURCES = 0x06
-};
-
-enum mcast_action_type {
-  MCAST_JOIN = 0,
-  MCAST_LEAVE,
 };
 
 struct mcast_group_record {
@@ -78,7 +74,7 @@ int mt_mcast_l2_join(struct mtl_main_impl* impl, struct rte_ether_addr* addr,
 int mt_mcast_l2_leave(struct mtl_main_impl* impl, struct rte_ether_addr* addr,
                       enum mtl_port port);
 int mt_mcast_parse(struct mtl_main_impl* impl, struct mcast_mb_query_v3* query,
-                   enum mtl_port port);
+                   size_t query_len, enum mtl_port port);
 
 static inline void mt_mcast_ip_to_mac(uint8_t* mcast_ip4_addr,
                                       struct rte_ether_addr* mcast_mac) {

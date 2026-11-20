@@ -381,13 +381,18 @@ int mt_socket_add_flow(struct mtl_main_impl* impl, enum mtl_port port, uint16_t 
 
   uint32_t sip = 0, dip = 0;
   uint16_t dport = flow->dst_port;
-  if (has_ip_flow) {
-    if (mt_is_multicast_ip(flow->dip_addr)) {
+  if (mt_is_multicast_ip(flow->dip_addr)) {
+    if (has_ip_flow) {
+      /* For SSM flow->sip_addr is the allowed source, not the local IP. */
+      sip = *(uint32_t*)flow->sip_addr;
       dip = *(uint32_t*)flow->dip_addr;
     } else {
+      /* Mark a multicast flow without IP matching for the XDP source filter. */
       sip = *(uint32_t*)flow->dip_addr;
-      dip = *(uint32_t*)flow->sip_addr;
     }
+  } else if (has_ip_flow) {
+    sip = *(uint32_t*)flow->dip_addr;
+    dip = *(uint32_t*)flow->sip_addr;
   }
 
   if (mt_pmd_is_dpdk_af_xdp(impl, port)) {

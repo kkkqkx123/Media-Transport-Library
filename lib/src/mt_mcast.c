@@ -836,31 +836,37 @@ int mt_mcast_restore(struct mtl_main_impl* impl, enum mtl_port port) {
 }
 
 int mt_mcast_parse(struct mtl_main_impl* impl, struct mcast_mb_query_v3* query,
-                   size_t query_len, enum mtl_port port) {
-  if (query_len < sizeof(*query)) {
-    err("%s(%d), short igmp query %zu\n", __func__, port, query_len);
+                   size_t len, enum mtl_port port) {
+  struct mt_mcast_impl* mcast = get_mcast(impl, port);
+
+  if (!mcast) return 0;
+
+  if (len < sizeof(*query)) {
+    dbg("%s(%d), igmp query too short: %zu\n", __func__, port, len);
     return -EIO;
   }
 
-  if (query->type != MEMBERSHIP_QUERY) return 0;
+  if (query->type != MEMBERSHIP_QUERY) {
+    err("%s(%d), invalid type %u, only allow igmp query packet\n", __func__, port,
+        query->type);
+    return -EIO;
+  }
 
   size_t src_bytes = (size_t)ntohs(query->num_sources) * sizeof(uint32_t);
-  if (src_bytes > query_len - sizeof(*query)) {
+  if (src_bytes > len - sizeof(*query)) {
     err("%s(%d), short igmp source list\n", __func__, port);
     return -EIO;
   }
 
   uint16_t query_checksum = ntohs(query->checksum);
   query->checksum = 0;
-  uint16_t checksum = mcast_msg_checksum(MEMBERSHIP_QUERY, query, query_len);
+  /* checksum covers the IGMP query header only; len may include frame padding */
+  uint16_t checksum = mcast_msg_checksum(MEMBERSHIP_QUERY, query, sizeof(*query));
   query->checksum = query_checksum;
   if (checksum != query_checksum) {
     err("%s(%d), err checksum %d:%d\n", __func__, port, query_checksum, checksum);
     return -EIO;
   }
-
-  struct mt_mcast_impl* mcast = get_mcast(impl, port);
-  if (!mcast) return 0;
 
   if (!mcast_has_external_query(impl, mcast))
     info("%s(%d), received igmp query, stop auto-join\n", __func__, port);
